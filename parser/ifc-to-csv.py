@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
 
 import ifcopenshell
@@ -273,7 +272,8 @@ def export_to_excel(model, class_types, output_path):
 def parse_ifc_to_csv(ifc_path: Path, csv_path: Path, class_type: str = None) -> int:  # type: ignore
     """
     Parse one IFC file and write CSV(s).
-    If class_type is specified, only export that class. Otherwise export all building elements.
+    If class_type is specified, only export that class. Otherwise export all
+    building elements.
     """
     model = ifcopenshell.open(str(ifc_path))
 
@@ -349,7 +349,10 @@ def main():
         "--ifc-dir",
         type=Path,
         default=None,
-        help="Directory containing .ifc files (default: auto-detect IFC-Files/ up from this script).",
+        help=(
+            "Directory containing .ifc files (default: auto-detect IFC-Files/ "
+            "up from this script)."
+        ),
     )
     parser.add_argument(
         "--out-dir",
@@ -366,7 +369,8 @@ def main():
         ifc_dir = _find_ifc_dir(script_dir)
         if ifc_dir is None:
             print(
-                "IFC directory not found. Provide --ifc-dir or create an IFC-Files/ folder."
+                "IFC directory not found. Provide --ifc-dir or create an IFC-Files/ "
+                "folder."
             )
             return
 
