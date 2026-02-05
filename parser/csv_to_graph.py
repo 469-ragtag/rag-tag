@@ -2,6 +2,7 @@ from pathlib import Path
 import ifcopenshell
 import pandas as pd
 import networkx as nx
+import numpy as np
 import plotly.graph_objects as go
 from ifc_geometry_parse import get_ifc_model, extract_geometry_data
 from ifc_to_csv import _find_project_root, _find_ifc_dir
@@ -24,6 +25,40 @@ csv_file = csv_dir / "Building-Architecture.csv"
 
 model = get_ifc_model(ifc_file)
 geom_data = extract_geometry_data(model)
+
+
+def distance_between_points(
+    a: tuple[float, float, float], b: tuple[float, float, float]
+) -> float:
+    """Euclidean distance between two 3D points."""
+    return float(np.linalg.norm(np.array(a, dtype=float) - np.array(b, dtype=float)))
+
+
+def compute_adjacency_threshold(positions: list[tuple[float, float, float]]) -> float:
+    """
+    Derive a reasonable adjacency threshold from data.
+    Uses median nearest-neighbor distance, scaled, with a small floor.
+    """
+    if len(positions) < 2:
+        return 1.0
+
+    nn_distances = []
+    for i, p in enumerate(positions):
+        best = None
+        for j, q in enumerate(positions):
+            if i == j:
+                continue
+            d = distance_between_points(p, q)
+            if best is None or d < best:
+                best = d
+        if best is not None:
+            nn_distances.append(best)
+
+    if not nn_distances:
+        return 1.0
+
+    median_nn = float(np.median(nn_distances))
+    return max(0.5, median_nn * 1.5)
 
 
 def build_graph_with_properties(csv_path: str, geom_data: dict) -> nx.DiGraph:
@@ -54,7 +89,7 @@ def build_graph_with_properties(csv_path: str, geom_data: dict) -> nx.DiGraph:
     # Elements
     for _, row in df.iterrows():
         eid = f"Element::{row['GlobalId']}"
-        geom = geom_data.get(row["GlobalId"], None)  # attach geometry if available
+        geom = geom_data.get(row["GlobalId"])  # attach geometry if available
 
         G.add_node(
             eid,
@@ -72,13 +107,50 @@ def build_graph_with_properties(csv_path: str, geom_data: dict) -> nx.DiGraph:
 
     return G
 
+
+def add_spatial_adjacency(
+    G: nx.DiGraph, geom_data: dict, threshold: float | None = None
+) -> float:
+    """
+    Add adjacency edges between elements that are within a spatial threshold.
+    Returns the threshold used.
+    """
+    element_nodes = []
+    positions = []
+
+    for n, d in G.nodes(data=True):
+        if d.get("class_") in {"IfcTypeObject", "IfcBuilding", "IfcProject", "IfcBuildingStorey"}:
+            continue
+        if not n.startswith("Element::"):
+            continue
+        gid = d.get("properties", {}).get("GlobalId")
+        geom = geom_data.get(gid)
+        if geom is None:
+            continue
+        element_nodes.append(n)
+        positions.append(tuple(geom))
+
+    if threshold is None:
+        threshold = compute_adjacency_threshold(positions)
+
+    for i, ni in enumerate(element_nodes):
+        pi = positions[i]
+        for j in range(i + 1, len(element_nodes)):
+            nj = element_nodes[j]
+            pj = positions[j]
+            d = distance_between_points(pi, pj)
+            if d <= threshold:
+                if not G.has_edge(ni, nj) and not G.has_edge(nj, ni):
+                    G.add_edge(ni, nj, relation="adjacent_to", distance=d)
+
+    return threshold
+
+
 def plot_interactive_graph(G: nx.DiGraph, out_html: Path):
     """
     Plot the IFC graph in 3D using real geometry coordinates if available.
     Nodes without geometry are slightly offset to avoid overlap.
-    """
-    import numpy as np
-
+    """   
     # Build positions from geometry
     pos = {}
     for n, d in G.nodes(data=True):
@@ -86,7 +158,20 @@ def plot_interactive_graph(G: nx.DiGraph, out_html: Path):
         if geom is not None:
             pos[n] = tuple(geom)
         else:
-            pos[n] = (np.random.rand()*0.5, np.random.rand()*0.5, np.random.rand()*0.5)
+            pos[n] = None
+
+    # Place nodes with no geometry at centroid of their children (if any)
+    for n in G.nodes:
+        if pos.get(n) is not None:
+            continue
+        child_positions = [
+            pos[c] for c in G.successors(n) if pos.get(c) is not None
+        ]
+        if child_positions:
+            child_positions = np.array(child_positions, dtype=float)
+            pos[n] = tuple(child_positions.mean(axis=0))
+        else:
+            pos[n] = (0.0, 0.0, 0.0)
 
     # Node coordinates
     xs, ys, zs, hover = [], [], [], []
@@ -116,6 +201,7 @@ def plot_interactive_graph(G: nx.DiGraph, out_html: Path):
             "IfcTypeObject": "red"
         }.get(d.get("class_"), "green"))
 
+    node_ids = []
     node_trace = go.Scatter3d(
         x=xs, y=ys, z=zs,
         mode="markers",
@@ -126,6 +212,9 @@ def plot_interactive_graph(G: nx.DiGraph, out_html: Path):
 
     # Edge coordinates
     ex, ey, ez = [], [], []
+    edge_mid_x, edge_mid_y, edge_mid_z = [], [], []
+    edge_hover = []
+    edge_text = []
 
     for u, v, d in G.edges(data=True):
         x0, y0, z0 = pos[u]
@@ -135,16 +224,43 @@ def plot_interactive_graph(G: nx.DiGraph, out_html: Path):
         ey += [y0, y1, None]
         ez += [z0, z1, None]
 
+        edge_mid_x.append((x0 + x1) / 2.0)
+        edge_mid_y.append((y0 + y1) / 2.0)
+        edge_mid_z.append((z0 + z1) / 2.0)
+        rel = d.get("relation", "related_to")
+        dist = d.get("distance")
+        if dist is not None:
+            edge_hover.append(f"Relation: {rel}<br>Distance: {dist:.3f}")
+        else:
+            edge_hover.append(f"Relation: {rel}")
+        edge_text.append(rel)
+
     edge_trace = go.Scatter3d(
         x=ex, y=ey, z=ez,
         mode="lines",
         line=dict(width=3, color="gray"),
         hoverinfo="none"
     )
+    edge_hover_trace = go.Scatter3d(
+        x=edge_mid_x, y=edge_mid_y, z=edge_mid_z,
+        mode="markers",
+        marker=dict(size=2, color="gray", opacity=0.0),
+        hoverinfo="text",
+        hovertext=edge_hover,
+        showlegend=False
+    )
+    edge_text_trace = go.Scatter3d(
+        x=edge_mid_x, y=edge_mid_y, z=edge_mid_z,
+        mode="text",
+        text=edge_text,
+        textfont=dict(size=9, color="gray"),
+        hoverinfo="none",
+        showlegend=False
+    )
 
     # Ensure output folder exists
     out_html.parent.mkdir(parents=True, exist_ok=True)
-    fig = go.Figure(data=[edge_trace, node_trace])
+    fig = go.Figure(data=[edge_trace, edge_hover_trace, edge_text_trace, node_trace])
     fig.update_layout(
         scene=dict(aspectmode="data"),
         title="IFC Hierarchy Graph (3D with Geometry)"
@@ -163,33 +279,43 @@ def print_ifc_hierarchy(ifc_file_path, indent=0):
         print("    " * level + f"- {name}")
 
     def traverse(obj, level):
-        obj_name = getattr(obj, "Name", obj.is_a())
+        obj_name = getattr(obj, "Name", None) or obj.is_a()
         print_with_indent(f"{obj.is_a()}: {obj_name}", level)
 
-        # Find all objects aggregated under this one
+        # Follow aggregation (Project → Site → Building → Storey → Space)
         if hasattr(obj, "IsDecomposedBy"):
             for rel in obj.IsDecomposedBy or []:
-                for child in getattr(rel, "RelatedObjects", []):
+                for child in rel.RelatedObjects or []:
                     traverse(child, level + 1)
+
+        # Follow containment (Storey → Elements)
+        if hasattr(obj, "ContainsElements"):
+            for rel in obj.ContainsElements or []:
+                for elem in rel.RelatedElements or []:
+                    elem_name = getattr(elem, "Name", None) or elem.is_a()
+                    print_with_indent(
+                        f"{elem.is_a()}: {elem_name}",
+                        level + 1
+                    )
+
 
     # Start from the project(s)
     for project in model.by_type("IfcProject"):
         traverse(project, indent)
 
 
-#print_ifc_hierarchy(ifc_file) # Helper to visualize hierarchy in console
-
 # Convert list to dict
 geom_dict = {}
 for item in geom_data:
     gid = item.get("GlobalId")
     if gid:
-        # Use centroid if available, else fallback to raw geometry
-        geom_dict[gid] = item.get("centroid") or item.get("geometry")
+        geom_dict[gid] = item.get("centroid")
 
 html_dir = project_root / "output"
 html_dir.mkdir(parents=True, exist_ok=True)
 html_file = html_dir / "ifc_graph.html"
 
 G = build_graph_with_properties(csv_file, geom_dict)
+threshold_used = add_spatial_adjacency(G, geom_dict)
 plot_interactive_graph(G, html_file)
+print_ifc_hierarchy(ifc_file) # Helper to visualize hierarchy in console
