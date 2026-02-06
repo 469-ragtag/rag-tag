@@ -1,15 +1,39 @@
 # rag-tag
 
-Utilities for working with IFC (Industry Foundation Classes) files, with tools to extract tabular data, geometry, and hierarchical graph representations for analysis and visualization.
+A research-oriented toolkit for **IFC-based digital twins** that combines **geometry-aware graph construction** with **LLM-driven graph reasoning**. The project turns BIM data into a structured knowledge graph and enables natural-language querying via a controlled, multi-step agent (Graph RAG).
 
 ---
 
-## Features
+## What this project is about
 
-- **IFC → CSV**: Extract structured element data into CSV for analysis.
-- **IFC → Graph (3D)**: Build a hierarchical, typed graph of IFC entities enriched with real geometry and visualize it interactively in 3D.
-- **Geometry Extraction**: Compute centroids and axis-aligned bounding boxes for IFC elements using `ifcopenshell`.
-- **Interactive Visualization**: Explore IFC structure using a Plotly-based 3D graph (HTML output).
+Industry Foundation Classes (IFC) models contain rich information about buildings — geometry, hierarchy, types, and properties — but they are difficult to query without BIM expertise or specialized tools.
+
+**rag-tag** bridges that gap by:
+
+1. Converting IFC models into a **typed, hierarchical knowledge graph** enriched with real geometry
+2. Exposing that graph through a **safe query interface**
+3. Using an **LLM as a planning agent** that reasons over the graph via tool calls (Graph RAG)
+
+The result is a foundation for **LLM-assisted digital twins** that can answer spatial, semantic, and structural questions about buildings.
+
+---
+
+## Key Features
+
+* **IFC → CSV**
+  Extract structured IFC element data into tabular form for inspection and downstream processing.
+
+* **IFC → Geometry-Enriched Graph**
+  Build a directed, hierarchical graph of IFC entities with centroids and spatial relationships.
+
+* **Spatial Reasoning**
+  Automatically infer `adjacent_to` relationships between elements based on 3D proximity.
+
+* **Interactive 3D Visualization**
+  Explore the IFC graph in a Plotly-based 3D viewer (HTML output).
+
+* **Graph RAG Agent**
+  Query the IFC graph using natural language via an LLM that plans multi-step graph queries instead of hallucinating answers.
 
 ---
 
@@ -17,15 +41,18 @@ Utilities for working with IFC (Industry Foundation Classes) files, with tools t
 
 ```
 rag-tag/
-├── IFC-Files/              # Input IFC files (auto-detected)
+├── IFC-Files/                 # Input IFC files (auto-detected)
 │   └── Building-Architecture.ifc
 ├── parser/
-│   ├── ifc-to-csv.py       # IFC → CSV exporter
-│   ├── ifc_to_graph.py     # IFC → Graph + 3D visualization
-│   └── ifc_geometry_parse.py
+│   ├── ifc_to_csv.py          # IFC → CSV exporter
+│   ├── csv_to_graph.py        # CSV → IFC graph + geometry + visualization
+│   ├── ifc_geometry_parse.py  # Geometry extraction utilities
+│   ├── ifc_graph_tool.py      # Safe graph query interface for the LLM
+│   └── command_r_agent.py     # Cohere-based planning agent (ReAct-style)
 ├── output/
 │   ├── Building-Architecture.csv
 │   └── ifc_graph.html
+├── run_agent.py               # Interactive CLI for LLM-powered graph queries
 ├── pyproject.toml
 └── README.md
 ```
@@ -34,58 +61,40 @@ rag-tag/
 
 ## Requirements
 
-Core dependencies:
+### Core dependencies
 
-- Python 3.10+
-- `ifcopenshell`
-- `pandas`
-- `numpy`
-- `networkx`
-- `plotly`
+* Python 3.10+
+* `ifcopenshell`
+* `pandas`
+* `numpy`
+* `networkx`
+* `plotly`
+* `cohere`
 
-Dev / tooling:
+### Dev / tooling
 
-- `ruff`
-- `pre-commit`
-- `uv`
+* `ruff`
+* `pre-commit`
+* `uv`
 
 ---
 
 ## Formatting & Linting (Ruff)
 
-This repo uses **Ruff** for consistent formatting and basic linting across contributors.
+This repository uses **Ruff** for formatting and linting.
 
 ### One-time setup
 
-Install dev tools (Ruff + pre-commit):
-
 ```bash
 uv sync --group dev
-```
-
-Install the git pre-commit hook:
-
-```bash
 uv run pre-commit install
 ```
 
-### Run manually (recommended before pushing)
-
-Format:
+### Manual checks
 
 ```bash
 uv run ruff format .
-```
-
-Lint (auto-fix safe issues):
-
-```bash
 uv run ruff check --fix .
-```
-
-Run exactly what pre-commit runs:
-
-```bash
 uv run pre-commit run --all-files
 ```
 
@@ -93,22 +102,22 @@ uv run pre-commit run --all-files
 
 ## IFC → CSV
 
-The script in `parser/ifc-to-csv.py` reads `.ifc` files and exports structured CSV output.
+The script `parser/ifc_to_csv.py` extracts structured element data from IFC files.
 
 ### Default behavior
 
-- **Input**: Automatically detects an `IFC-Files/` directory by searching upward from the script location.
-- **Output**: Writes CSV files to `output/` at the project root.
-- **Schema**: Includes element identifiers, class names, levels, types, and other IFC properties.
+* **Input**: Auto-detects an `IFC-Files/` directory by searching upward
+* **Output**: Writes CSV files to `output/` at the project root
+* **Schema**: GlobalId, IFC class, level/storey, type, name, and selected properties
 
 Run:
 
 ```bash
 cd parser
-uv run ifc-to-csv.py
+uv run ifc_to_csv.py
 ```
 
-### Override paths
+Override paths:
 
 ```bash
 uv run ifc_to_csv.py --ifc-dir ./IFC-Files --out-dir ./output
@@ -118,68 +127,121 @@ uv run ifc_to_csv.py --ifc-dir ./IFC-Files --out-dir ./output
 
 ## IFC → Graph (3D)
 
-The graph pipeline builds a **hierarchical directed graph** from IFC data and enriches nodes with **real geometry** extracted from the model.
+The graph pipeline converts IFC data into a **directed knowledge graph** enriched with geometry and spatial adjacency.
 
-### What the graph represents
+### Graph model
 
-- **Nodes**:
-  - `IfcProject`
-  - `IfcBuilding`
-  - `IfcBuildingStorey`
-  - `IfcTypeObject`
-  - Individual IFC elements (`IfcWall`, `IfcDoor`, etc.)
+**Nodes**
 
-- **Edges**:
-  - `aggregates` (Project → Building → Storey)
-  - `contained_in` (Storey → Element)
-  - `typed_by` (Type → Element)
+* `IfcProject`
+* `IfcBuilding`
+* `IfcBuildingStorey`
+* `IfcTypeObject`
+* Individual IFC elements (`IfcWall`, `IfcDoor`, `IfcSlab`, ...)
 
-- **Node properties**:
-  - IFC class
-  - Original CSV row (full property dict)
-  - Geometry (centroid or bounding box)
+**Edges**
+
+* `aggregates` – project/building/storey hierarchy
+* `contained_in` – storey → element
+* `typed_by` – type → element
+* `adjacent_to` – spatial proximity (distance-based)
+
+**Node attributes**
+
+* `label` – human-readable name
+* `class_` – IFC class
+* `properties` – full CSV row as a dictionary
+* `geometry` – centroid or bounding box
+
+---
 
 ### Geometry handling
 
 Geometry is extracted using `ifcopenshell.geom`:
 
-- **Centroid**: Mean of mesh vertices (used for node positioning)
-- **Bounding box**: Axis-aligned min/max coordinates
+* **Centroid**: Mean of mesh vertices (used for node placement)
+* **Bounding box**: Axis-aligned extents (optional)
 
-If geometry extraction fails, nodes are placed with a small random offset to avoid overlap.
+If geometry is unavailable, nodes are positioned using the centroid of their children to avoid overlap.
 
-### Default behavior
+---
 
-- **Input**:
-  - IFC file auto-detected from `IFC-Files/`
-  - CSV loaded from `output/Building-Architecture.csv`
-- **Output**:
-  - Interactive HTML visualization written to `output/ifc_graph.html`
-
-Run:
+### Run the graph pipeline
 
 ```bash
 cd parser
-uv run ifc_to_graph.py
+uv run csv_to_graph.py
 ```
 
 ### Output
 
-- `output/ifc_graph.html`
-  - Interactive 3D Plotly visualization
-  - Hover on nodes to inspect IFC properties
-  - Colored by IFC class
+* `output/ifc_graph.html`
+
+  * Interactive 3D Plotly visualization
+  * Hover to inspect IFC properties
+  * Color-coded by IFC class
+
 ---
 
-## Console Hierarchy Inspection (Optional)
+## LLM-Assisted Graph Querying (Graph RAG)
 
-A helper is included to print the raw IFC hierarchy directly to the console:
+The project includes an **LLM-driven planning agent** that answers natural-language questions by reasoning over the IFC graph.
+
+### Architecture overview
+
+* **LLM (Cohere Command R+)**: Acts as a planner
+* **Graph tools**: Controlled Python functions (`ifc_graph_tool.py`)
+* **Executor loop**: Runs multi-step ReAct-style reasoning (`run_agent.py`)
+
+The LLM:
+
+* does *not* see the graph directly
+* must request graph operations via JSON tool calls
+* can chain multiple steps before producing a final answer
+
+---
+
+### Example questions
+
+* "What elements are on Level 2?"
+* "Which walls are adjacent to this door?"
+* "Find doors near the stair core"
+* "What elements are close to this column within 2 meters?"
+
+---
+
+### Run the agent
+
+Set your API key:
+
+```bash
+COHERE_API_KEY=your_key_here
+```
+
+Then start the interactive agent:
+
+```bash
+uv run run_agent.py
+```
+
+The agent will:
+
+1. Interpret the question
+2. Plan one graph query at a time
+3. Accumulate results in memory
+4. Produce a final, grounded answer
+
+---
+
+## Console IFC Hierarchy Inspection (Optional)
+
+A helper function prints the raw IFC hierarchy directly from the file:
 
 ```python
 print_ifc_hierarchy(ifc_file)
 ```
 
-This prints:
+Output structure:
 
 ```
 IfcProject
