@@ -5,7 +5,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from query_router import SqlRequest
+from router import SqlRequest
 
 
 class SqlQueryError(RuntimeError):

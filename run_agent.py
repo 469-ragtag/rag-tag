@@ -7,7 +7,7 @@ from pathlib import Path
 from command_r_agent import CommandRAgent
 from ifc_graph_tool import query_ifc_graph
 from ifc_sql_tool import SqlQueryError, query_ifc_sql
-from query_router import RouteDecision, route_question
+from router import RouteDecision, route_question
 
 
 def _load_graph():
