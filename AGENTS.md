@@ -2,149 +2,140 @@
 
 This file is for agentic coding assistants operating in this repository.
 
-## Project (High-Level)
+## Project Summary
 
-- Domain: BIM / Digital Twins (IFC)
-- Goal: Natural-language queries over an IFC model using a hybrid approach:
-    - Attribute + aggregation queries -> SQL/relational engine (deterministic counts/lists)
-    - Spatial/topological queries -> graph engine (Neo4j/Cypher)
+- Domain: BIM / IFC digital twins
+- Goal: Natural-language querying over IFC models using a hybrid retrieval pipeline
+  - Deterministic aggregations and counts via SQL (no hallucinations)
+  - Spatial/topological questions via graph traversal
+- Primary pipeline: IFC -> CSV -> SQLite + NetworkX graph + LLM tool interface
 
-## Repo Status
+## Repo Status Snapshot
 
-This repo is a small Python prototype with a working IFC export script (see `parser/ifc-to-csv.py`).
-
-## Policies (Non-Negotiable)
-
-- No hallucinations on counts/aggregations: compute via SQL/relational query, not free-text.
-- IFC handling: never assume an IFC is valid; validate before parsing (e.g., `ifcopenshell.validate()`).
-- Graph edges: `CONTAINS` / `CONNECTED_TO` must be computed from geometry/topology, not guessed.
-- Never fabricate IFC `global_id` / GUIDs; only return IDs that exist in the parsed model.
+- IFC parsing and export works via `parser/ifc_to_csv.py`.
+- Geometry extraction computes centroids and bounding boxes.
+- Graph is currently built in NetworkX with distance-based adjacency.
+- SQL schema exists for deterministic aggregation (not yet wired to agent).
 
 ## Cursor/Copilot Rules
 
 - No Cursor rules detected (`.cursorrules` / `.cursor/rules/` not present).
 - No Copilot rules detected (`.github/copilot-instructions.md` not present).
-- If these files are added later, treat them as higher priority than this document and mirror key rules here.
+- If these files are added later, treat them as higher priority and mirror key rules here.
 
-## Tooling (Recommended)
+## Environment + Tooling
 
-- Python: 3.14+ (repo sets `requires-python = ">=3.14"` and `.python-version` is `3.14`)
-- Env + runner: `uv` (use `uv run ...`, do not rely on a system `python` executable)
-- Lint + format: `ruff`
-- Tests: `pytest`
-- Type checking: `pyright`
+- Python: requires >=3.14 (see `pyproject.toml`)
+- Package manager/runner: `uv` (use `uv run ...`)
+- Lint/format: `ruff` (configured in `pyproject.toml`)
+- Pre-commit: `pre-commit` is listed in dev deps
 
 ## Commands (Build/Lint/Test)
 
-This repo uses `uv.lock` + `pyproject.toml`, so these are the canonical commands.
+Use `uv` for all commands.
 
 ### Environment
 
-- Create/sync env from lockfile:
-    - `uv sync`
-- Add runtime deps:
-    - `uv add <pkg>`
-- Add dev deps:
-    - `uv add --dev ruff pytest pyright`
+- Sync environment:
+  - `uv sync --group dev`
+- Install pre-commit hooks:
+  - `uv run pre-commit install`
 
-Note: `.gitignore` currently ignores `AGENTS.md`.
+### Run scripts
 
-### Run
+- IFC -> CSV:
+  - `uv run python parser/ifc_to_csv.py`
+- CSV -> SQLite:
+  - `uv run python parser/csv_to_sql.py`
+- CSV -> Graph (Plotly HTML):
+  - `uv run python parser/csv_to_graph.py`
+- Run the LLM agent (requires API key):
+  - `COHERE_API_KEY=... uv run python run_agent.py`
 
-- Run a module:
-    - `uv run python -m <module>`
-- Run a script:
-    - `uv run python path/to/script.py`
-
-### Repo Scripts
-
-- IFC -> CSV export (recommended):
-    - `uv run python parser/ifc-to-csv.py`
-- With overrides:
-    - `uv run python parser/ifc-to-csv.py --ifc-dir ./IFC-Files --out-dir ./output`
-
-### Formatting (ruff)
+### Linting + Formatting (ruff)
 
 - Format all:
-    - `uv run ruff format .`
+  - `uv run ruff format .`
 - Check formatting (CI-safe):
-    - `uv run ruff format --check .`
-
-### Linting (ruff)
-
+  - `uv run ruff format --check .`
 - Lint all:
-    - `uv run ruff check .`
+  - `uv run ruff check .`
 - Lint with autofix:
-    - `uv run ruff check --fix .`
-- Lint a single file:
-    - `uv run ruff check path/to/file.py`
+  - `uv run ruff check --fix .`
+- Lint single file:
+  - `uv run ruff check path/to/file.py`
 
-### Tests (pytest)
+### Tests
 
-- Run all tests:
-    - `uv run pytest`
-- Run a single test file:
-    - `uv run pytest tests/test_parser.py`
-- Run a single test (node id):
-    - `uv run pytest tests/test_parser.py::test_validate_ifc`
-- Run tests matching a substring:
-    - `uv run pytest -k validate`
-- Rerun last failures:
-    - `uv run pytest --lf`
-
-### Type Check (pyright)
-
-- Run type checking:
-    - `uv run pyright`
+- No tests are currently present in the repo.
+- If tests are added, standard commands should be:
+  - `uv run pytest`
+  - `uv run pytest tests/test_file.py`
+  - `uv run pytest tests/test_file.py::test_name`
 
 ## Code Style Guidelines
 
 ### Formatting
 
-- Use `ruff format` and do not hand-format.
-- Prefer readability over clever one-liners.
+- Use `ruff format` and avoid manual formatting tweaks.
+- Keep line length <= 88 (see `pyproject.toml`).
+- Prefer clarity over compact one-liners.
 
 ### Imports
 
-- Prefer absolute imports from the package namespace (once `src/` exists).
 - Group imports: stdlib, third-party, local.
-- Avoid wildcard imports; avoid redundant aliasing.
+- Avoid wildcard imports and unused imports (ruff will flag).
+- Prefer absolute imports once a `src/` layout exists.
 
 ### Types
 
-- Type all public functions (module-level APIs, pipeline steps, query interfaces).
+- Type all public functions and key pipeline steps.
 - Prefer `pathlib.Path` over `str` for paths.
-- Use `dataclass` / `TypedDict` for structured payloads; add `pydantic` only if validation is needed.
-- Avoid `# type: ignore` unless justified; prefer precise types.
+- Use `dataclass` or `TypedDict` for structured data.
+- Avoid `# type: ignore` unless there is a strong justification.
 
 ### Naming
 
-- Files/modules: `snake_case.py`
-- Functions/vars: `snake_case`
-- Classes: `PascalCase`
-- Constants: `UPPER_SNAKE_CASE`
-- Use domain-consistent names: `global_id`, `storey`, `space`, `element`, `bbox`, `centroid`.
+- Files/modules: `snake_case.py`.
+- Functions/variables: `snake_case`.
+- Classes: `PascalCase`.
+- Constants: `UPPER_SNAKE_CASE`.
+- Use IFC-consistent terms: `global_id`, `ifc_class`, `storey`, `space`, `element`.
 
-### Errors
+### Error Handling
 
-- Fail fast on invalid inputs; raise specific exceptions with actionable messages.
-- Catch exceptions only to add context; avoid blanket `except Exception` (especially around parsing).
-- Include identifiers in errors when available (IFC path, `global_id`, element type).
-- Prefer domain-specific exception types for pipeline steps (e.g., `InvalidIfcError`, `ExtractionError`).
+- Validate IFC inputs before heavy parsing.
+- Raise specific exceptions with actionable messages.
+- Catch exceptions only to add context; avoid blanket `except Exception`.
+- Include identifiers in errors when available (IFC path, element id, class).
 
 ### Logging
 
-- Prefer `logging` over `print`.
-- Log pipeline stages at INFO: validate -> parse -> extract -> geometry -> SQL -> graph.
-- Avoid logging entire IFC objects; log IDs + concise stats.
+- Prefer `logging` over `print` for pipeline stages.
+- Log high-level stages: validate -> parse -> extract -> geometry -> SQL -> graph.
+- Avoid logging full IFC objects; log IDs and counts.
 
-### Data Contracts (Query Output)
+### Data Contracts (Answers)
 
-- Prefer returning both a human-readable summary and structured JSON.
-- JSON shape (when applicable): `entity_type: str`, `count: int | None`, `global_ids: list[str]`, `properties: dict[str, object]`.
+- Never fabricate GUIDs; only return IDs that exist in parsed data.
+- For counts and aggregations, always use SQL results, not LLM guesses.
+- Prefer returning both:
+  - Human-readable summary
+  - Structured JSON (entity type, count, IDs, and properties)
 
-### Testing
+### Graph Semantics
 
-- Unit tests: geometry helpers and pure functions.
-- Integration tests: parsing a small IFC fixture; deterministic row/node counts.
-- For “how many” questions, tests must assert counts from SQL queries.
+- `adjacent_to` edges should reflect spatial proximity, not label heuristics.
+- `contains` / `typed_by` edges should be derived from IFC relationships.
+- If geometry is missing, degrade gracefully and log the fallback.
+
+### SQL Safety
+
+- Use parameterized queries only (`?` placeholders).
+- Do not interpolate user input directly into SQL.
+
+## Known Gaps (Do Not Ignore)
+
+- SQL outputs are not yet wired into the agent routing.
+- Graph adjacency uses centroid distance, not true topology.
+- No Neo4j/Cypher backend yet; graph lives in NetworkX only.
