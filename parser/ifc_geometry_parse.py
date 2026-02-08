@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from pathlib import Path
 import logging
+from pathlib import Path
 
 import ifcopenshell
 import ifcopenshell.geom
@@ -29,7 +29,9 @@ def _build_geom_settings() -> ifcopenshell.geom.settings:
     return settings
 
 
-def get_element_centroid(element, settings: ifcopenshell.geom.settings) -> np.ndarray | None:
+def get_element_centroid(
+    element, settings: ifcopenshell.geom.settings
+) -> np.ndarray | None:
     """
     Returns the centroid of an IFC element's geometry as (x, y, z).
     If geometry cannot be extracted, returns (0.0, 0.0, 0.0).
@@ -140,7 +142,8 @@ def get_all_elements(model, class_types: list[str] = None):
 
 def extract_geometry_data(model, class_types: list[str] = None):
     """
-    Returns a list of dicts containing element GlobalId, Class, and centroid coordinates.
+    Returns a list of dicts containing element GlobalId, Class, and centroid
+    coordinates.
     """
     elements = get_all_elements(model, class_types)
     data = []
@@ -155,16 +158,19 @@ def extract_geometry_data(model, class_types: list[str] = None):
             "GlobalId": getattr(elem, "GlobalId", ""),
             "Class": elem.is_a(),
             "Name": getattr(elem, "Name", ""),
-            "centroid": tuple(float(v) for v in centroid) if centroid is not None else None,
+            "centroid": (
+                tuple(float(v) for v in centroid) if centroid is not None else None
+            ),
             "bbox": (
-                tuple(float(v) for v in bbox[0]),
-                tuple(float(v) for v in bbox[1]),
-            )
-            if bbox is not None
-            else None,
+                (
+                    tuple(float(v) for v in bbox[0]),
+                    tuple(float(v) for v in bbox[1]),
+                )
+                if bbox is not None
+                else None
+            ),
         }
 
         data.append(elem_data)
 
     return data
-
