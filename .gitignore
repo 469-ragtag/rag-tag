@@ -5,8 +5,9 @@ build/
 dist/
 wheels/
 *.egg-info
+*.html
 
 # Virtual environments
 .venv
-
 .env
+output/ifc_graph.html

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from pathlib import Path
+import inspect
 import logging
+from pathlib import Path
 
 import ifcopenshell
 import ifcopenshell.geom
@@ -29,7 +30,9 @@ def _build_geom_settings() -> ifcopenshell.geom.settings:
     return settings
 
 
-def get_element_centroid(element, settings: ifcopenshell.geom.settings) -> np.ndarray | None:
+def get_element_centroid(
+    element, settings: ifcopenshell.geom.settings
+) -> np.ndarray | None:
     """
     Returns the centroid of an IFC element's geometry as (x, y, z).
     If geometry cannot be extracted, returns (0.0, 0.0, 0.0).
@@ -71,15 +74,7 @@ def get_ifc_model(ifc_path: Path):
     """
     if ifc_validate is not None:
         try:
-            try:
-                # Some versions require logger as positional arg.
-                errors = list(ifc_validate.validate(str(ifc_path), LOG))
-            except TypeError:
-                try:
-                    errors = list(ifc_validate.validate(str(ifc_path), logger=LOG))
-                except TypeError:
-                    # Fallback for signatures without logger.
-                    errors = list(ifc_validate.validate(str(ifc_path)))
+            errors = _run_ifc_validation(ifc_path)
             if errors:
                 raise InvalidIfcError(
                     f"IFC validation reported {len(errors)} issues for {ifc_path}"
@@ -87,9 +82,35 @@ def get_ifc_model(ifc_path: Path):
         except Exception as exc:
             if isinstance(exc, InvalidIfcError):
                 raise
-            LOG.warning("IFC validation failed for %s: %s", ifc_path, exc)
+            LOG.warning("IFC validation skipped for %s: %s", ifc_path, exc)
 
     return ifcopenshell.open(str(ifc_path))
+
+
+def _run_ifc_validation(ifc_path: Path) -> list:
+    validate_func = ifc_validate.validate  # type: ignore[union-attr]
+
+    try:
+        signature = inspect.signature(validate_func)
+    except (TypeError, ValueError):
+        signature = None
+
+    if signature is not None and "logger" in signature.parameters:
+        try:
+            return _coerce_validation_errors(validate_func(str(ifc_path), logger=LOG))
+        except TypeError:
+            return _coerce_validation_errors(validate_func(str(ifc_path), LOG))
+
+    try:
+        return _coerce_validation_errors(validate_func(str(ifc_path)))
+    except TypeError:
+        return _coerce_validation_errors(validate_func(str(ifc_path), LOG))
+
+
+def _coerce_validation_errors(result: object) -> list:
+    if result is None:
+        return []
+    return list(result)
 
 
 def get_all_elements(model, class_types: list[str] = None):
@@ -140,7 +161,8 @@ def get_all_elements(model, class_types: list[str] = None):
 
 def extract_geometry_data(model, class_types: list[str] = None):
     """
-    Returns a list of dicts containing element GlobalId, Class, and centroid coordinates.
+    Returns a list of dicts containing element GlobalId, Class, and centroid
+    coordinates.
     """
     elements = get_all_elements(model, class_types)
     data = []
@@ -155,16 +177,19 @@ def extract_geometry_data(model, class_types: list[str] = None):
             "GlobalId": getattr(elem, "GlobalId", ""),
             "Class": elem.is_a(),
             "Name": getattr(elem, "Name", ""),
-            "centroid": tuple(float(v) for v in centroid) if centroid is not None else None,
+            "centroid": (
+                tuple(float(v) for v in centroid) if centroid is not None else None
+            ),
             "bbox": (
-                tuple(float(v) for v in bbox[0]),
-                tuple(float(v) for v in bbox[1]),
-            )
-            if bbox is not None
-            else None,
+                (
+                    tuple(float(v) for v in bbox[0]),
+                    tuple(float(v) for v in bbox[1]),
+                )
+                if bbox is not None
+                else None
+            ),
         }
 
         data.append(elem_data)
 
     return data
-

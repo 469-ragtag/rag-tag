@@ -14,7 +14,6 @@ from sql_schema import CORE_COLUMNS, REQUIRED_COLUMNS, SCHEMA_SQL
 logger = logging.getLogger(__name__)
 
 
-
 class CsvToSqlError(Exception):
     """Base exception for csv_to_sql pipeline errors."""
 
@@ -47,6 +46,7 @@ def _to_float(value: object) -> float | None:
     if pd.isna(value):
         return None
     return float(value)
+
 
 # Map each CSV row to a tuple and batch-insert into the elements table
 def _insert_elements(conn: sqlite3.Connection, df: pd.DataFrame) -> int:
@@ -151,7 +151,6 @@ def csv_to_sql(csv_path: Path, db_path: Path) -> Path:
 
     logger.info("Database written: %s", db_path)
     return db_path
-
 
 
 def main() -> None:
