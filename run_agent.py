@@ -64,6 +64,7 @@ def _sql_result(
     return {
         "route": "sql",
         "decision": decision.reason,
+        "db_path": str(db_path),
         "answer": payload.get("summary"),
         "data": {
             "intent": payload.get("intent"),
@@ -133,18 +134,57 @@ def main() -> int:
                         }
                     )
                 else:
+                    summary = _summarize_graph_history(state["history"])
                     result = {
                         "route": "graph",
                         "decision": decision.reason,
                         "error": "Max steps exceeded",
                         "history": state["history"],
                     }
+                    if summary:
+                        result.update(summary)
         except Exception as exc:
             result = {"error": str(exc)}
 
         print(json.dumps(result, indent=2))
 
     return 0
+
+
+def _summarize_graph_history(
+    history: list[dict[str, object]],
+) -> dict[str, object] | None:
+    for entry in reversed(history):
+        result = entry.get("result")
+        if not isinstance(result, dict):
+            continue
+        elements = result.get("elements")
+        if isinstance(elements, list):
+            labels = [
+                e.get("label") or e.get("id") for e in elements if isinstance(e, dict)
+            ]
+            sample = [label for label in labels if label]
+            return {
+                "answer": f"Found {len(elements)} elements.",
+                "data": {"sample": sample[:5]},
+            }
+        adjacent = result.get("adjacent")
+        if isinstance(adjacent, list):
+            labels = [
+                e.get("label") or e.get("id") for e in adjacent if isinstance(e, dict)
+            ]
+            sample = [label for label in labels if label]
+            return {
+                "answer": f"Found {len(adjacent)} adjacent elements.",
+                "data": {"sample": sample[:5]},
+            }
+        results = result.get("results")
+        if isinstance(results, list):
+            return {
+                "answer": f"Found {len(results)} traversal results.",
+                "data": {"sample": results[:5]},
+            }
+    return None
 
 
 if __name__ == "__main__":

@@ -30,23 +30,31 @@ def route_with_llm(question: str) -> RouteDecision:
     if not api_key:
         raise LlmRouterError("Missing GEMINI_API_KEY environment variable")
 
-    model_name = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+    model_name = os.getenv("GEMINI_MODEL", "gemini-3-flash-preview")
 
     try:
-        import google.generativeai as genai
+        from google import genai
     except ModuleNotFoundError as exc:
         raise LlmRouterError(
-            "google-generativeai not installed; add dependency or set ROUTER_MODE=rule"
+            "google-genai not installed; add dependency or set ROUTER_MODE=rule"
         ) from exc
 
-    genai.configure(api_key=api_key)
-    model = genai.GenerativeModel(model_name)
+    try:
+        client = genai.Client(api_key=api_key)
+    except TypeError:
+        client = genai.Client()
+
     prompt = _build_prompt(question)
 
     try:
-        response = model.generate_content(
-            prompt,
-            generation_config={"temperature": 0, "max_output_tokens": 256},
+        response = client.models.generate_content(
+            model=model_name,
+            contents=prompt,
+            config={
+                "temperature": 0,
+                "max_output_tokens": 256,
+                "response_mime_type": "application/json",
+            },
         )
     except Exception as exc:
         raise LlmRouterError(f"Gemini request failed: {exc}") from exc

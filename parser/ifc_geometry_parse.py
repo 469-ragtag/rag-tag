@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import logging
 from pathlib import Path
 
@@ -73,15 +74,7 @@ def get_ifc_model(ifc_path: Path):
     """
     if ifc_validate is not None:
         try:
-            try:
-                # Some versions require logger as positional arg.
-                errors = list(ifc_validate.validate(str(ifc_path), LOG))
-            except TypeError:
-                try:
-                    errors = list(ifc_validate.validate(str(ifc_path), logger=LOG))
-                except TypeError:
-                    # Fallback for signatures without logger.
-                    errors = list(ifc_validate.validate(str(ifc_path)))
+            errors = _run_ifc_validation(ifc_path)
             if errors:
                 raise InvalidIfcError(
                     f"IFC validation reported {len(errors)} issues for {ifc_path}"
@@ -89,9 +82,29 @@ def get_ifc_model(ifc_path: Path):
         except Exception as exc:
             if isinstance(exc, InvalidIfcError):
                 raise
-            LOG.warning("IFC validation failed for %s: %s", ifc_path, exc)
+            LOG.warning("IFC validation skipped for %s: %s", ifc_path, exc)
 
     return ifcopenshell.open(str(ifc_path))
+
+
+def _run_ifc_validation(ifc_path: Path) -> list:
+    validate_func = ifc_validate.validate  # type: ignore[union-attr]
+
+    try:
+        signature = inspect.signature(validate_func)
+    except (TypeError, ValueError):
+        signature = None
+
+    if signature is not None and "logger" in signature.parameters:
+        try:
+            return list(validate_func(str(ifc_path), logger=LOG))
+        except TypeError:
+            return list(validate_func(str(ifc_path), LOG))
+
+    try:
+        return list(validate_func(str(ifc_path)))
+    except TypeError:
+        return list(validate_func(str(ifc_path), LOG))
 
 
 def get_all_elements(model, class_types: list[str] = None):

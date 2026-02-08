@@ -31,6 +31,7 @@ _COUNT_CUES = (
 
 _LIST_CUES = (
     "list",
+    "find",
     "show",
     "which",
     "what are",
