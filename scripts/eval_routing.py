@@ -51,6 +51,10 @@ QUESTIONS: list[dict[str, Any]] = [
         "expected_route": "sql",
     },
     {
+        "question": "Are there any windows in the building?",
+        "expected_route": "sql",
+    },
+    {
         "question": "Find the path from the lobby to the server room.",
         "expected_route": "graph",
     },

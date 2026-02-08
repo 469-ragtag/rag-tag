@@ -97,14 +97,20 @@ def _run_ifc_validation(ifc_path: Path) -> list:
 
     if signature is not None and "logger" in signature.parameters:
         try:
-            return list(validate_func(str(ifc_path), logger=LOG))
+            return _coerce_validation_errors(validate_func(str(ifc_path), logger=LOG))
         except TypeError:
-            return list(validate_func(str(ifc_path), LOG))
+            return _coerce_validation_errors(validate_func(str(ifc_path), LOG))
 
     try:
-        return list(validate_func(str(ifc_path)))
+        return _coerce_validation_errors(validate_func(str(ifc_path)))
     except TypeError:
-        return list(validate_func(str(ifc_path), LOG))
+        return _coerce_validation_errors(validate_func(str(ifc_path), LOG))
+
+
+def _coerce_validation_errors(result: object) -> list:
+    if result is None:
+        return []
+    return list(result)
 
 
 def get_all_elements(model, class_types: list[str] = None):

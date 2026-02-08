@@ -101,6 +101,12 @@ def _build_prompt(question: str) -> str:
         "Q: List all windows on the ground floor.\n"
         'A: {"route":"sql","intent":"list","ifc_class":"IfcWindow",'
         '"level_like":"ground floor","reason":"simple list by class and level"}\n'
+        "Q: Are there any windows in the building?\n"
+        'A: {"route":"sql","intent":"count","ifc_class":"IfcWindow",'
+        '"level_like":null,"reason":"existence check for class"}\n'
+        "Q: Does the building have a roof?\n"
+        'A: {"route":"sql","intent":"count","ifc_class":"IfcRoof",'
+        '"level_like":null,"reason":"existence check for class"}\n'
         "Q: Which rooms are adjacent to the kitchen?\n"
         'A: {"route":"graph","intent":"none","ifc_class":null,'
         '"level_like":null,"reason":"spatial adjacency query"}\n'
@@ -114,14 +120,25 @@ def _build_prompt(question: str) -> str:
 
 def _parse_json(text: str) -> dict[str, Any]:
     cleaned = text.strip()
-    if cleaned.startswith("{") and cleaned.endswith("}"):
-        return json.loads(cleaned)
+    if cleaned.startswith("```"):
+        cleaned = "\n".join(
+            line for line in cleaned.splitlines() if not line.strip().startswith("```")
+        ).strip()
+
+    try:
+        if cleaned.startswith("{") and cleaned.endswith("}"):
+            return json.loads(cleaned)
+    except json.JSONDecodeError:
+        pass
 
     start = cleaned.find("{")
     end = cleaned.rfind("}")
     if start == -1 or end == -1 or end <= start:
         raise LlmRouterError("Model did not return valid JSON")
-    return json.loads(cleaned[start : end + 1])
+    try:
+        return json.loads(cleaned[start : end + 1])
+    except json.JSONDecodeError as exc:
+        raise LlmRouterError(f"Model returned invalid JSON: {exc}") from exc
 
 
 def _normalize_payload(raw: dict[str, Any]) -> LlmRoutePayload:

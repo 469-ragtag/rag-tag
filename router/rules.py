@@ -29,6 +29,18 @@ _COUNT_CUES = (
     "total",
 )
 
+_EXISTENCE_CUES = (
+    "are there",
+    "are there any",
+    "is there",
+    "is there any",
+    "do we have",
+    "does the building have",
+    "does the house have",
+    "exist",
+    "exists",
+)
+
 _LIST_CUES = (
     "list",
     "find",
@@ -108,6 +120,8 @@ def _has_spatial_cues(question_lower: str) -> bool:
 
 def _detect_sql_intent(question_lower: str) -> SqlIntent | None:
     if any(cue in question_lower for cue in _COUNT_CUES):
+        return "count"
+    if any(cue in question_lower for cue in _EXISTENCE_CUES):
         return "count"
     if any(cue in question_lower for cue in _LIST_CUES):
         return "list"
