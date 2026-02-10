@@ -1,11 +1,12 @@
 from pathlib import Path
+
 import ifcopenshell
-import pandas as pd
 import networkx as nx
 import numpy as np
+import pandas as pd
 import plotly.graph_objects as go
-from ifc_geometry_parse import get_ifc_model, extract_geometry_data
-from ifc_to_csv import _find_project_root, _find_ifc_dir
+from ifc_geometry_parse import extract_geometry_data, get_ifc_model
+from ifc_to_csv import _find_ifc_dir, _find_project_root
 
 script_dir = Path(__file__).resolve().parent
 project_root = _find_project_root(script_dir) or script_dir
@@ -64,7 +65,8 @@ def compute_adjacency_threshold(positions: list[tuple[float, float, float]]) -> 
 def build_graph_with_properties(csv_path: str, geom_data: dict) -> nx.DiGraph:
     """
     Build a hierarchical IFC graph and attach geometry data to nodes.
-    `geom_data` should be a dict mapping GlobalId -> geometry info (e.g., centroid or bounding box)
+    `geom_data` should be a dict mapping GlobalId -> geometry info (e.g., centroid
+    or bounding box)
     """
     df = pd.read_csv(csv_path)
     G = nx.DiGraph()
@@ -119,7 +121,12 @@ def add_spatial_adjacency(
     positions = []
 
     for n, d in G.nodes(data=True):
-        if d.get("class_") in {"IfcTypeObject", "IfcBuilding", "IfcProject", "IfcBuildingStorey"}:
+        if d.get("class_") in {
+            "IfcTypeObject",
+            "IfcBuilding",
+            "IfcProject",
+            "IfcBuildingStorey",
+        }:
             continue
         if not n.startswith("Element::"):
             continue
@@ -150,7 +157,7 @@ def plot_interactive_graph(G: nx.DiGraph, out_html: Path):
     """
     Plot the IFC graph in 3D using real geometry coordinates if available.
     Nodes without geometry are slightly offset to avoid overlap.
-    """   
+    """
     # Build positions from geometry
     pos = {}
     for n, d in G.nodes(data=True):
@@ -164,9 +171,7 @@ def plot_interactive_graph(G: nx.DiGraph, out_html: Path):
     for n in G.nodes:
         if pos.get(n) is not None:
             continue
-        child_positions = [
-            pos[c] for c in G.successors(n) if pos.get(c) is not None
-        ]
+        child_positions = [pos[c] for c in G.successors(n) if pos.get(c) is not None]
         if child_positions:
             child_positions = np.array(child_positions, dtype=float)
             pos[n] = tuple(child_positions.mean(axis=0))
@@ -189,25 +194,27 @@ def plot_interactive_graph(G: nx.DiGraph, out_html: Path):
         )
 
         hover.append(
-            f"<b>{d.get('label','')}</b><br>"
-            f"Class: {d.get('class_','')}<br>"
-            + hover_text
+            f"<b>{d.get('label', '')}</b><br>"
+            f"Class: {d.get('class_', '')}<br>" + hover_text
         )
 
-        colors.append({
-            "IfcProject": "purple",
-            "IfcBuilding": "blue",
-            "IfcBuildingStorey": "orange",
-            "IfcTypeObject": "red"
-        }.get(d.get("class_"), "green"))
+        colors.append(
+            {
+                "IfcProject": "purple",
+                "IfcBuilding": "blue",
+                "IfcBuildingStorey": "orange",
+                "IfcTypeObject": "red",
+            }.get(d.get("class_"), "green")
+        )
 
-    node_ids = []
     node_trace = go.Scatter3d(
-        x=xs, y=ys, z=zs,
+        x=xs,
+        y=ys,
+        z=zs,
         mode="markers",
         marker=dict(size=6, color=colors),
         hoverinfo="text",
-        hovertext=hover
+        hovertext=hover,
     )
 
     # Edge coordinates
@@ -236,37 +243,43 @@ def plot_interactive_graph(G: nx.DiGraph, out_html: Path):
         edge_text.append(rel)
 
     edge_trace = go.Scatter3d(
-        x=ex, y=ey, z=ez,
+        x=ex,
+        y=ey,
+        z=ez,
         mode="lines",
         line=dict(width=3, color="gray"),
-        hoverinfo="none"
+        hoverinfo="none",
     )
     edge_hover_trace = go.Scatter3d(
-        x=edge_mid_x, y=edge_mid_y, z=edge_mid_z,
+        x=edge_mid_x,
+        y=edge_mid_y,
+        z=edge_mid_z,
         mode="markers",
         marker=dict(size=2, color="gray", opacity=0.0),
         hoverinfo="text",
         hovertext=edge_hover,
-        showlegend=False
+        showlegend=False,
     )
     edge_text_trace = go.Scatter3d(
-        x=edge_mid_x, y=edge_mid_y, z=edge_mid_z,
+        x=edge_mid_x,
+        y=edge_mid_y,
+        z=edge_mid_z,
         mode="text",
         text=edge_text,
         textfont=dict(size=9, color="gray"),
         hoverinfo="none",
-        showlegend=False
+        showlegend=False,
     )
 
     # Ensure output folder exists
     out_html.parent.mkdir(parents=True, exist_ok=True)
     fig = go.Figure(data=[edge_trace, edge_hover_trace, edge_text_trace, node_trace])
     fig.update_layout(
-        scene=dict(aspectmode="data"),
-        title="IFC Hierarchy Graph (3D with Geometry)"
+        scene=dict(aspectmode="data"), title="IFC Hierarchy Graph (3D with Geometry)"
     )
 
     fig.write_html(out_html, auto_open=True)
+
 
 def print_ifc_hierarchy(ifc_file_path, indent=0):
     """
@@ -293,11 +306,7 @@ def print_ifc_hierarchy(ifc_file_path, indent=0):
             for rel in obj.ContainsElements or []:
                 for elem in rel.RelatedElements or []:
                     elem_name = getattr(elem, "Name", None) or elem.is_a()
-                    print_with_indent(
-                        f"{elem.is_a()}: {elem_name}",
-                        level + 1
-                    )
-
+                    print_with_indent(f"{elem.is_a()}: {elem_name}", level + 1)
 
     # Start from the project(s)
     for project in model.by_type("IfcProject"):
@@ -318,4 +327,4 @@ html_file = html_dir / "ifc_graph.html"
 G = build_graph_with_properties(csv_file, geom_dict)
 threshold_used = add_spatial_adjacency(G, geom_dict)
 plot_interactive_graph(G, html_file)
-print_ifc_hierarchy(ifc_file) # Helper to visualize hierarchy in console
+print_ifc_hierarchy(ifc_file)  # Helper to visualize hierarchy in console

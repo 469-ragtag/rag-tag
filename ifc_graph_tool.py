@@ -1,10 +1,15 @@
 from __future__ import annotations
+
 from typing import Any, Dict, Iterable
+
 import networkx as nx
 
 
-def query_ifc_graph(G: nx.DiGraph, action: str, params: Dict[str, Any]) -> Dict[str, Any]:
+def query_ifc_graph(
+    G: nx.DiGraph, action: str, params: Dict[str, Any]
+) -> Dict[str, Any]:
     """Controlled interface between the LLM and NetworkX graph."""
+
     def _normalize_class(value: str) -> str:
         v = value.strip()
         if not v:
@@ -28,7 +33,9 @@ def query_ifc_graph(G: nx.DiGraph, action: str, params: Dict[str, Any]) -> Dict[
             matches.append(n)
         return matches
 
-    def _resolve_element_id(element_id: str) -> tuple[str | None, Dict[str, Any] | None]:
+    def _resolve_element_id(
+        element_id: str,
+    ) -> tuple[str | None, Dict[str, Any] | None]:
         if element_id in G:
             return element_id, None
         if not element_id.startswith("Element::"):
@@ -73,7 +80,9 @@ def query_ifc_graph(G: nx.DiGraph, action: str, params: Dict[str, Any]) -> Dict[
             return {"error": "Missing param: storey"}
         node = f"Storey::{storey}"
         if node not in G:
-            storey_nodes = _find_nodes_by_label(storey, class_filter="IfcBuildingStorey")
+            storey_nodes = _find_nodes_by_label(
+                storey, class_filter="IfcBuildingStorey"
+            )
             if len(storey_nodes) == 1:
                 node = storey_nodes[0]
             elif len(storey_nodes) > 1:
@@ -97,11 +106,13 @@ def query_ifc_graph(G: nx.DiGraph, action: str, params: Dict[str, Any]) -> Dict[
             cls = G.nodes[e].get("class_")
             if cls in container_classes:
                 continue
-            elements.append({
-                "id": e,
-                "label": G.nodes[e].get("label"),
-                "class_": cls,
-            })
+            elements.append(
+                {
+                    "id": e,
+                    "label": G.nodes[e].get("label"),
+                    "class_": cls,
+                }
+            )
         return {"storey": storey, "elements": elements}
 
     if action == "find_elements_by_class":
@@ -113,12 +124,14 @@ def query_ifc_graph(G: nx.DiGraph, action: str, params: Dict[str, Any]) -> Dict[
         matches = []
         for n, d in G.nodes(data=True):
             if str(d.get("class_", "")).lower() == target.lower():
-                matches.append({
-                    "id": n,
-                    "label": d.get("label"),
-                    "class_": d.get("class_"),
-                    "properties": d.get("properties", {}),
-                })
+                matches.append(
+                    {
+                        "id": n,
+                        "label": d.get("label"),
+                        "class_": d.get("class_"),
+                        "properties": d.get("properties", {}),
+                    }
+                )
         return {"class": target, "elements": matches}
 
     if action == "get_adjacent_elements":
@@ -135,12 +148,14 @@ def query_ifc_graph(G: nx.DiGraph, action: str, params: Dict[str, Any]) -> Dict[
         for nbr in G.neighbors(resolved):
             edge = G[resolved][nbr]
             if edge.get("relation") == "adjacent_to":
-                neighbors.append({
-                    "id": nbr,
-                    "label": G.nodes[nbr].get("label"),
-                    "class_": G.nodes[nbr].get("class_"),
-                    "distance": edge.get("distance"),
-                })
+                neighbors.append(
+                    {
+                        "id": nbr,
+                        "label": G.nodes[nbr].get("label"),
+                        "class_": G.nodes[nbr].get("class_"),
+                        "distance": edge.get("distance"),
+                    }
+                )
         return {"element_id": resolved, "adjacent": neighbors}
 
     if action == "find_nodes":
@@ -184,15 +199,22 @@ def query_ifc_graph(G: nx.DiGraph, action: str, params: Dict[str, Any]) -> Dict[
                         continue
                     visited.add(nbr)
                     next_frontier.add(nbr)
-                    results.append({
-                        "from": node,
-                        "to": nbr,
-                        "relation": edge.get("relation"),
-                        "node": _node_payload(nbr),
-                    })
+                    results.append(
+                        {
+                            "from": node,
+                            "to": nbr,
+                            "relation": edge.get("relation"),
+                            "node": _node_payload(nbr),
+                        }
+                    )
             frontier = next_frontier
 
-        return {"start": start, "relation": relation, "depth": depth, "results": results}
+        return {
+            "start": start,
+            "relation": relation,
+            "depth": depth,
+            "results": results,
+        }
 
     if action == "spatial_query":
         cls = params.get("class")
@@ -220,12 +242,14 @@ def query_ifc_graph(G: nx.DiGraph, action: str, params: Dict[str, Any]) -> Dict[
             if class_filter is not None:
                 if str(G.nodes[nbr].get("class_", "")).lower() != class_filter.lower():
                     continue
-            results.append({
-                "id": nbr,
-                "label": G.nodes[nbr].get("label"),
-                "class_": G.nodes[nbr].get("class_"),
-                "distance": dist,
-            })
+            results.append(
+                {
+                    "id": nbr,
+                    "label": G.nodes[nbr].get("label"),
+                    "class_": G.nodes[nbr].get("class_"),
+                    "distance": dist,
+                }
+            )
         return {"near": resolved, "max_distance": max_distance, "results": results}
 
     return {"error": f"Unknown action: {action}"}
