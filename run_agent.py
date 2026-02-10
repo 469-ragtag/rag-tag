@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from pathlib import Path
 
@@ -9,6 +8,7 @@ from command_r_agent import CommandRAgent
 from ifc_graph_tool import query_ifc_graph
 from ifc_sql_tool import SqlQueryError, query_ifc_sql
 from router import RouteDecision, route_question
+from tui import print_answer, print_question, print_welcome
 
 
 def _load_graph():
@@ -90,16 +90,6 @@ def _parse_bool(value: str | None) -> bool:
     raise argparse.ArgumentTypeError("Expected a boolean value (true/false).")
 
 
-def _print_question_header(question: str) -> None:
-    separator = "=" * 72
-    print(f"\n{separator}\nQ: {question}\n{separator}")
-
-
-def _print_answer_header() -> None:
-    separator = "-" * 72
-    print(f"{separator}\nA:\n{separator}")
-
-
 def main() -> int:
     ap = argparse.ArgumentParser(description="IFC query agent CLI")
     ap.add_argument(
@@ -112,6 +102,13 @@ def main() -> int:
             "Print LLM input/output for router and agent to stderr "
             "(use --input, --input=true, or --input=false)."
         ),
+    )
+    ap.add_argument(
+        "--verbose",
+        "-v",
+        action="store_true",
+        default=False,
+        help="Show full JSON details below each answer.",
     )
     ap.add_argument(
         "--db",
@@ -136,7 +133,8 @@ def main() -> int:
             db_path = None
     else:
         db_path = _find_sqlite_db()
-    print("IFC Query Agent ready. Type a question or 'exit'.")
+
+    print_welcome(str(db_path) if db_path else None)
 
     for line in sys.stdin:
         question = line.strip()
@@ -145,10 +143,10 @@ def main() -> int:
         if question.lower() in {"exit", "quit"}:
             break
 
-        _print_question_header(question)
-
         try:
             decision = route_question(question, debug_llm_io=args.input)
+            print_question(question, decision.route, decision.reason)
+
             if decision.route == "sql":
                 result = _sql_result(decision, db_path)
             else:
@@ -157,8 +155,9 @@ def main() -> int:
                 if agent is None:
                     agent = CommandRAgent(debug_llm_io=args.input)
 
-                state = {"history": []}
+                state: dict[str, object] = {"history": []}
                 max_steps = 6
+                result: dict[str, object] = {}
                 for _ in range(max_steps):
                     step = agent.plan(question, state)
                     step_type = step.get("type")
@@ -191,27 +190,39 @@ def main() -> int:
                         }
                         break
                     tool_result = query_ifc_graph(graph, action_value, params)
-                    state["history"].append(
-                        {
-                            "tool": {"action": action_value, "params": params},
-                            "result": tool_result,
-                        }
-                    )
+                    history = state.get("history", [])
+                    if isinstance(history, list):
+                        history.append(
+                            {
+                                "tool": {
+                                    "action": action_value,
+                                    "params": params,
+                                },
+                                "result": tool_result,
+                            }
+                        )
                 else:
-                    summary = _summarize_graph_history(state["history"])
+                    history = state.get("history", [])
+                    summary = (
+                        _summarize_graph_history(history)
+                        if isinstance(history, list)
+                        else None
+                    )
                     result = {
                         "route": "graph",
                         "decision": decision.reason,
                         "error": "Max steps exceeded",
-                        "history": state["history"],
+                        "history": history,
                     }
                     if summary:
                         result.update(summary)
         except Exception as exc:
+            # Print question even on error (decision may not exist).
+            print_question(question, "?", "routing failed")
             result = {"error": str(exc)}
 
-        _print_answer_header()
-        print(json.dumps(result, indent=2))
+        show_verbose = args.verbose or args.input
+        print_answer(result, verbose=show_verbose)
 
     return 0
 
