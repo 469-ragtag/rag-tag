@@ -1,28 +1,16 @@
 from __future__ import annotations
 
-import json
 import os
-from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any
 
+from pydantic import ValidationError
+
+from .llm_models import LlmRouteResponse
 from .models import RouteDecision, SqlRequest
 
 
 class LlmRouterError(RuntimeError):
     """Raised when LLM routing fails or is misconfigured."""
-
-
-LlmRoute = Literal["sql", "graph"]
-LlmIntent = Literal["count", "list", "none"]
-
-
-@dataclass(frozen=True)
-class LlmRoutePayload:
-    route: LlmRoute
-    intent: LlmIntent
-    ifc_class: str | None
-    level_like: str | None
-    reason: str
 
 
 def route_with_llm(question: str) -> RouteDecision:
@@ -54,14 +42,13 @@ def route_with_llm(question: str) -> RouteDecision:
                 "temperature": 0,
                 "max_output_tokens": 256,
                 "response_mime_type": "application/json",
+                "response_schema": LlmRouteResponse,
             },
         )
     except Exception as exc:
         raise LlmRouterError(f"Gemini request failed: {exc}") from exc
 
-    text = getattr(response, "text", None) or str(response)
-    payload = _parse_json(text)
-    normalized = _normalize_payload(payload)
+    normalized = _parse_router_response(response)
 
     if normalized.route == "graph":
         return RouteDecision("graph", normalized.reason, None)
@@ -118,70 +105,51 @@ def _build_prompt(question: str) -> str:
     )
 
 
-def _parse_json(text: str) -> dict[str, Any]:
-    cleaned = text.strip()
-    if cleaned.startswith("```"):
-        cleaned = "\n".join(
-            line for line in cleaned.splitlines() if not line.strip().startswith("```")
-        ).strip()
+def _parse_router_response(response: Any) -> LlmRouteResponse:
+    parsed = getattr(response, "parsed", None)
+    if isinstance(parsed, LlmRouteResponse):
+        return parsed
 
+    if parsed is not None:
+        try:
+            return LlmRouteResponse.model_validate(parsed)
+        except ValidationError as exc:
+            raise LlmRouterError(f"Model returned invalid schema: {exc}") from exc
+
+    text = getattr(response, "text", None)
+    if isinstance(text, str) and text.strip():
+        return _parse_router_text(text)
+
+    raise LlmRouterError("Model did not return JSON")
+
+
+def _parse_router_text(text: str) -> LlmRouteResponse:
+    cleaned = _strip_code_fences(text)
     try:
-        if cleaned.startswith("{") and cleaned.endswith("}"):
-            return json.loads(cleaned)
-    except json.JSONDecodeError:
-        pass
+        return LlmRouteResponse.model_validate_json(cleaned)
+    except ValidationError as exc:
+        extracted = _extract_json_object(cleaned)
+        if extracted is None:
+            raise LlmRouterError("Model did not return JSON") from exc
+        try:
+            return LlmRouteResponse.model_validate_json(extracted)
+        except ValidationError as nested_exc:
+            raise LlmRouterError(
+                f"Model returned invalid JSON: {nested_exc}"
+            ) from nested_exc
 
-    start = cleaned.find("{")
-    end = cleaned.rfind("}")
+
+def _strip_code_fences(text: str) -> str:
+    if not text.strip().startswith("```"):
+        return text.strip()
+    return "\n".join(
+        line for line in text.splitlines() if not line.strip().startswith("```")
+    ).strip()
+
+
+def _extract_json_object(text: str) -> str | None:
+    start = text.find("{")
+    end = text.rfind("}")
     if start == -1 or end == -1 or end <= start:
-        raise LlmRouterError("Model did not return valid JSON")
-    try:
-        return json.loads(cleaned[start : end + 1])
-    except json.JSONDecodeError as exc:
-        raise LlmRouterError(f"Model returned invalid JSON: {exc}") from exc
-
-
-def _normalize_payload(raw: dict[str, Any]) -> LlmRoutePayload:
-    route = str(raw.get("route", "")).strip().lower()
-    if route not in {"sql", "graph"}:
-        raise LlmRouterError("Invalid route from LLM")
-
-    intent = str(raw.get("intent", "none")).strip().lower()
-    if intent not in {"count", "list", "none"}:
-        intent = "none"
-
-    ifc_class = raw.get("ifc_class")
-    if isinstance(ifc_class, str):
-        ifc_class = _normalize_ifc_class(ifc_class)
-    else:
-        ifc_class = None
-
-    level_like = raw.get("level_like")
-    if isinstance(level_like, str):
-        level_like = level_like.strip() or None
-    else:
-        level_like = None
-
-    reason = str(raw.get("reason", "LLM route decision")).strip()
-    if not reason:
-        reason = "LLM route decision"
-
-    return LlmRoutePayload(
-        route=route,
-        intent=intent,
-        ifc_class=ifc_class,
-        level_like=level_like,
-        reason=reason,
-    )
-
-
-def _normalize_ifc_class(value: str) -> str:
-    cleaned = value.strip()
-    if not cleaned:
-        return cleaned
-    if not cleaned.lower().startswith("ifc"):
-        cleaned = f"Ifc{cleaned}"
-    core = cleaned[3:]
-    if not core:
-        return "Ifc"
-    return "Ifc" + core[0].upper() + core[1:]
+        return None
+    return text[start : end + 1]

@@ -46,12 +46,23 @@ rag-tag/
 ├── parser/
 │   ├── ifc_to_csv.py          # IFC → CSV exporter
 │   ├── csv_to_graph.py        # CSV → IFC graph + geometry + visualization
+│   ├── csv_to_sql.py          # CSV → SQLite exporter
 │   ├── ifc_geometry_parse.py  # Geometry extraction utilities
-│   ├── ifc_graph_tool.py      # Safe graph query interface for the LLM
-│   └── command_r_agent.py     # Cohere-based planning agent (ReAct-style)
+│   └── sql_schema.py          # SQLite schema helpers
+├── router/
+│   ├── llm.py                 # Gemini router integration
+│   ├── llm_models.py          # Pydantic router schemas
+│   ├── models.py              # Router data models
+│   ├── rules.py               # Heuristic router
+│   └── router.py              # Router entrypoint + fallback
+├── scripts/
+│   └── eval_routing.py        # Router evaluation harness
 ├── output/
 │   ├── Building-Architecture.csv
 │   └── ifc_graph.html
+├── command_r_agent.py         # Cohere-based planning agent (ReAct-style)
+├── ifc_graph_tool.py          # Safe graph query interface for the LLM
+├── ifc_sql_tool.py            # SQL query helper
 ├── run_agent.py               # Interactive CLI for LLM-powered graph queries
 ├── pyproject.toml
 └── README.md
@@ -63,13 +74,14 @@ rag-tag/
 
 ### Core dependencies
 
-* Python 3.10+
+* Python 3.14+
 * `ifcopenshell`
 * `pandas`
 * `numpy`
 * `networkx`
 * `plotly`
 * `cohere`
+* `pydantic`
 
 ### Dev / tooling
 
@@ -113,14 +125,13 @@ The script `parser/ifc_to_csv.py` extracts structured element data from IFC file
 Run:
 
 ```bash
-cd parser
-uv run ifc_to_csv.py
+uv run python parser/ifc_to_csv.py
 ```
 
 Override paths:
 
 ```bash
-uv run ifc_to_csv.py --ifc-dir ./IFC-Files --out-dir ./output
+uv run python parser/ifc_to_csv.py --ifc-dir ./IFC-Files --out-dir ./output
 ```
 
 ---
@@ -169,8 +180,7 @@ If geometry is unavailable, nodes are positioned using the centroid of their chi
 ### Run the graph pipeline
 
 ```bash
-cd parser
-uv run csv_to_graph.py
+uv run python parser/csv_to_graph.py
 ```
 
 ### Output
@@ -180,6 +190,20 @@ uv run csv_to_graph.py
   * Interactive 3D Plotly visualization
   * Hover to inspect IFC properties
   * Color-coded by IFC class
+
+---
+
+## IFC → SQLite
+
+Create a SQLite database for deterministic aggregations:
+
+```bash
+uv run python parser/csv_to_sql.py
+```
+
+### Output
+
+* `output/*.db`
 
 ---
 
@@ -221,7 +245,7 @@ COHERE_API_KEY=your_key_here
 Then start the interactive agent:
 
 ```bash
-uv run run_agent.py
+uv run python run_agent.py
 ```
 
 The agent will:
