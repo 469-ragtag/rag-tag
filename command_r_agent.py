@@ -3,8 +3,9 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, cast
 
 import cohere
 
@@ -50,44 +51,71 @@ def _load_env() -> None:
 
 
 class CommandRAgent:
-    def __init__(self, api_key: str | None = None) -> None:
+    def __init__(
+        self, api_key: str | None = None, *, debug_llm_io: bool = False
+    ) -> None:
         _load_env()
         key = api_key or os.getenv("COHERE_API_KEY")
         if not key:
             raise RuntimeError("Missing COHERE_API_KEY environment variable")
         self._model = os.getenv("COHERE_MODEL", "command-a-03-2025")
         self._client = cohere.Client(key)
+        self._debug_llm_io = debug_llm_io
 
     def tool_call(self, question: str) -> Dict[str, Any]:
         """Ask Command R+ to return a JSON tool call."""
-        response_text = self._chat(question)
+        response_text = self._chat(question, label="agent tool_call")
         return _extract_json(response_text)
 
     def plan(self, question: str, state: Dict[str, Any]) -> Dict[str, Any]:
         """Plan a tool call or final answer using history."""
         history = state.get("history", [])
         payload = {"question": question, "history": history}
-        response_text = self._chat(json.dumps(payload))
+        response_text = self._chat(json.dumps(payload), label="agent plan")
         return _extract_json(response_text)
 
-    def _chat(self, question: str) -> str:
+    def _chat(self, question: str, *, label: str) -> str:
         # Support both new and older Cohere chat signatures.
+        if self._debug_llm_io:
+            _print_llm_input(label, question)
+        client = cast(Any, self._client)
         try:
-            resp = self._client.chat(
+            resp = client.chat(
                 model=self._model,
                 messages=[
                     {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user", "content": question},
                 ],
             )
-            return getattr(resp, "text", None) or str(resp)
+            text = getattr(resp, "text", None) or str(resp)
         except TypeError:
-            resp = self._client.chat(
+            resp = client.chat(
                 model=self._model,
                 message=question,
                 preamble=SYSTEM_PROMPT,
             )
-            return getattr(resp, "text", None) or str(resp)
+            text = getattr(resp, "text", None) or str(resp)
+        if self._debug_llm_io:
+            _print_llm_output(label, text)
+        return text
+
+
+def _print_llm_input(label: str, content: str) -> None:
+    separator = "=" * 72
+    print(
+        f"{separator}\nLLM INPUT ({label})\n{separator}",
+        file=sys.stderr,
+    )
+    print(content, file=sys.stderr)
+
+
+def _print_llm_output(label: str, content: str) -> None:
+    separator = "-" * 72
+    print(
+        f"{separator}\nLLM OUTPUT ({label})\n{separator}",
+        file=sys.stderr,
+    )
+    print(content, file=sys.stderr)
 
 
 def _extract_json(text: str) -> Dict[str, Any]:

@@ -6,19 +6,23 @@ from .models import RouteDecision
 from .rules import route_question_rule
 
 
-def route_question(question: str) -> RouteDecision:
+def route_question(question: str, *, debug_llm_io: bool = False) -> RouteDecision:
     mode = os.getenv("ROUTER_MODE", "").strip().lower()
     if mode in {"rule", "rules", "heuristic"}:
         return route_question_rule(question)
     if mode in {"llm", "gemini"}:
-        return _route_with_llm_fallback(question)
+        return _route_with_llm_fallback(question, debug_llm_io=debug_llm_io)
 
     if os.getenv("GEMINI_API_KEY"):
-        return _route_with_llm_fallback(question)
+        return _route_with_llm_fallback(question, debug_llm_io=debug_llm_io)
     return route_question_rule(question)
 
 
-def _route_with_llm_fallback(question: str) -> RouteDecision:
+def _route_with_llm_fallback(
+    question: str,
+    *,
+    debug_llm_io: bool = False,
+) -> RouteDecision:
     try:
         from .llm import LlmRouterError, route_with_llm
     except Exception as exc:
@@ -30,7 +34,7 @@ def _route_with_llm_fallback(question: str) -> RouteDecision:
         )
 
     try:
-        decision = route_with_llm(question)
+        decision = route_with_llm(question, debug_llm_io=debug_llm_io)
     except LlmRouterError as exc:
         fallback = route_question_rule(question)
         return RouteDecision(

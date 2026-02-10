@@ -15,7 +15,7 @@ This file is for agentic coding assistants operating in this repository.
 - IFC parsing and export works via `parser/ifc_to_csv.py`.
 - Geometry extraction computes centroids and bounding boxes.
 - Graph is currently built in NetworkX with distance-based adjacency.
-- SQL schema exists for deterministic aggregation (not yet wired to agent).
+- SQL schema exists and is wired into the router for counts/lists.
 
 ## Cursor/Copilot Rules
 
@@ -51,6 +51,15 @@ Use `uv` for all commands.
   - `uv run python parser/csv_to_graph.py`
 - Run the LLM agent (requires API key):
   - `COHERE_API_KEY=... uv run python run_agent.py`
+  - Debug LLM I/O:
+    - `COHERE_API_KEY=... uv run python run_agent.py --input`
+  - Force router mode:
+    - `ROUTER_MODE=rule uv run python run_agent.py`
+    - `ROUTER_MODE=llm GEMINI_API_KEY=... uv run python run_agent.py`
+  - Use a specific SQLite DB:
+    - `COHERE_API_KEY=... uv run python run_agent.py --db ./output/Building-Architecture.db`
+  - Output formatting:
+    - Questions and answers are prefixed with `Q:` / `A:` and separated by divider lines.
 
 ### Linting + Formatting (ruff)
 
@@ -136,6 +145,5 @@ Use `uv` for all commands.
 
 ## Known Gaps (Do Not Ignore)
 
-- SQL outputs are not yet wired into the agent routing.
 - Graph adjacency uses centroid distance, not true topology.
 - No Neo4j/Cypher backend yet; graph lives in NetworkX only.

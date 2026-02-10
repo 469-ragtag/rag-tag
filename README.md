@@ -81,6 +81,7 @@ rag-tag/
 * `networkx`
 * `plotly`
 * `cohere`
+* `google-genai`
 * `pydantic`
 
 ### Dev / tooling
@@ -242,11 +243,38 @@ Set your API key:
 COHERE_API_KEY=your_key_here
 ```
 
+Optional: enable Gemini routing (otherwise rule-based routing is used):
+
+```bash
+GEMINI_API_KEY=your_key_here
+```
+
 Then start the interactive agent:
 
 ```bash
 uv run python run_agent.py
 ```
+
+Force router mode (optional):
+
+```bash
+ROUTER_MODE=rule uv run python run_agent.py
+ROUTER_MODE=llm GEMINI_API_KEY=your_key_here uv run python run_agent.py
+```
+
+Use a specific SQLite DB for SQL queries:
+
+```bash
+uv run python run_agent.py --db ./output/Building-Architecture.db
+```
+
+To print LLM inputs/outputs (router + agent) to stderr:
+
+```bash
+uv run python run_agent.py --input
+```
+
+Questions and answers are printed with `Q:` / `A:` headers and separated by divider lines for easier debugging.
 
 The agent will:
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from typing import Any
 
 from pydantic import ValidationError
@@ -13,7 +14,7 @@ class LlmRouterError(RuntimeError):
     """Raised when LLM routing fails or is misconfigured."""
 
 
-def route_with_llm(question: str) -> RouteDecision:
+def route_with_llm(question: str, *, debug_llm_io: bool = False) -> RouteDecision:
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
         raise LlmRouterError("Missing GEMINI_API_KEY environment variable")
@@ -33,6 +34,8 @@ def route_with_llm(question: str) -> RouteDecision:
         client = genai.Client()
 
     prompt = _build_prompt(question)
+    if debug_llm_io:
+        _print_llm_input("router", prompt)
 
     try:
         response = client.models.generate_content(
@@ -47,6 +50,9 @@ def route_with_llm(question: str) -> RouteDecision:
         )
     except Exception as exc:
         raise LlmRouterError(f"Gemini request failed: {exc}") from exc
+
+    if debug_llm_io:
+        _print_llm_output("router", response)
 
     normalized = _parse_router_response(response)
 
@@ -103,6 +109,27 @@ def _build_prompt(question: str) -> str:
         f"Question: {question}\n"
         "Answer JSON only:"
     )
+
+
+def _print_llm_input(label: str, content: str) -> None:
+    separator = "=" * 72
+    print(
+        f"{separator}\nLLM INPUT ({label})\n{separator}",
+        file=sys.stderr,
+    )
+    print(content, file=sys.stderr)
+
+
+def _print_llm_output(label: str, response: Any) -> None:
+    text = getattr(response, "text", None)
+    if not isinstance(text, str):
+        text = str(response)
+    separator = "-" * 72
+    print(
+        f"{separator}\nLLM OUTPUT ({label})\n{separator}",
+        file=sys.stderr,
+    )
+    print(text, file=sys.stderr)
 
 
 def _parse_router_response(response: Any) -> LlmRouteResponse:

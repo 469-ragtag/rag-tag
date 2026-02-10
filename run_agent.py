@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 from pathlib import Path
@@ -78,10 +79,63 @@ def _sql_result(
     }
 
 
+def _parse_bool(value: str | None) -> bool:
+    if value is None:
+        return True
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "y", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "n", "off"}:
+        return False
+    raise argparse.ArgumentTypeError("Expected a boolean value (true/false).")
+
+
+def _print_question_header(question: str) -> None:
+    separator = "=" * 72
+    print(f"\n{separator}\nQ: {question}\n{separator}")
+
+
+def _print_answer_header() -> None:
+    separator = "-" * 72
+    print(f"{separator}\nA:\n{separator}")
+
+
 def main() -> int:
+    ap = argparse.ArgumentParser(description="IFC query agent CLI")
+    ap.add_argument(
+        "--input",
+        nargs="?",
+        const=True,
+        default=False,
+        type=_parse_bool,
+        help=(
+            "Print LLM input/output for router and agent to stderr "
+            "(use --input, --input=true, or --input=false)."
+        ),
+    )
+    ap.add_argument(
+        "--db",
+        type=Path,
+        default=None,
+        help=(
+            "Path to SQLite database for SQL routing "
+            "(defaults to newest .db in output/ or db/)."
+        ),
+    )
+    args = ap.parse_args()
+
     graph = None
     agent = None
-    db_path = _find_sqlite_db()
+    db_path: Path | None
+    if args.db is not None:
+        candidate = args.db.expanduser().resolve()
+        if candidate.is_file():
+            db_path = candidate
+        else:
+            print(f"SQLite database not found: {candidate}", file=sys.stderr)
+            db_path = None
+    else:
+        db_path = _find_sqlite_db()
     print("IFC Query Agent ready. Type a question or 'exit'.")
 
     for line in sys.stdin:
@@ -91,15 +145,17 @@ def main() -> int:
         if question.lower() in {"exit", "quit"}:
             break
 
+        _print_question_header(question)
+
         try:
-            decision = route_question(question)
+            decision = route_question(question, debug_llm_io=args.input)
             if decision.route == "sql":
                 result = _sql_result(decision, db_path)
             else:
                 if graph is None:
                     graph = _load_graph()
                 if agent is None:
-                    agent = CommandRAgent()
+                    agent = CommandRAgent(debug_llm_io=args.input)
 
                 state = {"history": []}
                 max_steps = 6
@@ -124,12 +180,20 @@ def main() -> int:
                         }
                         break
 
-                    action = step.get("action")
+                    action_value = step.get("action")
                     params = step.get("params", {})
-                    tool_result = query_ifc_graph(graph, action, params)
+                    if not isinstance(action_value, str) or not action_value:
+                        result = {
+                            "route": "graph",
+                            "decision": decision.reason,
+                            "error": "Invalid tool action",
+                            "step": step,
+                        }
+                        break
+                    tool_result = query_ifc_graph(graph, action_value, params)
                     state["history"].append(
                         {
-                            "tool": {"action": action, "params": params},
+                            "tool": {"action": action_value, "params": params},
                             "result": tool_result,
                         }
                     )
@@ -146,6 +210,7 @@ def main() -> int:
         except Exception as exc:
             result = {"error": str(exc)}
 
+        _print_answer_header()
         print(json.dumps(result, indent=2))
 
     return 0
