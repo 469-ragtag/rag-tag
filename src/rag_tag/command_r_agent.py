@@ -124,6 +124,15 @@ def _print_llm_output(label: str, content: str) -> None:
 def _extract_json(text: str) -> Dict[str, Any]:
     """Extract a JSON object from model output."""
     text = text.strip()
+
+    # Replace Python booleans with JSON booleans
+    # This handles cases where the LLM outputs True/False instead of true/false
+    import re
+
+    text = re.sub(r"\bTrue\b", "true", text)
+    text = re.sub(r"\bFalse\b", "false", text)
+    text = re.sub(r"\bNone\b", "null", text)
+
     if text.startswith("{") and text.endswith("}"):
         return json.loads(text)
 

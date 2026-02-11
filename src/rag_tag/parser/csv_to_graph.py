@@ -60,11 +60,15 @@ def build_graph_with_properties(csv_path: str, geom_data: dict) -> nx.DiGraph:
     G.add_node("IfcBuilding", label="Building", class_="IfcBuilding", geometry=None)
     G.add_edge("IfcProject", "IfcBuilding", relation="aggregates")
 
-    # Levels
-    levels = df["Level"].dropna().unique()
-    for lvl in levels:
-        node_id = f"Storey::{lvl}"
-        G.add_node(node_id, label=lvl, class_="IfcBuildingStorey", geometry=None)
+    # Collect actual IfcBuildingStorey elements from the CSV
+    actual_storeys = df[df["Class"] == "IfcBuildingStorey"]["Name"].dropna().unique()
+
+    # Create Storey nodes only for actual IfcBuildingStorey elements
+    for storey_name in actual_storeys:
+        node_id = f"Storey::{storey_name}"
+        G.add_node(
+            node_id, label=storey_name, class_="IfcBuildingStorey", geometry=None
+        )
         G.add_edge("IfcBuilding", node_id, relation="aggregates")
 
     # Types
