@@ -46,8 +46,11 @@ No extra text, no code fences.
 def _load_env() -> None:
     if load_dotenv is None:
         return
-    repo_root = Path(__file__).resolve().parent
-    load_dotenv(repo_root / ".env")
+    from rag_tag.paths import find_project_root
+
+    project_root = find_project_root(Path(__file__).resolve().parent)
+    if project_root is not None:
+        load_dotenv(project_root / ".env")
 
 
 class CommandRAgent:

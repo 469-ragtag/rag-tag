@@ -5,7 +5,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from router import SqlRequest
+from rag_tag.router import SqlRequest
 
 
 class SqlQueryError(RuntimeError):

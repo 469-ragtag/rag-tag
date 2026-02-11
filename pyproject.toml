@@ -1,7 +1,11 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
 name = "rag-tag"
 version = "0.1.0"
-description = "Add your description here"
+description = "Natural-language querying over IFC models using hybrid retrieval"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
@@ -15,6 +19,12 @@ dependencies = [
     "plotly>=6.5.2",
     "python-dotenv>=1.2.1",
 ]
+
+[project.scripts]
+rag-tag = "rag_tag.run_agent:main"
+rag-tag-ifc-to-csv = "rag_tag.parser.ifc_to_csv:main"
+rag-tag-csv-to-sql = "rag_tag.parser.csv_to_sql:main"
+rag-tag-csv-to-graph = "rag_tag.parser.csv_to_graph:main"
 
 [dependency-groups]
 dev = [

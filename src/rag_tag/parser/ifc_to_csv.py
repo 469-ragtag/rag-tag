@@ -7,6 +7,8 @@ import ifcopenshell
 import ifcopenshell.util.element as element
 import pandas as pd
 
+from rag_tag.paths import find_ifc_dir, find_project_root
+
 
 def get_objects_data_by_class(model, class_type):
     """
@@ -324,23 +326,6 @@ def parse_ifc_to_csv(ifc_path: Path, csv_path: Path, class_type: str = None) -> 
         return total_rows
 
 
-def _find_ifc_dir(start_dir: Path) -> Path | None:
-    """Find an IFC-Files directory by searching upwards from start_dir."""
-    for base in (start_dir, *start_dir.parents):
-        candidate = base / "IFC-Files"
-        if candidate.is_dir():
-            return candidate
-    return None
-
-
-def _find_project_root(start_dir: Path) -> Path | None:
-    """Find the project root by searching upwards for pyproject.toml."""
-    for base in (start_dir, *start_dir.parents):
-        if (base / "pyproject.toml").is_file():
-            return base
-    return None
-
-
 def main():
     parser = argparse.ArgumentParser(
         description="Parse IFC file(s) from IFC-Files/ and export to CSV."
@@ -366,7 +351,7 @@ def main():
     if args.ifc_dir is not None:
         ifc_dir = args.ifc_dir.expanduser().resolve()
     else:
-        ifc_dir = _find_ifc_dir(script_dir)
+        ifc_dir = find_ifc_dir(script_dir)
         if ifc_dir is None:
             print(
                 "IFC directory not found. Provide --ifc-dir or create an IFC-Files/ "
@@ -377,7 +362,7 @@ def main():
     if args.out_dir is not None:
         out_dir = args.out_dir.expanduser().resolve()
     else:
-        project_root = _find_project_root(script_dir) or script_dir.parent
+        project_root = find_project_root(script_dir) or script_dir.parent
         out_dir = (project_root / "output").resolve()
 
     if not ifc_dir.is_dir():
