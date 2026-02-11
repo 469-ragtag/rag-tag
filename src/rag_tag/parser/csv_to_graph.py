@@ -46,7 +46,7 @@ def compute_adjacency_threshold(positions: list[tuple[float, float, float]]) -> 
     return max(0.5, median_nn * 1.5)
 
 
-def build_graph_with_properties(csv_path: str, geom_data: dict) -> nx.DiGraph:
+def build_graph_with_properties(csv_path: str | Path, geom_data: dict) -> nx.DiGraph:
     """
     Build a hierarchical IFC graph and attach geometry data to nodes.
     `geom_data` should be a dict mapping GlobalId -> geometry info (e.g., centroid
@@ -61,11 +61,15 @@ def build_graph_with_properties(csv_path: str, geom_data: dict) -> nx.DiGraph:
     G.add_edge("IfcProject", "IfcBuilding", relation="aggregates")
 
     # Collect actual IfcBuildingStorey elements from the CSV
-    actual_storeys = df[df["Class"] == "IfcBuildingStorey"]["Name"].dropna().unique()
+    storey_series = df.loc[df["Class"] == "IfcBuildingStorey", "Name"].dropna()
+    actual_storeys = [str(name) for name in storey_series.unique()]
+
+    storey_nodes: dict[str, str] = {}
 
     # Create Storey nodes only for actual IfcBuildingStorey elements
     for storey_name in actual_storeys:
         node_id = f"Storey::{storey_name}"
+        storey_nodes[storey_name] = node_id
         G.add_node(
             node_id, label=storey_name, class_="IfcBuildingStorey", geometry=None
         )
@@ -78,22 +82,48 @@ def build_graph_with_properties(csv_path: str, geom_data: dict) -> nx.DiGraph:
 
     # Elements
     for _, row in df.iterrows():
-        eid = f"Element::{row['GlobalId']}"
+        row_class = row["Class"]
         geom = geom_data.get(row["GlobalId"])  # attach geometry if available
 
+        if row_class == "IfcBuildingStorey":
+            storey_name = row.get("Name")
+            if not isinstance(storey_name, str) or not storey_name.strip():
+                storey_name = str(row["GlobalId"])
+            node_id = storey_nodes.get(storey_name)
+            if node_id is None:
+                node_id = f"Storey::{storey_name}"
+                storey_nodes[storey_name] = node_id
+                G.add_node(
+                    node_id,
+                    label=storey_name,
+                    class_="IfcBuildingStorey",
+                    geometry=None,
+                )
+                G.add_edge("IfcBuilding", node_id, relation="aggregates")
+            G.nodes[node_id].update(
+                label=storey_name,
+                class_="IfcBuildingStorey",
+                properties=row.to_dict(),
+                geometry=geom,
+            )
+            continue
+
+        eid = f"Element::{row['GlobalId']}"
         G.add_node(
             eid,
             label=row.get("Name", row["GlobalId"]),
-            class_=row["Class"],
+            class_=row_class,
             properties=row.to_dict(),
             geometry=geom,  # new geometry property
         )
 
-        if pd.notna(row["Level"]):
-            G.add_edge(f"Storey::{row['Level']}", eid, relation="contained_in")
+        level_value = row.get("Level")
+        if isinstance(level_value, str) and level_value in storey_nodes:
+            G.add_edge(storey_nodes[level_value], eid, relation="contained_in")
 
-        if pd.notna(row["TypeName"]):
-            G.add_edge(f"Type::{row['TypeName']}", eid, relation="typed_by")
+        type_name = row.get("TypeName")
+        if isinstance(type_name, str) and type_name:
+            G.add_edge(f"Type::{type_name}", eid, relation="typed_by")
 
     return G
 
