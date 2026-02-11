@@ -2,16 +2,11 @@ from __future__ import annotations
 
 import argparse
 import os
-import sys
 from pathlib import Path
 from typing import Any
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-
-from ifc_sql_tool import SqlQueryError, query_ifc_sql  # noqa: E402
-from router import RouteDecision, route_question  # noqa: E402
+from rag_tag.ifc_sql_tool import SqlQueryError, query_ifc_sql
+from rag_tag.router import RouteDecision, route_question
 
 QUESTIONS: list[dict[str, Any]] = [
     {

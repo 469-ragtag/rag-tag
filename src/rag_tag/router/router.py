@@ -1,12 +1,29 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 from .models import RouteDecision
 from .rules import route_question_rule
 
+try:
+    from dotenv import load_dotenv
+except ModuleNotFoundError:
+    load_dotenv = None
+
+
+def _load_env() -> None:
+    if load_dotenv is None:
+        return
+    from rag_tag.paths import find_project_root
+
+    project_root = find_project_root(Path(__file__).resolve().parent)
+    if project_root is not None:
+        load_dotenv(project_root / ".env")
+
 
 def route_question(question: str, *, debug_llm_io: bool = False) -> RouteDecision:
+    _load_env()
     mode = os.getenv("ROUTER_MODE", "").strip().lower()
     if mode in {"rule", "rules", "heuristic"}:
         return route_question_rule(question)

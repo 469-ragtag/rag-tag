@@ -718,7 +718,7 @@ wheels = [
 [[package]]
 name = "rag-tag"
 version = "0.1.0"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
     { name = "cohere" },
     { name = "google-genai" },

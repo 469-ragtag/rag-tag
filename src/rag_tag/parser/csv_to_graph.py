@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from pathlib import Path
 
 import ifcopenshell
@@ -5,27 +7,9 @@ import networkx as nx
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
-from ifc_geometry_parse import extract_geometry_data, get_ifc_model
-from ifc_to_csv import _find_ifc_dir, _find_project_root
 
-script_dir = Path(__file__).resolve().parent
-project_root = _find_project_root(script_dir) or script_dir
-ifc_dir = _find_ifc_dir(script_dir)
-if ifc_dir is None:
-    raise FileNotFoundError("Could not find 'IFC-Files/' folder.")
-
-# Pick the IFC file dynamically
-ifc_file = next(ifc_dir.glob("Building-Architecture.ifc"), None)
-if ifc_file is None:
-    raise FileNotFoundError("IFC file not found in IFC-Files/ folder.")
-
-# Ensure output directory exists
-csv_dir = project_root / "output"
-csv_dir.mkdir(exist_ok=True)
-csv_file = csv_dir / "Building-Architecture.csv"
-
-model = get_ifc_model(ifc_file)
-geom_data = extract_geometry_data(model)
+from rag_tag.parser.ifc_geometry_parse import extract_geometry_data, get_ifc_model
+from rag_tag.paths import find_ifc_dir, find_project_root
 
 
 def distance_between_points(
@@ -62,7 +46,7 @@ def compute_adjacency_threshold(positions: list[tuple[float, float, float]]) -> 
     return max(0.5, median_nn * 1.5)
 
 
-def build_graph_with_properties(csv_path: str, geom_data: dict) -> nx.DiGraph:
+def build_graph_with_properties(csv_path: str | Path, geom_data: dict) -> nx.DiGraph:
     """
     Build a hierarchical IFC graph and attach geometry data to nodes.
     `geom_data` should be a dict mapping GlobalId -> geometry info (e.g., centroid
@@ -76,11 +60,19 @@ def build_graph_with_properties(csv_path: str, geom_data: dict) -> nx.DiGraph:
     G.add_node("IfcBuilding", label="Building", class_="IfcBuilding", geometry=None)
     G.add_edge("IfcProject", "IfcBuilding", relation="aggregates")
 
-    # Levels
-    levels = df["Level"].dropna().unique()
-    for lvl in levels:
-        node_id = f"Storey::{lvl}"
-        G.add_node(node_id, label=lvl, class_="IfcBuildingStorey", geometry=None)
+    # Collect actual IfcBuildingStorey elements from the CSV
+    storey_series = df.loc[df["Class"] == "IfcBuildingStorey", "Name"].dropna()
+    actual_storeys = [str(name) for name in storey_series.unique()]
+
+    storey_nodes: dict[str, str] = {}
+
+    # Create Storey nodes only for actual IfcBuildingStorey elements
+    for storey_name in actual_storeys:
+        node_id = f"Storey::{storey_name}"
+        storey_nodes[storey_name] = node_id
+        G.add_node(
+            node_id, label=storey_name, class_="IfcBuildingStorey", geometry=None
+        )
         G.add_edge("IfcBuilding", node_id, relation="aggregates")
 
     # Types
@@ -90,22 +82,48 @@ def build_graph_with_properties(csv_path: str, geom_data: dict) -> nx.DiGraph:
 
     # Elements
     for _, row in df.iterrows():
-        eid = f"Element::{row['GlobalId']}"
+        row_class = row["Class"]
         geom = geom_data.get(row["GlobalId"])  # attach geometry if available
 
+        if row_class == "IfcBuildingStorey":
+            storey_name = row.get("Name")
+            if not isinstance(storey_name, str) or not storey_name.strip():
+                storey_name = str(row["GlobalId"])
+            node_id = storey_nodes.get(storey_name)
+            if node_id is None:
+                node_id = f"Storey::{storey_name}"
+                storey_nodes[storey_name] = node_id
+                G.add_node(
+                    node_id,
+                    label=storey_name,
+                    class_="IfcBuildingStorey",
+                    geometry=None,
+                )
+                G.add_edge("IfcBuilding", node_id, relation="aggregates")
+            G.nodes[node_id].update(
+                label=storey_name,
+                class_="IfcBuildingStorey",
+                properties=row.to_dict(),
+                geometry=geom,
+            )
+            continue
+
+        eid = f"Element::{row['GlobalId']}"
         G.add_node(
             eid,
             label=row.get("Name", row["GlobalId"]),
-            class_=row["Class"],
+            class_=row_class,
             properties=row.to_dict(),
             geometry=geom,  # new geometry property
         )
 
-        if pd.notna(row["Level"]):
-            G.add_edge(f"Storey::{row['Level']}", eid, relation="contained_in")
+        level_value = row.get("Level")
+        if isinstance(level_value, str) and level_value in storey_nodes:
+            G.add_edge(storey_nodes[level_value], eid, relation="contained_in")
 
-        if pd.notna(row["TypeName"]):
-            G.add_edge(f"Type::{row['TypeName']}", eid, relation="typed_by")
+        type_name = row.get("TypeName")
+        if isinstance(type_name, str) and type_name:
+            G.add_edge(f"Type::{type_name}", eid, relation="typed_by")
 
     return G
 
@@ -313,18 +331,73 @@ def print_ifc_hierarchy(ifc_file_path, indent=0):
         traverse(project, indent)
 
 
-# Convert list to dict
-geom_dict = {}
-for item in geom_data:
-    gid = item.get("GlobalId")
-    if gid:
-        geom_dict[gid] = item.get("centroid")
+def build_graph(
+    csv_path: Path | None = None, ifc_path: Path | None = None
+) -> nx.DiGraph:
+    """
+    Build and return the IFC graph. If csv_path and ifc_path are not provided,
+    they will be auto-detected from the project structure.
+    """
+    script_dir = Path(__file__).resolve().parent
+    project_root = find_project_root(script_dir) or script_dir
 
-html_dir = project_root / "output"
-html_dir.mkdir(parents=True, exist_ok=True)
-html_file = html_dir / "ifc_graph.html"
+    if csv_path is None:
+        csv_dir = project_root / "output"
+        csv_path = csv_dir / "Building-Architecture.csv"
 
-G = build_graph_with_properties(csv_file, geom_dict)
-threshold_used = add_spatial_adjacency(G, geom_dict)
-plot_interactive_graph(G, html_file)
-print_ifc_hierarchy(ifc_file)  # Helper to visualize hierarchy in console
+    if ifc_path is None:
+        ifc_dir = find_ifc_dir(script_dir)
+        if ifc_dir is None:
+            raise FileNotFoundError("Could not find 'IFC-Files/' folder.")
+        ifc_path = next(ifc_dir.glob("Building-Architecture.ifc"), None)
+        if ifc_path is None:
+            raise FileNotFoundError("IFC file not found in IFC-Files/ folder.")
+
+    model = get_ifc_model(ifc_path)
+    geom_data = extract_geometry_data(model)
+
+    # Convert list to dict
+    geom_dict = {}
+    for item in geom_data:
+        gid = item.get("GlobalId")
+        if gid:
+            geom_dict[gid] = item.get("centroid")
+
+    G = build_graph_with_properties(csv_path, geom_dict)
+    add_spatial_adjacency(G, geom_dict)
+    return G
+
+
+def main() -> None:
+    """Build the graph and generate visualization HTML."""
+    script_dir = Path(__file__).resolve().parent
+    project_root = find_project_root(script_dir) or script_dir
+    ifc_dir = find_ifc_dir(script_dir)
+
+    if ifc_dir is None:
+        raise FileNotFoundError("Could not find 'IFC-Files/' folder.")
+
+    ifc_file = next(ifc_dir.glob("Building-Architecture.ifc"), None)
+    if ifc_file is None:
+        raise FileNotFoundError("IFC file not found in IFC-Files/ folder.")
+
+    csv_dir = project_root / "output"
+    csv_dir.mkdir(exist_ok=True)
+    csv_file = csv_dir / "Building-Architecture.csv"
+
+    html_dir = project_root / "output"
+    html_dir.mkdir(parents=True, exist_ok=True)
+    html_file = html_dir / "ifc_graph.html"
+
+    G = build_graph(csv_file, ifc_file)
+    plot_interactive_graph(G, html_file)
+    print_ifc_hierarchy(ifc_file)
+    print(
+        f"\nGraph built with {G.number_of_nodes()} nodes "
+        f"and {G.number_of_edges()} edges."
+    )
+    print(f"Visualization saved to {html_file}")
+
+
+if __name__ == "__main__":
+    main()

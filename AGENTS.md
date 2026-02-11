@@ -12,10 +12,11 @@ This file is for agentic coding assistants operating in this repository.
 
 ## Repo Status Snapshot
 
-- IFC parsing and export works via `parser/ifc_to_csv.py`.
+- IFC parsing and export works via `src/rag_tag/parser/ifc_to_csv.py`.
 - Geometry extraction computes centroids and bounding boxes.
 - Graph is currently built in NetworkX with distance-based adjacency.
 - SQL schema exists and is wired into the router for counts/lists.
+- Project now uses a clean `src/` layout with `rag_tag` package.
 
 ## Cursor/Copilot Rules
 
@@ -44,22 +45,24 @@ Use `uv` for all commands.
 ### Run scripts
 
 - IFC -> CSV:
-  - `uv run python parser/ifc_to_csv.py`
+  - `uv run rag-tag-ifc-to-csv`
 - CSV -> SQLite:
-  - `uv run python parser/csv_to_sql.py`
+  - `uv run rag-tag-csv-to-sql`
 - CSV -> Graph (Plotly HTML):
-  - `uv run python parser/csv_to_graph.py`
+  - `uv run rag-tag-csv-to-graph`
 - Run the LLM agent (requires API key):
-  - `COHERE_API_KEY=... uv run python run_agent.py`
+  - `COHERE_API_KEY=... uv run rag-tag`
   - Debug LLM I/O:
-    - `COHERE_API_KEY=... uv run python run_agent.py --input`
+    - `COHERE_API_KEY=... uv run rag-tag --input`
   - Force router mode:
-    - `ROUTER_MODE=rule uv run python run_agent.py`
-    - `ROUTER_MODE=llm GEMINI_API_KEY=... uv run python run_agent.py`
+    - `ROUTER_MODE=rule uv run rag-tag`
+    - `ROUTER_MODE=llm GEMINI_API_KEY=... uv run rag-tag`
   - Use a specific SQLite DB:
-    - `COHERE_API_KEY=... uv run python run_agent.py --db ./output/Building-Architecture.db`
+    - `COHERE_API_KEY=... uv run rag-tag --db ./output/Building-Architecture.db`
   - Output formatting:
     - Questions and answers are prefixed with `Q:` / `A:` and separated by divider lines.
+- Evaluate routing:
+  - `uv run python scripts/eval_routing.py --db ./output/Building-Architecture.db`
 
 ### Linting + Formatting (ruff)
 
@@ -94,7 +97,7 @@ Use `uv` for all commands.
 
 - Group imports: stdlib, third-party, local.
 - Avoid wildcard imports and unused imports (ruff will flag).
-- Prefer absolute imports once a `src/` layout exists.
+- Use absolute imports from `rag_tag` package (e.g., `from rag_tag.router import ...`).
 
 ### Types
 
@@ -147,3 +150,21 @@ Use `uv` for all commands.
 
 - Graph adjacency uses centroid distance, not true topology.
 - No Neo4j/Cypher backend yet; graph lives in NetworkX only.
+
+## Project Structure
+
+- `src/rag_tag/`: Main package with all source code
+  - `__init__.py`: Package initialization
+  - `__main__.py`: Entry point for `python -m rag_tag`
+  - `paths.py`: Centralized path discovery utilities
+  - `run_agent.py`: Main CLI application
+  - `command_r_agent.py`: Cohere agent for graph reasoning
+  - `ifc_graph_tool.py`: Graph query interface
+  - `ifc_sql_tool.py`: SQL query interface
+  - `tui.py`: Terminal UI formatting
+  - `router/`: Query routing logic (rule-based and LLM-based)
+  - `parser/`: IFC parsing and conversion pipeline
+- `scripts/`: Evaluation and utility scripts
+- `output/`: Generated CSV, DB, and HTML files (created at runtime)
+- `IFC-Files/`: Source IFC models (not in repo)
+

@@ -4,29 +4,27 @@ import argparse
 import sys
 from pathlib import Path
 
-from command_r_agent import CommandRAgent
-from ifc_graph_tool import query_ifc_graph
-from ifc_sql_tool import SqlQueryError, query_ifc_sql
-from router import RouteDecision, route_question
-from tui import print_answer, print_question, print_welcome
+from rag_tag.command_r_agent import CommandRAgent
+from rag_tag.ifc_graph_tool import query_ifc_graph
+from rag_tag.ifc_sql_tool import SqlQueryError, query_ifc_sql
+from rag_tag.paths import find_project_root
+from rag_tag.router import RouteDecision, route_question
+from rag_tag.tui import print_answer, print_question, print_welcome
 
 
 def _load_graph():
-    # Ensure parser directory is importable for existing module structure
-    repo_root = Path(__file__).resolve().parent
-    parser_dir = repo_root / "parser"
-    sys.path.insert(0, str(parser_dir))
+    from rag_tag.parser.csv_to_graph import build_graph
 
-    import csv_to_graph  # type: ignore
-
-    return csv_to_graph.G
+    return build_graph()
 
 
 def _find_sqlite_db() -> Path | None:
-    repo_root = Path(__file__).resolve().parent
+    project_root = find_project_root(Path(__file__).resolve().parent)
+    if project_root is None:
+        return None
     candidates: list[Path] = []
     for folder_name in ("output", "db"):
-        folder = repo_root / folder_name
+        folder = project_root / folder_name
         if not folder.exists():
             continue
         candidates.extend(folder.glob("*.db"))
