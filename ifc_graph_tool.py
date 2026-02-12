@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, Iterable
 
 import networkx as nx
@@ -32,6 +33,102 @@ def query_ifc_graph(
                     continue
             matches.append(n)
         return matches
+
+    def _normalize_text(value: str) -> str:
+        return re.sub(r"[^a-z0-9]+", " ", value.lower()).strip()
+
+    def _compact_text(value: str) -> str:
+        return re.sub(r"[^a-z0-9]+", "", value.lower())
+
+    def _extract_numeric_tokens(value: str) -> set[str]:
+        return set(re.findall(r"\d+", value))
+
+    def _extract_ordinal_tokens(value: str) -> set[int]:
+        ordinals = set()
+        for raw in re.findall(r"\b(\d+)(?:st|nd|rd|th)\b", value):
+            ordinals.add(int(raw))
+        return ordinals
+
+    def _all_storey_nodes() -> list[str]:
+        nodes = []
+        for n, d in G.nodes(data=True):
+            if not str(n).startswith("Storey::"):
+                continue
+            if str(d.get("class_", "")).lower() == "ifcbuildingstorey":
+                nodes.append(n)
+        return nodes
+
+    def _resolve_storey_node(
+        storey_query: str,
+    ) -> tuple[str | None, Dict[str, Any] | None]:
+        query = storey_query.strip()
+        if not query:
+            return None, {"error": "Missing param: storey"}
+
+        direct_node = f"Storey::{query}"
+        if direct_node in G:
+            cls = str(G.nodes[direct_node].get("class_", ""))
+            if cls.lower() == "ifcbuildingstorey":
+                return direct_node, None
+
+        exact_matches = _find_nodes_by_label(query, class_filter="IfcBuildingStorey")
+        if len(exact_matches) == 1:
+            return exact_matches[0], None
+        if len(exact_matches) > 1:
+            return None, {"error": "Ambiguous storey", "candidates": exact_matches}
+
+        query_norm = _normalize_text(query)
+        query_compact = _compact_text(query)
+        query_tokens = set(query_norm.split())
+        query_nums = _extract_numeric_tokens(query_norm)
+        query_ords = _extract_ordinal_tokens(query_norm)
+
+        norm_exact: list[str] = []
+        token_matches: list[tuple[int, str]] = []
+        for node in _all_storey_nodes():
+            label = str(G.nodes[node].get("label", ""))
+            label_norm = _normalize_text(label)
+            label_compact = _compact_text(label)
+            label_tokens = set(label_norm.split())
+            label_nums = _extract_numeric_tokens(label_norm)
+            label_ords = _extract_ordinal_tokens(label_norm)
+
+            if label_norm == query_norm:
+                norm_exact.append(node)
+                continue
+
+            score = 0
+            if query_tokens and query_tokens.issubset(label_tokens):
+                score += 2
+            if query_nums and query_nums.intersection(label_nums):
+                score += 2
+            if query_ords and query_ords.intersection(label_ords):
+                score += 2
+            if "ground" in query_tokens and (
+                "ground" in label_tokens or "00" in label_nums
+            ):
+                score += 2
+            if query_norm and query_norm in label_norm:
+                score += 1
+            if query_compact and query_compact in label_compact:
+                score += 1
+            if score > 0:
+                token_matches.append((score, node))
+
+        if len(norm_exact) == 1:
+            return norm_exact[0], None
+        if len(norm_exact) > 1:
+            return None, {"error": "Ambiguous storey", "candidates": norm_exact}
+
+        if token_matches:
+            token_matches.sort(key=lambda item: item[0], reverse=True)
+            best_score = token_matches[0][0]
+            best = [node for score, node in token_matches if score == best_score]
+            if len(best) == 1:
+                return best[0], None
+            return None, {"error": "Ambiguous storey", "candidates": best}
+
+        return None, {"error": f"Storey not found: {storey_query}"}
 
     def _resolve_element_id(
         element_id: str,
@@ -78,17 +175,14 @@ def query_ifc_graph(
         storey = params.get("storey")
         if not storey:
             return {"error": "Missing param: storey"}
-        node = f"Storey::{storey}"
-        if node not in G:
-            storey_nodes = _find_nodes_by_label(
-                storey, class_filter="IfcBuildingStorey"
-            )
-            if len(storey_nodes) == 1:
-                node = storey_nodes[0]
-            elif len(storey_nodes) > 1:
-                return {"error": "Ambiguous storey", "candidates": storey_nodes}
-            else:
-                return {"error": f"Storey not found: {storey}"}
+        node, err = _resolve_storey_node(str(storey))
+        if err:
+            return err
+        if node is None:
+            return {"error": f"Storey not found: {storey}"}
+
+        class_filter = params.get("class")
+        normalized_class = _normalize_class(str(class_filter)) if class_filter else None
 
         container_classes = {
             "IfcProject",
@@ -106,6 +200,9 @@ def query_ifc_graph(
             cls = G.nodes[e].get("class_")
             if cls in container_classes:
                 continue
+            if normalized_class is not None:
+                if str(cls or "").lower() != normalized_class.lower():
+                    continue
             elements.append(
                 {
                     "id": e,
@@ -113,7 +210,13 @@ def query_ifc_graph(
                     "class_": cls,
                 }
             )
-        return {"storey": storey, "elements": elements}
+        return {
+            "storey": storey,
+            "storey_node": node,
+            "storey_class": "IfcBuildingStorey",
+            "class": normalized_class,
+            "elements": elements,
+        }
 
     if action == "find_elements_by_class":
         cls = params.get("class")

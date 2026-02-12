@@ -32,9 +32,16 @@ Allowed tool actions and params:
 - traverse: {"start": "<node id>", "relation": "<edge relation>", "depth": 1}
 - spatial_query: {"class": "<IfcClassName or class name without Ifc prefix>",
   "near": "<Element::<GlobalId> or GlobalId>", "max_distance": 2.0}
-- get_elements_in_storey: {"storey": "<storey name>"}
+- get_elements_in_storey: {
+  "storey": "<storey/floor name>",
+  "class": "<optional IfcClass>"
+  }
 - find_elements_by_class: {"class": "<IfcClassName or class name without Ifc prefix>"}
 - get_adjacent_elements: {"element_id": "<Element::<GlobalId> or GlobalId>"}
+
+For floor-based questions, use IfcBuildingStorey semantics:
+- Resolve the floor/storey name against IfcBuildingStorey nodes.
+- Use get_elements_in_storey first, optionally with "class" for filtering.
 
 Use a ReAct-style loop. On each step, return ONLY ONE JSON object:
 - Tool step: {"type": "tool", "action": "<action>", "params": { ... }}
