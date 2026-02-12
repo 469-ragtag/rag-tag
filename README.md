@@ -43,30 +43,45 @@ The result is a foundation for **LLM-assisted digital twins** that can answer sp
 rag-tag/
 ├── IFC-Files/                 # Input IFC files (auto-detected)
 │   └── Building-Architecture.ifc
-├── parser/
-│   ├── ifc_to_csv.py          # IFC → CSV exporter
-│   ├── csv_to_graph.py        # CSV → IFC graph + geometry + visualization
-│   ├── csv_to_sql.py          # CSV → SQLite exporter
-│   ├── ifc_geometry_parse.py  # Geometry extraction utilities
-│   └── sql_schema.py          # SQLite schema helpers
-├── router/
-│   ├── llm.py                 # Gemini router integration
-│   ├── llm_models.py          # Pydantic router schemas
-│   ├── models.py              # Router data models
-│   ├── rules.py               # Heuristic router
-│   └── router.py              # Router entrypoint + fallback
+├── src/
+│   └── rag_tag/
+│       ├── __init__.py
+│       ├── __main__.py
+│       ├── paths.py            # Project/IFC root discovery
+│       ├── run_agent.py        # Interactive CLI for LLM-powered graph queries
+│       ├── command_r_agent.py  # Cohere-based planning agent (ReAct-style)
+│       ├── ifc_graph_tool.py   # Safe graph query interface for the LLM
+│       ├── ifc_sql_tool.py     # SQL query helper
+│       ├── tui.py              # Terminal formatting helpers
+│       ├── parser/
+│       │   ├── ifc_to_csv.py   # IFC → CSV exporter
+│       │   ├── csv_to_graph.py # CSV → IFC graph + geometry + visualization
+│       │   ├── csv_to_sql.py   # CSV → SQLite exporter
+│       │   ├── ifc_geometry_parse.py  # Geometry extraction utilities
+│       │   └── sql_schema.py   # SQLite schema helpers
+│       └── router/
+│           ├── llm.py          # Gemini router integration
+│           ├── llm_models.py   # Pydantic router schemas
+│           ├── models.py       # Router data models
+│           ├── rules.py        # Heuristic router
+│           └── router.py       # Router entrypoint + fallback
 ├── scripts/
-│   └── eval_routing.py        # Router evaluation harness
+│   └── eval_routing.py         # Router evaluation harness
 ├── output/
 │   ├── Building-Architecture.csv
 │   └── ifc_graph.html
-├── command_r_agent.py         # Cohere-based planning agent (ReAct-style)
-├── ifc_graph_tool.py          # Safe graph query interface for the LLM
-├── ifc_sql_tool.py            # SQL query helper
-├── run_agent.py               # Interactive CLI for LLM-powered graph queries
 ├── pyproject.toml
 └── README.md
 ```
+
+---
+
+## CLI Commands
+
+* `rag-tag` — interactive agent CLI
+* `rag-tag-ifc-to-csv` — IFC to CSV export
+* `rag-tag-csv-to-sql` — CSV to SQLite database
+* `rag-tag-csv-to-graph` — CSV to graph + Plotly visualization
 
 ---
 
@@ -92,6 +107,16 @@ rag-tag/
 
 ---
 
+## Quick Start
+
+```bash
+uv sync --group dev
+uv run rag-tag-ifc-to-csv
+uv run rag-tag-csv-to-sql
+uv run rag-tag-csv-to-graph
+COHERE_API_KEY=your_key_here uv run rag-tag
+```
+
 ## Formatting & Linting (Ruff)
 
 This repository uses **Ruff** for formatting and linting.
@@ -115,7 +140,7 @@ uv run pre-commit run --all-files
 
 ## IFC → CSV
 
-The script `parser/ifc_to_csv.py` extracts structured element data from IFC files.
+The CLI `rag-tag-ifc-to-csv` extracts structured element data from IFC files.
 
 ### Default behavior
 
@@ -126,13 +151,13 @@ The script `parser/ifc_to_csv.py` extracts structured element data from IFC file
 Run:
 
 ```bash
-uv run python parser/ifc_to_csv.py
+uv run rag-tag-ifc-to-csv
 ```
 
 Override paths:
 
 ```bash
-uv run python parser/ifc_to_csv.py --ifc-dir ./IFC-Files --out-dir ./output
+uv run rag-tag-ifc-to-csv --ifc-dir ./IFC-Files --out-dir ./output
 ```
 
 ---
@@ -181,8 +206,11 @@ If geometry is unavailable, nodes are positioned using the centroid of their chi
 ### Run the graph pipeline
 
 ```bash
-uv run python parser/csv_to_graph.py
+uv run rag-tag-csv-to-graph
 ```
+
+Note: The graph builder creates storey nodes from actual `IfcBuildingStorey`
+elements in the CSV (not arbitrary values in the `Level` column).
 
 ### Output
 
@@ -199,7 +227,7 @@ uv run python parser/csv_to_graph.py
 Create a SQLite database for deterministic aggregations:
 
 ```bash
-uv run python parser/csv_to_sql.py
+uv run rag-tag-csv-to-sql
 ```
 
 ### Output
@@ -215,8 +243,8 @@ The project includes an **LLM-driven planning agent** that answers natural-langu
 ### Architecture overview
 
 * **LLM (Cohere Command R+)**: Acts as a planner
-* **Graph tools**: Controlled Python functions (`ifc_graph_tool.py`)
-* **Executor loop**: Runs multi-step ReAct-style reasoning (`run_agent.py`)
+* **Graph tools**: Controlled Python functions (`src/rag_tag/ifc_graph_tool.py`)
+* **Executor loop**: Runs multi-step ReAct-style reasoning (`src/rag_tag/run_agent.py`)
 
 The LLM:
 
@@ -252,26 +280,26 @@ GEMINI_API_KEY=your_key_here
 Then start the interactive agent:
 
 ```bash
-uv run python run_agent.py
+uv run rag-tag
 ```
 
 Force router mode (optional):
 
 ```bash
-ROUTER_MODE=rule uv run python run_agent.py
-ROUTER_MODE=llm GEMINI_API_KEY=your_key_here uv run python run_agent.py
+ROUTER_MODE=rule uv run rag-tag
+ROUTER_MODE=llm GEMINI_API_KEY=your_key_here uv run rag-tag
 ```
 
 Use a specific SQLite DB for SQL queries:
 
 ```bash
-uv run python run_agent.py --db ./output/Building-Architecture.db
+uv run rag-tag --db ./output/Building-Architecture.db
 ```
 
 To print LLM inputs/outputs (router + agent) to stderr:
 
 ```bash
-uv run python run_agent.py --input
+uv run rag-tag --input
 ```
 
 Questions and answers are printed with `Q:` / `A:` headers and separated by divider lines for easier debugging.

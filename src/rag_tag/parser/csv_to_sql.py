@@ -8,8 +8,9 @@ import sqlite3
 from pathlib import Path
 
 import pandas as pd
-from ifc_to_csv import _find_project_root
-from sql_schema import CORE_COLUMNS, REQUIRED_COLUMNS, SCHEMA_SQL
+
+from rag_tag.parser.sql_schema import CORE_COLUMNS, REQUIRED_COLUMNS, SCHEMA_SQL
+from rag_tag.paths import find_project_root
 
 logger = logging.getLogger(__name__)
 
@@ -174,7 +175,7 @@ def main() -> None:
     args = ap.parse_args()
 
     script_dir = Path(__file__).resolve().parent
-    project_root = _find_project_root(script_dir) or script_dir.parent
+    project_root = find_project_root(script_dir) or script_dir.parent
 
     csv_dir = (args.csv_dir or project_root / "output").resolve()
     out_dir = (args.out_dir or csv_dir).resolve()
