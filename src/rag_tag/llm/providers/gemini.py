@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 from typing import Any
@@ -15,6 +16,9 @@ try:
     from dotenv import load_dotenv
 except ModuleNotFoundError:
     load_dotenv = None
+
+
+_LOGGER = logging.getLogger(__name__)
 
 
 def _load_env() -> None:
@@ -65,6 +69,57 @@ class GeminiProvider(BaseProvider):
         if system_prompt:
             full_prompt = f"{system_prompt}\n\n{prompt}"
 
+        return self._generate_text_content(full_prompt)
+
+    def generate_structured(
+        self,
+        prompt: str,
+        *,
+        schema: type[BaseModel],
+        system_prompt: str | None = None,
+    ) -> BaseModel:
+        """Generate structured response using Gemini's native schema support."""
+        full_prompt = prompt
+        if system_prompt:
+            full_prompt = f"{system_prompt}\n\n{prompt}"
+
+        if _schema_has_additional_properties(schema):
+            _LOGGER.warning(
+                "Gemini schema contains additionalProperties; "
+                "falling back to text parsing for %s.",
+                schema.__name__,
+            )
+            text = self._generate_text_content(full_prompt)
+            return _parse_text_as_schema(text, schema)
+
+        self._print_llm_input("gemini", full_prompt)
+
+        try:
+            response = self._client.models.generate_content(
+                model=self._model,
+                contents=full_prompt,
+                config=types.GenerateContentConfig(
+                    temperature=0,
+                    max_output_tokens=1024,
+                    response_mime_type="application/json",
+                    response_schema=schema,
+                ),
+            )
+        except Exception as exc:
+            if _is_schema_error(exc):
+                _LOGGER.warning(
+                    "Gemini schema error; falling back to text parsing for %s.",
+                    schema.__name__,
+                )
+                text = self._generate_text_content(full_prompt)
+                return _parse_text_as_schema(text, schema)
+            raise RuntimeError(f"Gemini request failed: {exc}") from exc
+
+        self._print_llm_output("gemini", response)
+
+        return _parse_structured_response(response, schema)
+
+    def _generate_text_content(self, full_prompt: str) -> str:
         self._print_llm_input("gemini", full_prompt)
 
         try:
@@ -85,39 +140,6 @@ class GeminiProvider(BaseProvider):
 
         self._print_llm_output("gemini", text)
         return text
-
-    def generate_structured(
-        self,
-        prompt: str,
-        *,
-        schema: type[BaseModel],
-        system_prompt: str | None = None,
-    ) -> BaseModel:
-        """Generate structured response using Gemini's native schema support."""
-        full_prompt = prompt
-        if system_prompt:
-            full_prompt = f"{system_prompt}\n\n{prompt}"
-
-        self._print_llm_input("gemini", full_prompt)
-
-        try:
-            response = self._client.models.generate_content(
-                model=self._model,
-                contents=full_prompt,
-                config=types.GenerateContentConfig(
-                    temperature=0,
-                    max_output_tokens=1024,
-                    response_mime_type="application/json",
-                    response_schema=schema,
-                ),
-            )
-        except Exception as exc:
-            raise RuntimeError(f"Gemini request failed: {exc}") from exc
-
-        self._print_llm_output("gemini", response)
-
-        parsed = _parse_structured_response(response, schema)
-        return parsed
 
 
 def _extract_response_text(response: Any) -> str | None:
@@ -205,3 +227,28 @@ def _extract_json_object(text: str) -> str | None:
     if start == -1 or end == -1 or end <= start:
         return None
     return text[start : end + 1]
+
+
+def _schema_has_additional_properties(schema: type[BaseModel]) -> bool:
+    try:
+        schema_json = schema.model_json_schema()
+    except Exception:
+        return False
+    return _contains_key(schema_json, "additionalProperties") or _contains_key(
+        schema_json, "additional_properties"
+    )
+
+
+def _contains_key(value: Any, key: str) -> bool:
+    if isinstance(value, dict):
+        if key in value:
+            return True
+        return any(_contains_key(v, key) for v in value.values())
+    if isinstance(value, list):
+        return any(_contains_key(v, key) for v in value)
+    return False
+
+
+def _is_schema_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return "response_schema" in message or "additional_properties" in message
