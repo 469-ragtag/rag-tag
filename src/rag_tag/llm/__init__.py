@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .models import AgentStep, ToolCall, TraceEvent
+from .models import AgentStep, ToolCall
 from .provider_registry import resolve_provider
 
-__all__ = ["AgentStep", "ToolCall", "TraceEvent", "resolve_provider"]
+__all__ = ["AgentStep", "ToolCall", "resolve_provider"]

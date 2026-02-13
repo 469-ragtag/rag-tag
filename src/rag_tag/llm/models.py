@@ -4,14 +4,14 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class ToolCall(BaseModel):
     """Represents a single tool call with action and parameters."""
 
     action: str
-    params: dict[str, object] = {}
+    params: dict[str, object] = Field(default_factory=dict)
 
     model_config = ConfigDict(extra="forbid")
 
@@ -35,14 +35,3 @@ class AgentStep(BaseModel):
             if not self.answer:
                 raise ValueError("answer is required for final steps")
         return self
-
-
-class TraceEvent(BaseModel):
-    """Simple tracing event for future observability."""
-
-    event: str
-    run_id: str | None = None
-    step_id: int | None = None
-    payload: dict[str, object] | None = None
-
-    model_config = ConfigDict(extra="allow")

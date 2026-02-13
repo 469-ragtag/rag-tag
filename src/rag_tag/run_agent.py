@@ -96,6 +96,9 @@ def _sql_result(
     if envelope["status"] == "error":
         error_info = envelope.get("error", {})
         error_msg = error_info.get("message", "Unknown SQL error")
+        error_code = error_info.get("code")
+        if error_code:
+            error_msg = f"{error_msg} (code: {error_code})"
         if trace and run_id:
             trace.write(
                 to_trace_event(
@@ -238,6 +241,7 @@ def main() -> int:
         run_id = uuid.uuid4().hex
         if args.trace_path:
             trace_path = args.trace_path.expanduser().resolve()
+            trace_path.parent.mkdir(parents=True, exist_ok=True)
         else:
             project_root = find_project_root(Path(__file__).resolve().parent)
             if project_root:
@@ -271,6 +275,9 @@ def main() -> int:
             if question.lower() in {"exit", "quit"}:
                 break
 
+            if trace:
+                run_id = uuid.uuid4().hex
+
             try:
                 decision = route_question(question, debug_llm_io=args.input)
                 print_question(question, decision.route, decision.reason)
@@ -280,6 +287,7 @@ def main() -> int:
                     route_payload: dict[str, object] = {
                         "route": decision.route,
                         "reason": decision.reason,
+                        "question": question,
                     }
                     if decision.sql_request:
                         route_payload["sql_request_intent"] = (

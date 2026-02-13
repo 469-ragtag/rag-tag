@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
+import math
 
 import networkx as nx
 
 from rag_tag.ifc_graph_tool import query_ifc_graph
 from rag_tag.llm.models import AgentStep
 from rag_tag.llm.providers.base import BaseProvider
+from rag_tag.trace import TraceWriter, to_trace_event, truncate_string
 
 SYSTEM_PROMPT = """
 You are a graph-reasoning agent for an IFC knowledge graph.
@@ -42,6 +44,12 @@ Required fields:
 - For final steps: answer (string) is required
 
 No extra text, no code fences, just valid JSON.
+
+Tool results are wrapped in an envelope:
+- status: "ok" or "error"
+- data: payload on success, null on error
+- error: object with message/code/details on error
+Use only the data field for reasoning.
 """.strip()
 
 
@@ -80,8 +88,8 @@ class GraphAgent:
         Raises:
             ValidationError: If LLM output doesn't match schema
         """
-        payload = {"question": question, "history": history}
-        prompt = json.dumps(payload)
+        payload = {"question": question, "history": _clean_for_json(history)}
+        prompt = json.dumps(payload, ensure_ascii=True)
 
         step = self._provider.generate_structured(
             prompt,
@@ -89,7 +97,13 @@ class GraphAgent:
             system_prompt=SYSTEM_PROMPT,
         )
 
-        return step
+        if isinstance(step, AgentStep):
+            return step
+
+        if isinstance(step, dict):
+            return AgentStep.model_validate(step)
+
+        raise TypeError(f"Provider returned unexpected type: {type(step).__name__}")
 
     def run(
         self,
@@ -97,7 +111,7 @@ class GraphAgent:
         graph: nx.DiGraph,
         *,
         max_steps: int = 6,
-        trace: object | None = None,
+        trace: TraceWriter | None = None,
         run_id: str | None = None,
     ) -> dict[str, object]:
         """Execute agent workflow loop.
@@ -122,8 +136,6 @@ class GraphAgent:
             except Exception as exc:
                 error_msg = f"Planning failed: {exc}"
                 if trace and run_id:
-                    from rag_tag.trace import to_trace_event
-
                     trace.write(
                         to_trace_event(
                             "error",
@@ -139,8 +151,6 @@ class GraphAgent:
 
             if step.type == "final":
                 if trace and run_id:
-                    from rag_tag.trace import to_trace_event, truncate_string
-
                     answer_snippet = truncate_string(str(step.answer))
                     trace.write(
                         to_trace_event(
@@ -160,8 +170,6 @@ class GraphAgent:
                 if not step.action:
                     error_msg = "Tool step missing action"
                     if trace and run_id:
-                        from rag_tag.trace import to_trace_event
-
                         trace.write(
                             to_trace_event(
                                 "error",
@@ -177,8 +185,6 @@ class GraphAgent:
 
                 # Emit plan_step and tool_call trace events
                 if trace and run_id:
-                    from rag_tag.trace import to_trace_event
-
                     trace.write(
                         to_trace_event(
                             "plan_step",
@@ -212,8 +218,6 @@ class GraphAgent:
                 except Exception as exc:
                     error_msg = f"Tool execution failed: {exc}"
                     if trace and run_id:
-                        from rag_tag.trace import to_trace_event
-
                         trace.write(
                             to_trace_event(
                                 "error",
@@ -240,8 +244,6 @@ class GraphAgent:
                     error_msg = error_info.get("message", "Unknown tool error")
                     error_code = error_info.get("code", "unknown")
                     if trace and run_id:
-                        from rag_tag.trace import to_trace_event
-
                         trace.write(
                             to_trace_event(
                                 "error",
@@ -262,8 +264,6 @@ class GraphAgent:
 
                 # Emit tool_result trace event
                 if trace and run_id:
-                    from rag_tag.trace import to_trace_event
-
                     result_summary = {}
                     result_data = (
                         tool_result.get("data", {})
@@ -318,8 +318,6 @@ class GraphAgent:
             # Unknown step type (should not happen with Pydantic validation)
             error_msg = f"Invalid step type: {step.type}"
             if trace and run_id:
-                from rag_tag.trace import to_trace_event
-
                 trace.write(
                     to_trace_event(
                         "error",
@@ -335,8 +333,6 @@ class GraphAgent:
 
         # Max steps exceeded
         if trace and run_id:
-            from rag_tag.trace import to_trace_event
-
             trace.write(
                 to_trace_event(
                     "error",
@@ -349,13 +345,17 @@ class GraphAgent:
                 )
             )
         summary = _summarize_graph_history(history)
-        result: dict[str, object] = {
+        if summary:
+            result: dict[str, object] = {
+                "warning": "Max steps exceeded",
+                "history": history,
+            }
+            result.update(summary)
+            return result
+        return {
             "error": "Max steps exceeded",
             "history": history,
         }
-        if summary:
-            result.update(summary)
-        return result
 
 
 def _summarize_graph_history(
@@ -406,3 +406,25 @@ def _summarize_graph_history(
                 "data": {"sample": results[:5]},
             }
     return None
+
+
+def _clean_for_json(value: object) -> object:
+    if value is None:
+        return None
+    if isinstance(value, (str, bool, int)):
+        return value
+    if isinstance(value, float):
+        if math.isnan(value) or math.isinf(value):
+            return None
+        return value
+    if isinstance(value, dict):
+        return {str(k): _clean_for_json(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_clean_for_json(v) for v in value]
+    item = getattr(value, "item", None)
+    if callable(item):
+        try:
+            return _clean_for_json(item())
+        except Exception:
+            return str(value)
+    return str(value)

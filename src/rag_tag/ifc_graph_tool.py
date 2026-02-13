@@ -91,6 +91,8 @@ def query_ifc_graph(
         storey = params.get("storey")
         if not storey:
             return _err("Missing param: storey", "missing_param")
+        if not isinstance(storey, str):
+            return _err("Invalid param: storey must be a string", "invalid")
         node = f"Storey::{storey}"
         if node not in G:
             storey_nodes = _find_nodes_by_label(
@@ -136,6 +138,8 @@ def query_ifc_graph(
         cls = params.get("class")
         if not cls:
             return _err("Missing param: class", "missing_param")
+        if not isinstance(cls, str):
+            return _err("Invalid param: class must be a string", "invalid")
         target = _normalize_class(cls)
 
         matches = []
@@ -155,6 +159,8 @@ def query_ifc_graph(
         element_id = params.get("element_id")
         if not element_id:
             return _err("Missing param: element_id", "missing_param")
+        if not isinstance(element_id, str):
+            return _err("Invalid param: element_id must be a string", "invalid")
         resolved, err = _resolve_element_id(element_id)
         if err:
             error_msg = err.get("error", "Unknown error")
@@ -184,8 +190,12 @@ def query_ifc_graph(
 
     if action == "find_nodes":
         cls = params.get("class")
+        if cls is not None and not isinstance(cls, str):
+            return _err("Invalid param: class must be a string", "invalid")
         class_filter = _normalize_class(cls) if cls else None
         property_filters = params.get("property_filters", {})
+        if property_filters and not isinstance(property_filters, dict):
+            return _err("Invalid param: property_filters must be an object", "invalid")
 
         matches = []
         for n, d in G.nodes(data=True):
@@ -200,9 +210,16 @@ def query_ifc_graph(
     if action == "traverse":
         start = params.get("start")
         relation = params.get("relation")
-        depth = int(params.get("depth", 1))
         if not start:
             return _err("Missing param: start", "missing_param")
+        if not isinstance(start, str):
+            return _err("Invalid param: start must be a string", "invalid")
+        if relation is not None and not isinstance(relation, str):
+            return _err("Invalid param: relation must be a string", "invalid")
+        try:
+            depth = int(params.get("depth", 1))
+        except (TypeError, ValueError):
+            return _err("Invalid param: depth must be an integer", "invalid")
         if start not in G:
             return _err(f"Start node not found: {start}", "not_found")
         if depth < 1:
@@ -244,11 +261,15 @@ def query_ifc_graph(
 
     if action == "spatial_query":
         cls = params.get("class")
+        if cls is not None and not isinstance(cls, str):
+            return _err("Invalid param: class must be a string", "invalid")
         class_filter = _normalize_class(cls) if cls else None
         near = params.get("near")
         max_distance = params.get("max_distance")
         if near is None:
             return _err("Missing param: near", "missing_param")
+        if not isinstance(near, (str, int, float)):
+            return _err("Invalid param: near must be a string or number", "invalid")
         resolved, err = _resolve_element_id(str(near))
         if err:
             error_msg = err.get("error", "Unknown error")
@@ -263,6 +284,10 @@ def query_ifc_graph(
             return _err(f"Element not found: {near}", "not_found")
         if max_distance is None:
             return _err("Missing param: max_distance", "missing_param")
+        try:
+            max_distance_value = float(max_distance)
+        except (TypeError, ValueError):
+            return _err("Invalid param: max_distance must be a number", "invalid")
 
         results = []
         for nbr in G.neighbors(resolved):
@@ -270,7 +295,7 @@ def query_ifc_graph(
             if edge.get("relation") != "adjacent_to":
                 continue
             dist = edge.get("distance")
-            if dist is None or float(dist) > float(max_distance):
+            if dist is None or float(dist) > max_distance_value:
                 continue
             if class_filter is not None:
                 if str(G.nodes[nbr].get("class_", "")).lower() != class_filter.lower():
@@ -283,6 +308,12 @@ def query_ifc_graph(
                     "distance": dist,
                 }
             )
-        return _ok({"near": resolved, "max_distance": max_distance, "results": results})
+        return _ok(
+            {
+                "near": resolved,
+                "max_distance": max_distance_value,
+                "results": results,
+            }
+        )
 
     return _err(f"Unknown action: {action}", "unknown_action")

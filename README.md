@@ -49,10 +49,16 @@ rag-tag/
 │       ├── __main__.py
 │       ├── paths.py            # Project/IFC root discovery
 │       ├── run_agent.py        # Interactive CLI for LLM-powered graph queries
-│       ├── command_r_agent.py  # Cohere-based planning agent (ReAct-style)
+│       ├── command_r_agent.py  # Legacy Cohere agent (reference)
+│       ├── trace.py            # JSONL tracing utilities
 │       ├── ifc_graph_tool.py   # Safe graph query interface for the LLM
 │       ├── ifc_sql_tool.py     # SQL query helper
 │       ├── tui.py              # Terminal formatting helpers
+│       ├── agent/
+│       │   └── graph_agent.py  # Provider-agnostic graph agent workflow
+│       ├── llm/
+│       │   ├── provider_registry.py
+│       │   └── providers/      # LLM provider adapters (Cohere, Gemini)
 │       ├── parser/
 │       │   ├── ifc_to_csv.py   # IFC → CSV exporter
 │       │   ├── csv_to_graph.py # CSV → IFC graph + geometry + visualization
@@ -60,7 +66,7 @@ rag-tag/
 │       │   ├── ifc_geometry_parse.py  # Geometry extraction utilities
 │       │   └── sql_schema.py   # SQLite schema helpers
 │       └── router/
-│           ├── llm.py          # Gemini router integration
+│           ├── llm.py          # LLM router integration (provider-agnostic)
 │           ├── llm_models.py   # Pydantic router schemas
 │           ├── models.py       # Router data models
 │           ├── rules.py        # Heuristic router
@@ -242,9 +248,10 @@ The project includes an **LLM-driven planning agent** that answers natural-langu
 
 ### Architecture overview
 
-* **LLM (Cohere Command R+)**: Acts as a planner
+* **LLM provider (Cohere or Gemini)**: Acts as a planner
 * **Graph tools**: Controlled Python functions (`src/rag_tag/ifc_graph_tool.py`)
-* **Executor loop**: Runs multi-step ReAct-style reasoning (`src/rag_tag/run_agent.py`)
+* **Graph agent**: Explicit multi-step workflow (`src/rag_tag/agent/graph_agent.py`)
+* **Router**: Rule-based by default, optional LLM routing (`src/rag_tag/router/`)
 
 The LLM:
 
@@ -269,12 +276,13 @@ Set your API key:
 
 ```bash
 COHERE_API_KEY=your_key_here
+GEMINI_API_KEY=your_key_here
 ```
 
-Optional: enable Gemini routing (otherwise rule-based routing is used):
+Optional: enable LLM routing (otherwise rule-based routing is used):
 
 ```bash
-GEMINI_API_KEY=your_key_here
+ROUTER_MODE=llm GEMINI_API_KEY=your_key_here
 ```
 
 Then start the interactive agent:
@@ -288,6 +296,22 @@ Force router mode (optional):
 ```bash
 ROUTER_MODE=rule uv run rag-tag
 ROUTER_MODE=llm GEMINI_API_KEY=your_key_here uv run rag-tag
+
+Select a provider explicitly (optional):
+
+```bash
+LLM_PROVIDER=gemini GEMINI_API_KEY=your_key_here uv run rag-tag
+LLM_PROVIDER=cohere COHERE_API_KEY=your_key_here uv run rag-tag
+AGENT_PROVIDER=cohere COHERE_API_KEY=your_key_here uv run rag-tag
+ROUTER_PROVIDER=gemini GEMINI_API_KEY=your_key_here uv run rag-tag
+```
+
+Use specific models (optional):
+
+```bash
+AGENT_MODEL=command-a-03-2025 COHERE_API_KEY=your_key_here uv run rag-tag
+GEMINI_MODEL=gemini-3-flash-preview GEMINI_API_KEY=your_key_here uv run rag-tag
+```
 ```
 
 Use a specific SQLite DB for SQL queries:
@@ -300,6 +324,13 @@ To print LLM inputs/outputs (router + agent) to stderr:
 
 ```bash
 uv run rag-tag --input
+```
+
+Trace agent execution (JSONL):
+
+```bash
+uv run rag-tag --trace
+uv run rag-tag --trace --trace-path ./output/agent_trace.jsonl
 ```
 
 Questions and answers are printed with `Q:` / `A:` headers and separated by divider lines for easier debugging.
