@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
-from rag_tag.command_r_agent import CommandRAgent
-from rag_tag.ifc_graph_tool import query_ifc_graph
+from rag_tag.agent import GraphAgent
 from rag_tag.ifc_sql_tool import SqlQueryError, query_ifc_sql
+from rag_tag.llm import resolve_provider
 from rag_tag.paths import find_project_root
 from rag_tag.router import RouteDecision, route_question
 from rag_tag.tui import print_answer, print_question, print_welcome
@@ -88,6 +89,35 @@ def _parse_bool(value: str | None) -> bool:
     raise argparse.ArgumentTypeError("Expected a boolean value (true/false).")
 
 
+def _create_graph_agent(*, debug_llm_io: bool = False) -> GraphAgent:
+    """Create graph agent with provider resolution.
+
+    Provider selection priority:
+    1. AGENT_PROVIDER env var
+    2. LLM_PROVIDER env var
+    3. Auto-detect from API keys
+
+    Args:
+        debug_llm_io: Enable debug printing of LLM I/O
+
+    Returns:
+        Initialized GraphAgent instance
+
+    Raises:
+        RuntimeError: If no provider can be resolved
+    """
+    provider_name = os.getenv("AGENT_PROVIDER") or os.getenv("LLM_PROVIDER")
+    model_name = os.getenv("AGENT_MODEL")
+
+    provider = resolve_provider(
+        name=provider_name,
+        model=model_name,
+        debug_llm_io=debug_llm_io,
+    )
+
+    return GraphAgent(provider, debug_llm_io=debug_llm_io)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="IFC query agent CLI")
     ap.add_argument(
@@ -151,69 +181,14 @@ def main() -> int:
                 if graph is None:
                     graph = _load_graph()
                 if agent is None:
-                    agent = CommandRAgent(debug_llm_io=args.input)
+                    agent = _create_graph_agent(debug_llm_io=args.input)
 
-                state: dict[str, object] = {"history": []}
-                max_steps = 6
-                result: dict[str, object] = {}
-                for _ in range(max_steps):
-                    step = agent.plan(question, state)
-                    step_type = step.get("type")
-
-                    if step_type == "final":
-                        result = {
-                            "route": "graph",
-                            "decision": decision.reason,
-                            "answer": step.get("answer"),
-                        }
-                        break
-
-                    if step_type != "tool":
-                        result = {
-                            "route": "graph",
-                            "decision": decision.reason,
-                            "error": "Invalid step type",
-                            "step": step,
-                        }
-                        break
-
-                    action_value = step.get("action")
-                    params = step.get("params", {})
-                    if not isinstance(action_value, str) or not action_value:
-                        result = {
-                            "route": "graph",
-                            "decision": decision.reason,
-                            "error": "Invalid tool action",
-                            "step": step,
-                        }
-                        break
-                    tool_result = query_ifc_graph(graph, action_value, params)
-                    history = state.get("history", [])
-                    if isinstance(history, list):
-                        history.append(
-                            {
-                                "tool": {
-                                    "action": action_value,
-                                    "params": params,
-                                },
-                                "result": tool_result,
-                            }
-                        )
-                else:
-                    history = state.get("history", [])
-                    summary = (
-                        _summarize_graph_history(history)
-                        if isinstance(history, list)
-                        else None
-                    )
-                    result = {
-                        "route": "graph",
-                        "decision": decision.reason,
-                        "error": "Max steps exceeded",
-                        "history": history,
-                    }
-                    if summary:
-                        result.update(summary)
+                agent_result = agent.run(question, graph, max_steps=6)
+                result = {
+                    "route": "graph",
+                    "decision": decision.reason,
+                    **agent_result,
+                }
         except Exception as exc:
             # Print question even on error (decision may not exist).
             print_question(question, "?", "routing failed")
@@ -223,42 +198,6 @@ def main() -> int:
         print_answer(result, verbose=show_verbose)
 
     return 0
-
-
-def _summarize_graph_history(
-    history: list[dict[str, object]],
-) -> dict[str, object] | None:
-    for entry in reversed(history):
-        result = entry.get("result")
-        if not isinstance(result, dict):
-            continue
-        elements = result.get("elements")
-        if isinstance(elements, list):
-            labels = [
-                e.get("label") or e.get("id") for e in elements if isinstance(e, dict)
-            ]
-            sample = [label for label in labels if label]
-            return {
-                "answer": f"Found {len(elements)} elements.",
-                "data": {"sample": sample[:5]},
-            }
-        adjacent = result.get("adjacent")
-        if isinstance(adjacent, list):
-            labels = [
-                e.get("label") or e.get("id") for e in adjacent if isinstance(e, dict)
-            ]
-            sample = [label for label in labels if label]
-            return {
-                "answer": f"Found {len(adjacent)} adjacent elements.",
-                "data": {"sample": sample[:5]},
-            }
-        results = result.get("results")
-        if isinstance(results, list):
-            return {
-                "answer": f"Found {len(results)} traversal results.",
-                "data": {"sample": results[:5]},
-            }
-    return None
 
 
 if __name__ == "__main__":
