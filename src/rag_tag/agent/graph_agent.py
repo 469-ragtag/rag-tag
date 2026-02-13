@@ -97,6 +97,8 @@ class GraphAgent:
         graph: nx.DiGraph,
         *,
         max_steps: int = 6,
+        trace: object | None = None,
+        run_id: str | None = None,
     ) -> dict[str, object]:
         """Execute agent workflow loop.
 
@@ -104,30 +106,102 @@ class GraphAgent:
             question: User question
             graph: NetworkX graph to query
             max_steps: Maximum reasoning steps
+            trace: Optional TraceWriter instance for logging
+            run_id: Optional run identifier for tracing
 
         Returns:
             Result dict with 'answer' or 'error' key, optionally 'history'
         """
         history: list[dict[str, object]] = []
+        step_num = 0
 
         for _ in range(max_steps):
+            step_num += 1
             try:
                 step = self.plan(question, history)
             except Exception as exc:
+                error_msg = f"Planning failed: {exc}"
+                if trace and run_id:
+                    from rag_tag.trace import to_trace_event
+
+                    trace.write(
+                        to_trace_event(
+                            "error",
+                            run_id,
+                            step_id=step_num,
+                            payload={"error": error_msg, "stage": "planning"},
+                        )
+                    )
                 return {
-                    "error": f"Planning failed: {exc}",
+                    "error": error_msg,
                     "history": history,
                 }
 
             if step.type == "final":
+                if trace and run_id:
+                    from rag_tag.trace import to_trace_event, truncate_string
+
+                    answer_snippet = truncate_string(str(step.answer))
+                    trace.write(
+                        to_trace_event(
+                            "final",
+                            run_id,
+                            step_id=step_num,
+                            payload={
+                                "route": "graph",
+                                "answer_length": len(str(step.answer)),
+                                "answer_snippet": answer_snippet,
+                            },
+                        )
+                    )
                 return {"answer": step.answer}
 
             if step.type == "tool":
                 if not step.action:
+                    error_msg = "Tool step missing action"
+                    if trace and run_id:
+                        from rag_tag.trace import to_trace_event
+
+                        trace.write(
+                            to_trace_event(
+                                "error",
+                                run_id,
+                                step_id=step_num,
+                                payload={"error": error_msg},
+                            )
+                        )
                     return {
-                        "error": "Tool step missing action",
+                        "error": error_msg,
                         "history": history,
                     }
+
+                # Emit plan_step and tool_call trace events
+                if trace and run_id:
+                    from rag_tag.trace import to_trace_event
+
+                    trace.write(
+                        to_trace_event(
+                            "plan_step",
+                            run_id,
+                            step_id=step_num,
+                            payload={
+                                "step_type": "tool",
+                                "action": step.action,
+                                "params_keys": list((step.params or {}).keys()),
+                            },
+                        )
+                    )
+                    trace.write(
+                        to_trace_event(
+                            "tool_call",
+                            run_id,
+                            step_id=step_num,
+                            payload={
+                                "action": step.action,
+                                "params": step.params or {},
+                            },
+                        )
+                    )
 
                 try:
                     tool_result = query_ifc_graph(
@@ -136,10 +210,65 @@ class GraphAgent:
                         step.params or {},
                     )
                 except Exception as exc:
+                    error_msg = f"Tool execution failed: {exc}"
+                    if trace and run_id:
+                        from rag_tag.trace import to_trace_event
+
+                        trace.write(
+                            to_trace_event(
+                                "error",
+                                run_id,
+                                step_id=step_num,
+                                payload={
+                                    "error": error_msg,
+                                    "action": step.action,
+                                    "stage": "tool_execution",
+                                },
+                            )
+                        )
                     return {
-                        "error": f"Tool execution failed: {exc}",
+                        "error": error_msg,
                         "history": history,
                     }
+
+                # Emit tool_result trace event
+                if trace and run_id:
+                    from rag_tag.trace import to_trace_event
+
+                    result_summary = {}
+                    if isinstance(tool_result, dict):
+                        # Extract keys and counts without full data
+                        result_summary["keys"] = list(tool_result.keys())
+                        if "elements" in tool_result and isinstance(
+                            tool_result["elements"], list
+                        ):
+                            result_summary["elements_count"] = len(
+                                tool_result["elements"]
+                            )
+                        if "adjacent" in tool_result and isinstance(
+                            tool_result["adjacent"], list
+                        ):
+                            result_summary["adjacent_count"] = len(
+                                tool_result["adjacent"]
+                            )
+                        if "results" in tool_result and isinstance(
+                            tool_result["results"], list
+                        ):
+                            result_summary["results_count"] = len(
+                                tool_result["results"]
+                            )
+                    trace.write(
+                        to_trace_event(
+                            "tool_result",
+                            run_id,
+                            step_id=step_num,
+                            payload={
+                                "action": step.action,
+                                "status": "success",
+                                "result_summary": result_summary,
+                            },
+                        )
+                    )
 
                 history.append(
                     {
@@ -153,12 +282,38 @@ class GraphAgent:
                 continue
 
             # Unknown step type (should not happen with Pydantic validation)
+            error_msg = f"Invalid step type: {step.type}"
+            if trace and run_id:
+                from rag_tag.trace import to_trace_event
+
+                trace.write(
+                    to_trace_event(
+                        "error",
+                        run_id,
+                        step_id=step_num,
+                        payload={"error": error_msg},
+                    )
+                )
             return {
-                "error": f"Invalid step type: {step.type}",
+                "error": error_msg,
                 "history": history,
             }
 
         # Max steps exceeded
+        if trace and run_id:
+            from rag_tag.trace import to_trace_event
+
+            trace.write(
+                to_trace_event(
+                    "error",
+                    run_id,
+                    step_id=step_num,
+                    payload={
+                        "error": "Max steps exceeded",
+                        "max_steps": max_steps,
+                    },
+                )
+            )
         summary = _summarize_graph_history(history)
         result: dict[str, object] = {
             "error": "Max steps exceeded",
