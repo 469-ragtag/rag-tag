@@ -172,7 +172,6 @@ Use `uv` for all commands.
   - `__main__.py`: Entry point for `python -m rag_tag`
   - `paths.py`: Centralized path discovery utilities
 - `run_agent.py`: Main CLI application
-- `command_r_agent.py`: Legacy Cohere agent (reference)
 - `trace.py`: JSONL tracing utilities
 - `ifc_graph_tool.py`: Graph query interface
 - `ifc_sql_tool.py`: SQL query interface

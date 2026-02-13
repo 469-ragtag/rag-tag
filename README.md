@@ -49,7 +49,6 @@ rag-tag/
 │       ├── __main__.py
 │       ├── paths.py            # Project/IFC root discovery
 │       ├── run_agent.py        # Interactive CLI for LLM-powered graph queries
-│       ├── command_r_agent.py  # Legacy Cohere agent (reference)
 │       ├── trace.py            # JSONL tracing utilities
 │       ├── ifc_graph_tool.py   # Safe graph query interface for the LLM
 │       ├── ifc_sql_tool.py     # SQL query helper
