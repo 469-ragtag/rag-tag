@@ -231,31 +231,65 @@ class GraphAgent:
                         "history": history,
                     }
 
+                # Check envelope status
+                if (
+                    isinstance(tool_result, dict)
+                    and tool_result.get("status") == "error"
+                ):
+                    error_info = tool_result.get("error", {})
+                    error_msg = error_info.get("message", "Unknown tool error")
+                    error_code = error_info.get("code", "unknown")
+                    if trace and run_id:
+                        from rag_tag.trace import to_trace_event
+
+                        trace.write(
+                            to_trace_event(
+                                "error",
+                                run_id,
+                                step_id=step_num,
+                                payload={
+                                    "error": error_msg,
+                                    "error_code": error_code,
+                                    "action": step.action,
+                                    "stage": "tool_result",
+                                },
+                            )
+                        )
+                    return {
+                        "error": f"{error_msg} (code: {error_code})",
+                        "history": history,
+                    }
+
                 # Emit tool_result trace event
                 if trace and run_id:
                     from rag_tag.trace import to_trace_event
 
                     result_summary = {}
-                    if isinstance(tool_result, dict):
+                    result_data = (
+                        tool_result.get("data", {})
+                        if isinstance(tool_result, dict)
+                        else {}
+                    )
+                    if isinstance(result_data, dict):
                         # Extract keys and counts without full data
-                        result_summary["keys"] = list(tool_result.keys())
-                        if "elements" in tool_result and isinstance(
-                            tool_result["elements"], list
+                        result_summary["keys"] = list(result_data.keys())
+                        if "elements" in result_data and isinstance(
+                            result_data["elements"], list
                         ):
                             result_summary["elements_count"] = len(
-                                tool_result["elements"]
+                                result_data["elements"]
                             )
-                        if "adjacent" in tool_result and isinstance(
-                            tool_result["adjacent"], list
+                        if "adjacent" in result_data and isinstance(
+                            result_data["adjacent"], list
                         ):
                             result_summary["adjacent_count"] = len(
-                                tool_result["adjacent"]
+                                result_data["adjacent"]
                             )
-                        if "results" in tool_result and isinstance(
-                            tool_result["results"], list
+                        if "results" in result_data and isinstance(
+                            result_data["results"], list
                         ):
                             result_summary["results_count"] = len(
-                                tool_result["results"]
+                                result_data["results"]
                             )
                     trace.write(
                         to_trace_event(
@@ -339,7 +373,13 @@ def _summarize_graph_history(
         result = entry.get("result")
         if not isinstance(result, dict):
             continue
-        elements = result.get("elements")
+
+        # Handle envelope structure
+        result_data = result.get("data") if result.get("status") == "ok" else result
+        if not isinstance(result_data, dict):
+            continue
+
+        elements = result_data.get("elements")
         if isinstance(elements, list):
             labels = [
                 e.get("label") or e.get("id") for e in elements if isinstance(e, dict)
@@ -349,7 +389,7 @@ def _summarize_graph_history(
                 "answer": f"Found {len(elements)} elements.",
                 "data": {"sample": sample[:5]},
             }
-        adjacent = result.get("adjacent")
+        adjacent = result_data.get("adjacent")
         if isinstance(adjacent, list):
             labels = [
                 e.get("label") or e.get("id") for e in adjacent if isinstance(e, dict)
@@ -359,7 +399,7 @@ def _summarize_graph_history(
                 "answer": f"Found {len(adjacent)} adjacent elements.",
                 "data": {"sample": sample[:5]},
             }
-        results = result.get("results")
+        results = result_data.get("results")
         if isinstance(results, list):
             return {
                 "answer": f"Found {len(results)} traversal results.",

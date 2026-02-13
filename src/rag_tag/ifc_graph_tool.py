@@ -5,6 +5,19 @@ from typing import Any, Dict, Iterable
 import networkx as nx
 
 
+def _ok(data: dict) -> dict[str, Any]:
+    """Wrap successful tool result in envelope."""
+    return {"status": "ok", "data": data, "error": None}
+
+
+def _err(message: str, code: str, details: dict | None = None) -> dict[str, Any]:
+    """Wrap error result in envelope."""
+    error_payload: dict[str, Any] = {"message": message, "code": code}
+    if details:
+        error_payload["details"] = details
+    return {"status": "error", "data": None, "error": error_payload}
+
+
 def query_ifc_graph(
     G: nx.DiGraph, action: str, params: Dict[str, Any]
 ) -> Dict[str, Any]:
@@ -77,7 +90,7 @@ def query_ifc_graph(
     if action == "get_elements_in_storey":
         storey = params.get("storey")
         if not storey:
-            return {"error": "Missing param: storey"}
+            return _err("Missing param: storey", "missing_param")
         node = f"Storey::{storey}"
         if node not in G:
             storey_nodes = _find_nodes_by_label(
@@ -86,9 +99,13 @@ def query_ifc_graph(
             if len(storey_nodes) == 1:
                 node = storey_nodes[0]
             elif len(storey_nodes) > 1:
-                return {"error": "Ambiguous storey", "candidates": storey_nodes}
+                return _err(
+                    "Ambiguous storey",
+                    "ambiguous",
+                    {"candidates": storey_nodes},
+                )
             else:
-                return {"error": f"Storey not found: {storey}"}
+                return _err(f"Storey not found: {storey}", "not_found")
 
         container_classes = {
             "IfcProject",
@@ -113,12 +130,12 @@ def query_ifc_graph(
                     "class_": cls,
                 }
             )
-        return {"storey": storey, "elements": elements}
+        return _ok({"storey": storey, "elements": elements})
 
     if action == "find_elements_by_class":
         cls = params.get("class")
         if not cls:
-            return {"error": "Missing param: class"}
+            return _err("Missing param: class", "missing_param")
         target = _normalize_class(cls)
 
         matches = []
@@ -132,17 +149,24 @@ def query_ifc_graph(
                         "properties": d.get("properties", {}),
                     }
                 )
-        return {"class": target, "elements": matches}
+        return _ok({"class": target, "elements": matches})
 
     if action == "get_adjacent_elements":
         element_id = params.get("element_id")
         if not element_id:
-            return {"error": "Missing param: element_id"}
+            return _err("Missing param: element_id", "missing_param")
         resolved, err = _resolve_element_id(element_id)
         if err:
-            return err
+            error_msg = err.get("error", "Unknown error")
+            if "Ambiguous" in str(error_msg):
+                return _err(
+                    str(error_msg),
+                    "ambiguous",
+                    {"candidates": err.get("candidates", [])},
+                )
+            return _err(str(error_msg), "not_found")
         if resolved is None:
-            return {"error": f"Element not found: {element_id}"}
+            return _err(f"Element not found: {element_id}", "not_found")
 
         neighbors = []
         for nbr in G.neighbors(resolved):
@@ -156,7 +180,7 @@ def query_ifc_graph(
                         "distance": edge.get("distance"),
                     }
                 )
-        return {"element_id": resolved, "adjacent": neighbors}
+        return _ok({"element_id": resolved, "adjacent": neighbors})
 
     if action == "find_nodes":
         cls = params.get("class")
@@ -171,18 +195,18 @@ def query_ifc_graph(
             if not _apply_property_filters(n, property_filters):
                 continue
             matches.append(_node_payload(n))
-        return {"class": class_filter, "elements": matches}
+        return _ok({"class": class_filter, "elements": matches})
 
     if action == "traverse":
         start = params.get("start")
         relation = params.get("relation")
         depth = int(params.get("depth", 1))
         if not start:
-            return {"error": "Missing param: start"}
+            return _err("Missing param: start", "missing_param")
         if start not in G:
-            return {"error": f"Start node not found: {start}"}
+            return _err(f"Start node not found: {start}", "not_found")
         if depth < 1:
-            return {"error": "Depth must be >= 1"}
+            return _err("Depth must be >= 1", "invalid")
 
         visited = {start}
         frontier = {start}
@@ -209,12 +233,14 @@ def query_ifc_graph(
                     )
             frontier = next_frontier
 
-        return {
-            "start": start,
-            "relation": relation,
-            "depth": depth,
-            "results": results,
-        }
+        return _ok(
+            {
+                "start": start,
+                "relation": relation,
+                "depth": depth,
+                "results": results,
+            }
+        )
 
     if action == "spatial_query":
         cls = params.get("class")
@@ -222,14 +248,21 @@ def query_ifc_graph(
         near = params.get("near")
         max_distance = params.get("max_distance")
         if near is None:
-            return {"error": "Missing param: near"}
+            return _err("Missing param: near", "missing_param")
         resolved, err = _resolve_element_id(str(near))
         if err:
-            return err
+            error_msg = err.get("error", "Unknown error")
+            if "Ambiguous" in str(error_msg):
+                return _err(
+                    str(error_msg),
+                    "ambiguous",
+                    {"candidates": err.get("candidates", [])},
+                )
+            return _err(str(error_msg), "not_found")
         if resolved is None:
-            return {"error": f"Element not found: {near}"}
+            return _err(f"Element not found: {near}", "not_found")
         if max_distance is None:
-            return {"error": "Missing param: max_distance"}
+            return _err("Missing param: max_distance", "missing_param")
 
         results = []
         for nbr in G.neighbors(resolved):
@@ -250,6 +283,6 @@ def query_ifc_graph(
                     "distance": dist,
                 }
             )
-        return {"near": resolved, "max_distance": max_distance, "results": results}
+        return _ok({"near": resolved, "max_distance": max_distance, "results": results})
 
-    return {"error": f"Unknown action: {action}"}
+    return _err(f"Unknown action: {action}", "unknown_action")

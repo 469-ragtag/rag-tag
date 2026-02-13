@@ -75,7 +75,7 @@ def _sql_result(
         }
 
     try:
-        payload = query_ifc_sql(db_path, decision.sql_request)
+        envelope = query_ifc_sql(db_path, decision.sql_request)
     except SqlQueryError as exc:
         error_str = str(exc)
         if trace and run_id:
@@ -92,7 +92,27 @@ def _sql_result(
             "error": error_str,
         }
 
-    result = {
+    # Check envelope status
+    if envelope["status"] == "error":
+        error_info = envelope.get("error", {})
+        error_msg = error_info.get("message", "Unknown SQL error")
+        if trace and run_id:
+            trace.write(
+                to_trace_event(
+                    "error",
+                    run_id,
+                    payload={"error": error_msg, "route": "sql"},
+                )
+            )
+        return {
+            "route": "sql",
+            "decision": decision.reason,
+            "error": error_msg,
+        }
+
+    # Extract payload from envelope
+    payload = envelope["data"]
+    result: dict[str, object] = {
         "route": "sql",
         "decision": decision.reason,
         "db_path": str(db_path),
@@ -257,7 +277,7 @@ def main() -> int:
 
                 # Emit route_decision trace event
                 if trace and run_id:
-                    route_payload = {
+                    route_payload: dict[str, object] = {
                         "route": decision.route,
                         "reason": decision.reason,
                     }
@@ -265,9 +285,10 @@ def main() -> int:
                         route_payload["sql_request_intent"] = (
                             decision.sql_request.intent
                         )
-                        route_payload["sql_request_class"] = (
-                            decision.sql_request.ifc_class
-                        )
+                        if decision.sql_request.ifc_class:
+                            route_payload["sql_request_class"] = (
+                                decision.sql_request.ifc_class
+                            )
                     trace.write(
                         to_trace_event("route_decision", run_id, payload=route_payload)
                     )
