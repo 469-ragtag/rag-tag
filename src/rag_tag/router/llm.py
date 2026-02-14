@@ -1,14 +1,8 @@
 from __future__ import annotations
 
-import os
-from pathlib import Path
+from pydantic_ai import Agent
 
-try:
-    from dotenv import load_dotenv
-except ModuleNotFoundError:
-    load_dotenv = None
-
-from rag_tag.llm.provider_registry import resolve_provider
+from rag_tag.llm.pydantic_ai import get_router_model
 
 from .llm_models import LlmRouteResponse
 from .models import RouteDecision, SqlRequest
@@ -18,48 +12,49 @@ class LlmRouterError(RuntimeError):
     """Raised when LLM routing fails or is misconfigured."""
 
 
-def _load_env() -> None:
-    if load_dotenv is None:
-        return
-    from rag_tag.paths import find_project_root
-
-    project_root = find_project_root(Path(__file__).resolve().parent)
-    if project_root is not None:
-        load_dotenv(project_root / ".env")
-
-
 def route_with_llm(question: str, *, debug_llm_io: bool = False) -> RouteDecision:
-    _load_env()
+    """Route a question using an LLM with structured output.
 
-    provider_name = os.getenv("ROUTER_PROVIDER") or os.getenv("LLM_PROVIDER")
+    Args:
+        question: The user's question to route
+        debug_llm_io: If True, enable debug output (not implemented in PydanticAI)
 
+    Returns:
+        RouteDecision with route type, reason, and optional SQL request
+
+    Raises:
+        LlmRouterError: If routing fails or returns invalid results
+    """
+    # Get the router model from environment (default: google:gemini-2.5-flash)
     try:
-        provider = resolve_provider(
-            provider_name,
-            debug_llm_io=debug_llm_io,
-        )
-    except RuntimeError as exc:
+        model = get_router_model()
+    except Exception as exc:
         raise LlmRouterError(
-            f"Failed to initialize LLM provider: {exc}. "
+            f"Failed to get router model: {exc}. "
             "Set ROUTER_MODE=rule to use rule-based routing."
         ) from exc
 
-    prompt = _build_prompt(question)
+    # Create PydanticAI agent with structured output
+    agent = Agent(
+        model,
+        output_type=LlmRouteResponse,
+        system_prompt=_build_system_prompt(),
+    )
 
+    # Run the agent synchronously (this is a sync codebase)
     try:
-        response = provider.generate_structured(
-            prompt,
-            schema=LlmRouteResponse,
-            system_prompt=None,
-        )
+        result = agent.run_sync(question)
+        response = result.output
     except Exception as exc:
         raise LlmRouterError(f"LLM request failed: {exc}") from exc
 
+    # Validate response type (should always be LlmRouteResponse due to output_type)
     if not isinstance(response, LlmRouteResponse):
         raise LlmRouterError(
-            f"Provider returned unexpected type: {type(response).__name__}"
+            f"Agent returned unexpected type: {type(response).__name__}"
         )
 
+    # Build route decision based on LLM response
     if response.route == "graph":
         return RouteDecision("graph", response.reason, None)
 
@@ -76,40 +71,46 @@ def route_with_llm(question: str, *, debug_llm_io: bool = False) -> RouteDecisio
     return RouteDecision("sql", response.reason, request)
 
 
-def _build_prompt(question: str) -> str:
+def _build_system_prompt() -> str:
+    """Build system prompt for routing agent.
+
+    PydanticAI handles structured output via output_type, so we focus on
+    decision logic rather than JSON formatting.
+    """
     return (
         "You are a router for IFC/BIM questions. Your job is to pick the best "
         "execution lane: sql for simple counts/lists by class and/or level, or "
         "graph for spatial/topological/multi-hop queries or anything involving "
         "adjacency, connectivity, paths, or vague relationships.\n\n"
-        "Return ONLY a single JSON object with keys:\n"
+        "Decision criteria:\n"
+        "- route='sql': Use for simple aggregations or lists by IFC class "
+        "and/or building level. Examples: counts, existence checks, lists.\n"
+        "- route='graph': Use for spatial relations, adjacency, connectivity, "
+        "paths, property-based constraints, or any multi-hop traversals.\n\n"
+        "Fields to populate:\n"
         "- route: 'sql' or 'graph'\n"
-        "- intent: 'count', 'list', or 'none'\n"
-        "- ifc_class: IFC class like 'IfcDoor' or null\n"
-        "- level_like: level/storey/floor string or null\n"
-        "- reason: short reason\n\n"
-        "Only choose route=sql for simple aggregations or lists by class/level. "
-        "If the query involves spatial relations, adjacency, connectivity, paths, "
-        "or property-based constraints, choose route=graph.\n\n"
+        "- intent: 'count' (for aggregations), 'list' (for entity lists), "
+        "or 'none' (for graph queries)\n"
+        "- ifc_class: IFC class name like 'IfcDoor', 'IfcWindow', or null\n"
+        "- level_like: level/storey/floor identifier or null\n"
+        "- reason: brief explanation of routing decision\n\n"
         "Examples:\n"
         "Q: How many doors are on Level 2?\n"
-        'A: {"route":"sql","intent":"count","ifc_class":"IfcDoor",'
-        '"level_like":"level 2","reason":"count by class and level"}\n'
+        "A: route='sql', intent='count', ifc_class='IfcDoor', "
+        "level_like='level 2', reason='count by class and level'\n\n"
         "Q: List all windows on the ground floor.\n"
-        'A: {"route":"sql","intent":"list","ifc_class":"IfcWindow",'
-        '"level_like":"ground floor","reason":"simple list by class and level"}\n'
+        "A: route='sql', intent='list', ifc_class='IfcWindow', "
+        "level_like='ground floor', reason='simple list by class and level'\n\n"
         "Q: Are there any windows in the building?\n"
-        'A: {"route":"sql","intent":"count","ifc_class":"IfcWindow",'
-        '"level_like":null,"reason":"existence check for class"}\n'
+        "A: route='sql', intent='count', ifc_class='IfcWindow', "
+        "level_like=null, reason='existence check for class'\n\n"
         "Q: Does the building have a roof?\n"
-        'A: {"route":"sql","intent":"count","ifc_class":"IfcRoof",'
-        '"level_like":null,"reason":"existence check for class"}\n'
+        "A: route='sql', intent='count', ifc_class='IfcRoof', "
+        "level_like=null, reason='existence check for class'\n\n"
         "Q: Which rooms are adjacent to the kitchen?\n"
-        'A: {"route":"graph","intent":"none","ifc_class":null,'
-        '"level_like":null,"reason":"spatial adjacency query"}\n'
+        "A: route='graph', intent='none', ifc_class=null, "
+        "level_like=null, reason='spatial adjacency query'\n\n"
         "Q: Find doors near the stair core.\n"
-        'A: {"route":"graph","intent":"none","ifc_class":null,'
-        '"level_like":null,"reason":"spatial proximity query"}\n\n'
-        f"Question: {question}\n"
-        "Answer JSON only:"
+        "A: route='graph', intent='none', ifc_class=null, "
+        "level_like=null, reason='spatial proximity query'"
     )
