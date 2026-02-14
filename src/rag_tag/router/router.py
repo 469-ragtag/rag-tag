@@ -51,7 +51,7 @@ def _route_with_llm_fallback(
         )
 
     try:
-        decision = route_with_llm(question, debug_llm_io=debug_llm_io)
+        decision = route_with_llm(question)
     except LlmRouterError as exc:
         fallback = route_question_rule(question)
         return RouteDecision(
