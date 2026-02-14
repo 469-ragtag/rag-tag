@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 SqlRoute = Literal["sql", "graph"]
 SqlIntent = Literal["count", "list"]
@@ -20,3 +20,4 @@ class RouteDecision:
     route: SqlRoute
     reason: str
     sql_request: SqlRequest | None
+    llm_debug: dict[str, Any] | None = None

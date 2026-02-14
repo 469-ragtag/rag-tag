@@ -52,6 +52,12 @@ def resolve_model(
 
     provider = provider_name.strip().lower()
 
+    if model_name is None:
+        if purpose == "router":
+            model_name = os.getenv("ROUTER_MODEL")
+        elif purpose == "agent":
+            model_name = os.getenv("AGENT_MODEL")
+
     if provider == "cohere":
         api_key = os.getenv("COHERE_API_KEY")
         if not api_key:

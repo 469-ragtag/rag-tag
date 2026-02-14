@@ -145,6 +145,12 @@ def main() -> int:
         help="Show full JSON details below each answer.",
     )
     ap.add_argument(
+        "--verbose-short",
+        action="store_true",
+        default=False,
+        help="Show compact debug details (summarized LLM I/O) below each answer.",
+    )
+    ap.add_argument(
         "--db",
         type=Path,
         default=None,
@@ -204,8 +210,12 @@ def main() -> int:
             if question.lower() in {"exit", "quit"}:
                 break
 
+            show_verbose = args.verbose or args.input
+            show_verbose_short = args.verbose_short and not show_verbose
+            debug_llm_io = show_verbose or show_verbose_short
+
             try:
-                decision = route_question(question, debug_llm_io=args.input)
+                decision = route_question(question, debug_llm_io=debug_llm_io)
                 print_question(question, decision.route, decision.reason)
 
                 if decision.route == "sql":
@@ -216,18 +226,38 @@ def main() -> int:
                     if agent is None:
                         agent = _create_graph_agent()
 
-                    agent_result = agent.run(question, graph, max_steps=6)
+                    agent_result = agent.run(
+                        question,
+                        graph,
+                        max_steps=6,
+                        debug_llm_io=debug_llm_io,
+                    )
+                    agent_llm_debug = agent_result.pop("llm_debug", None)
                     result = {
                         "route": "graph",
                         "decision": decision.reason,
                         **agent_result,
                     }
+
+                    if decision.llm_debug or agent_llm_debug:
+                        llm_debug: dict[str, object] = {}
+                        if decision.llm_debug:
+                            llm_debug["router"] = decision.llm_debug
+                        if agent_llm_debug:
+                            llm_debug["agent"] = agent_llm_debug
+                        result["llm_debug"] = llm_debug
+
+                if decision.route == "sql" and decision.llm_debug:
+                    result["llm_debug"] = {"router": decision.llm_debug}
             except Exception as exc:
                 print_question(question, "?", "routing failed")
                 result = {"error": str(exc)}
 
-            show_verbose = args.verbose or args.input
-            print_answer(result, verbose=show_verbose)
+            print_answer(
+                result,
+                verbose=show_verbose,
+                verbose_short=show_verbose_short,
+            )
 
     except KeyboardInterrupt:
         print("\nInterrupted by user.", file=sys.stderr)

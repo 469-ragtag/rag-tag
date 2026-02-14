@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
+from typing import Any
 
 try:
     from dotenv import load_dotenv
@@ -65,7 +67,52 @@ A: route=graph, intent=none, ifc_class=null, level_like=null
 """.strip()
 
 
-async def route_with_llm_async(question: str) -> RouteDecision:
+def _describe_model(model: object) -> str:
+    """Best-effort model description for debugging."""
+    for attr in ("model_name", "name"):
+        value = getattr(model, attr, None)
+        if isinstance(value, str) and value.strip():
+            return value
+    return repr(model)
+
+
+def _extract_messages(result: Any) -> Any:
+    """Extract serialized model messages when available."""
+    try:
+        raw = result.new_messages_json()
+        if isinstance(raw, bytes):
+            return json.loads(raw.decode("utf-8"))
+    except Exception:
+        return None
+    return None
+
+
+def _to_route_decision(
+    response: RouterDecision,
+    *,
+    llm_debug: dict[str, Any] | None,
+) -> RouteDecision:
+    if response.route == "graph":
+        return RouteDecision("graph", response.reason, None, llm_debug=llm_debug)
+
+    if response.intent == "none":
+        raise LlmRouterError("LLM returned sql route with intent 'none'")
+
+    limit = 50 if response.intent == "list" else 0
+    request = SqlRequest(
+        intent=response.intent,
+        ifc_class=response.ifc_class,
+        level_like=response.level_like,
+        limit=limit,
+    )
+    return RouteDecision("sql", response.reason, request, llm_debug=llm_debug)
+
+
+async def route_with_llm_async(
+    question: str,
+    *,
+    debug_llm_io: bool = False,
+) -> RouteDecision:
     """Route question using LLM (async).
 
     Args:
@@ -101,20 +148,21 @@ async def route_with_llm_async(question: str) -> RouteDecision:
     except Exception as exc:
         raise LlmRouterError(f"LLM request failed: {exc}") from exc
 
-    if response.route == "graph":
-        return RouteDecision("graph", response.reason, None)
+    llm_debug: dict[str, Any] | None = None
+    if debug_llm_io:
+        llm_debug = {
+            "component": "router",
+            "provider": provider_name or "auto",
+            "model": _describe_model(model),
+            "input": {
+                "question": question,
+                "instructions": _ROUTER_PROMPT,
+            },
+            "output": response.model_dump(mode="json"),
+            "messages": _extract_messages(result),
+        }
 
-    if response.intent == "none":
-        raise LlmRouterError("LLM returned sql route with intent 'none'")
-
-    limit = 50 if response.intent == "list" else 0
-    request = SqlRequest(
-        intent=response.intent,
-        ifc_class=response.ifc_class,
-        level_like=response.level_like,
-        limit=limit,
-    )
-    return RouteDecision("sql", response.reason, request)
+    return _to_route_decision(response, llm_debug=llm_debug)
 
 
 def route_with_llm(question: str, *, debug_llm_io: bool = False) -> RouteDecision:
@@ -132,32 +180,62 @@ def route_with_llm(question: str, *, debug_llm_io: bool = False) -> RouteDecisio
     """
     import asyncio
 
-    def _run_in_new_loop() -> RouteDecision:
-        loop = asyncio.new_event_loop()
+    def _ensure_open_loop() -> None:
         try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-            return loop.run_until_complete(route_with_llm_async(question))
-        finally:
-            try:
-                loop.run_until_complete(loop.shutdown_asyncgens())
-            finally:
-                asyncio.set_event_loop(None)
-                loop.close()
+            return
+        if loop.is_closed():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+    def _run_sync() -> RouteDecision:
+        provider_name = os.getenv("ROUTER_PROVIDER") or os.getenv("LLM_PROVIDER")
+        model = resolve_model(provider_name, purpose="router")
+        agent = Agent(
+            model,
+            output_type=RouterDecision,
+            instructions=_ROUTER_PROMPT,
+        )
+        result = agent.run_sync(question)
+        response = result.output
+
+        llm_debug: dict[str, Any] | None = None
+        if debug_llm_io:
+            llm_debug = {
+                "component": "router",
+                "provider": provider_name or "auto",
+                "model": _describe_model(model),
+                "input": {
+                    "question": question,
+                    "instructions": _ROUTER_PROMPT,
+                },
+                "output": response.model_dump(mode="json"),
+                "messages": _extract_messages(result),
+            }
+
+        return _to_route_decision(response, llm_debug=llm_debug)
 
     try:
-        return asyncio.run(route_with_llm_async(question))
-    except RuntimeError as exc:
-        message = str(exc)
-        if "cannot be called from a running event loop" in message:
-            # Already inside a running loop (e.g. Jupyter) -- patch and retry
-            import nest_asyncio
+        running_loop = asyncio.get_running_loop()
+    except RuntimeError:
+        running_loop = None
 
-            nest_asyncio.apply()
+    if running_loop is not None and running_loop.is_running():
+        import nest_asyncio
+
+        nest_asyncio.apply()
+        try:
             return asyncio.get_event_loop().run_until_complete(
-                route_with_llm_async(question)
+                route_with_llm_async(question, debug_llm_io=debug_llm_io)
             )
-        if "no current event loop" in message.lower():
-            return _run_in_new_loop()
-        raise LlmRouterError(f"Routing failed: {exc}") from exc
+        except Exception as exc:
+            raise LlmRouterError(f"Routing failed: {exc}") from exc
+
+    _ensure_open_loop()
+    try:
+        return _run_sync()
     except Exception as exc:
         raise LlmRouterError(f"Routing failed: {exc}") from exc

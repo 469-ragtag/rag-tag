@@ -148,20 +148,25 @@ The graph agent (`src/rag_tag/agent/graph_agent.py`) is a PydanticAI agent with:
 - `output_type=GraphAnswer` (structured Pydantic output)
 - `instructions=SYSTEM_PROMPT` (graph schema and tool descriptions)
 - `deps_type=nx.DiGraph` (NetworkX graph passed as dependency)
+- `output_retries=3` for structured-output robustness
+- Plain-text fallback agent if structured output validation still fails
 - `max_steps=6` (maximum reasoning steps)
+- Tool-first entity resolution policy for vague references (e.g., "house") before asking user for IDs/GUIDs
 
 ### Graph Tool Actions
 
-The graph query interface (`src/rag_tag/ifc_graph_tool.py`) exposes 6 actions:
+The graph query interface (`src/rag_tag/ifc_graph_tool.py`) exposes 6 actions,
+and the graph agent toolset adds 1 resolver action (7 total agent tools):
 
-| Action                   | Params                          | Description                                                           |
-| ------------------------ | ------------------------------- | --------------------------------------------------------------------- |
-| `find_nodes`             | `class`, `property_filters`     | Generic node search with optional class and property filters          |
-| `traverse`               | `start`, `relation`, `depth`    | BFS traversal from a start node, optionally filtered by edge relation |
-| `spatial_query`          | `near`, `max_distance`, `class` | Find elements within distance of a reference element                  |
-| `get_elements_in_storey` | `storey`                        | Get all descendant elements of a storey (excludes containers)         |
-| `find_elements_by_class` | `class`                         | Find all elements matching an IFC class                               |
-| `get_adjacent_elements`  | `element_id`                    | Get neighbors connected via `adjacent_to` edges with distances        |
+| Action                     | Params                          | Description                                                           |
+| -------------------------- | ------------------------------- | --------------------------------------------------------------------- |
+| `find_nodes`               | `class`, `property_filters`     | Generic node search with optional class and property filters          |
+| `traverse`                 | `start`, `relation`, `depth`    | BFS traversal from a start node, optionally filtered by edge relation |
+| `spatial_query`            | `near`, `max_distance`, `class` | Find elements within distance of a reference element                  |
+| `get_elements_in_storey`   | `storey`                        | Get all descendant elements of a storey (excludes containers)         |
+| `find_elements_by_class`   | `class`                         | Find all elements matching an IFC class                               |
+| `get_adjacent_elements`    | `element_id`                    | Get neighbors connected via `adjacent_to` edges with distances        |
+| `resolve_entity_reference` | `reference`, `limit`            | Resolve vague name/alias/id/guid text to ranked candidate nodes       |
 
 Element ID resolution: tries direct node ID, `Element::` prefix, and GlobalId property lookup.
 Class normalization: auto-prepends `Ifc` if missing.
@@ -193,6 +198,8 @@ The TUI (`src/rag_tag/tui.py`) formats responses:
 - SQL list results include a formatted table (Name, Class, Level, Type columns)
 - ANSI colors auto-detected (disabled when piped)
 - `--verbose` shows full JSON details
+- `--verbose` includes `llm_debug` payloads for router and graph agent (input prompt/question, output payload, and message trace)
+- `--verbose-short` shows compact JSON details with summarized `llm_debug` message traces
 
 ## Code Style Guidelines
 

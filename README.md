@@ -308,15 +308,17 @@ User question
 
 - **Router**: Rule-based by default (regex patterns), optional LLM routing via `ROUTER_MODE=llm`
 - **PydanticAI agent**: LLM planner with typed tools (Cohere, Gemini, or OpenAI)
-- **Graph tools**: 6 controlled async functions (`find_nodes`, `traverse`, `spatial_query`, `get_elements_in_storey`, `find_elements_by_class`, `get_adjacent_elements`)
+- **Graph tools**: 7 controlled async functions (`find_nodes`, `traverse`, `spatial_query`, `get_elements_in_storey`, `find_elements_by_class`, `get_adjacent_elements`, `resolve_entity_reference`)
 - **Logfire observability**: Optional end-to-end tracing
+- **Output resilience**: Graph route uses strict `GraphAnswer` validation with retries, and a plain-text fallback pass if provider output still fails validation
 
 The LLM:
 
 - does _not_ see the graph directly
 - must request graph operations via typed tool calls
+- resolves vague references (e.g., "house") via tool calls before asking for IDs/GUIDs
 - can chain multiple steps before producing a final answer (max 6 steps)
-- produces structured outputs validated by Pydantic
+- first attempts structured outputs validated by Pydantic, then falls back to plain-text answer mode only if structured validation fails
 
 ### Query routing
 
@@ -352,20 +354,21 @@ uv run rag-tag
 
 ### Environment variables
 
-| Variable          | Description                                                             |
-| ----------------- | ----------------------------------------------------------------------- |
-| `COHERE_API_KEY`  | Cohere API key                                                          |
-| `GEMINI_API_KEY`  | Gemini (Google GLA) API key                                             |
-| `OPENAI_API_KEY`  | OpenAI API key                                                          |
-| `LLM_PROVIDER`    | Force provider for both agent and router (`cohere`, `gemini`, `openai`) |
-| `AGENT_PROVIDER`  | Override provider for the graph agent only                              |
-| `ROUTER_PROVIDER` | Override provider for LLM routing only                                  |
-| `AGENT_MODEL`     | Override model name for the graph agent                                 |
-| `COHERE_MODEL`    | Override Cohere model name                                              |
-| `GEMINI_MODEL`    | Override Gemini model name                                              |
-| `OPENAI_MODEL`    | Override OpenAI model name                                              |
-| `ROUTER_MODE`     | Router strategy: `rule`, `llm`, or auto-detect                          |
-| `LOGFIRE_TOKEN`   | Logfire token for remote tracing (optional)                             |
+| Variable          | Description                                                                                 |
+| ----------------- | ------------------------------------------------------------------------------------------- |
+| `COHERE_API_KEY`  | Cohere API key                                                                              |
+| `GEMINI_API_KEY`  | Gemini (Google GLA) API key                                                                 |
+| `OPENAI_API_KEY`  | OpenAI API key                                                                              |
+| `LLM_PROVIDER`    | Force provider for both agent and router (`cohere`, `gemini`, `openai`)                     |
+| `AGENT_PROVIDER`  | Override provider for the graph agent only                                                  |
+| `ROUTER_PROVIDER` | Override provider for LLM routing only                                                      |
+| `AGENT_MODEL`     | Override model name for the graph agent                                                     |
+| `ROUTER_MODEL`    | Override model name for LLM routing                                                         |
+| `COHERE_MODEL`    | Override Cohere model name (default: router=`command-r-08-2024`, agent=`command-a-03-2025`) |
+| `GEMINI_MODEL`    | Override Gemini model name (default: `gemini-2.5-flash`)                                    |
+| `OPENAI_MODEL`    | Override OpenAI model name (default: `gpt-4o`)                                              |
+| `ROUTER_MODE`     | Router strategy: `rule`, `llm`, or auto-detect                                              |
+| `LOGFIRE_TOKEN`   | Logfire token for remote tracing (optional)                                                 |
 
 ### Provider and model examples
 
@@ -379,9 +382,14 @@ LLM_PROVIDER=openai OPENAI_API_KEY=your_key uv run rag-tag
 AGENT_PROVIDER=cohere ROUTER_PROVIDER=gemini \
   COHERE_API_KEY=your_key GEMINI_API_KEY=your_key uv run rag-tag
 
+# Override router and agent models independently
+ROUTER_MODEL=gemini-2.5-flash AGENT_MODEL=command-a-03-2025 \
+  AGENT_PROVIDER=cohere ROUTER_PROVIDER=gemini \
+  COHERE_API_KEY=your_key GEMINI_API_KEY=your_key uv run rag-tag
+
 # Model overrides
 AGENT_MODEL=command-a-03-2025 COHERE_API_KEY=your_key uv run rag-tag
-GEMINI_MODEL=gemini-2.0-flash-exp GEMINI_API_KEY=your_key uv run rag-tag
+GEMINI_MODEL=gemini-2.5-flash GEMINI_API_KEY=your_key uv run rag-tag
 OPENAI_MODEL=gpt-4o OPENAI_API_KEY=your_key uv run rag-tag
 
 # Use a specific SQLite DB
@@ -394,7 +402,20 @@ LOGFIRE_TOKEN=your_token uv run rag-tag --trace
 
 ### Output format
 
-Questions and answers are printed with `Q:` / `A:` headers. SQL list results include a formatted table with columns: Name, Class, Level, Type. Use `--verbose` for full JSON details.
+Questions and answers are printed with `Q:` / `A:` headers. SQL list results include a formatted table with columns: Name, Class, Level, Type.
+
+Use `--verbose` for full JSON details, including `llm_debug` traces:
+
+- `llm_debug.router`: router prompt input, question, parsed routing output, and message trace
+- `llm_debug.agent`: graph-agent prompt input, final answer payload, fallback mode (if used), and message trace
+
+This makes it easier to audit why a route was selected and how the graph agent reached its answer.
+
+Use `--verbose-short` for compact debug details:
+
+- Includes the same `llm_debug.router` and `llm_debug.agent` sections
+- Summarizes message traces to key events (tool calls, tool returns, final text)
+- Easier to scan during interactive debugging sessions
 
 ---
 

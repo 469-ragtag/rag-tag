@@ -30,7 +30,11 @@ def route_question(question: str, *, debug_llm_io: bool = False) -> RouteDecisio
     if mode in {"llm", "gemini"}:
         return _route_with_llm_fallback(question, debug_llm_io=debug_llm_io)
 
-    if os.getenv("GEMINI_API_KEY") or os.getenv("COHERE_API_KEY"):
+    if (
+        os.getenv("GEMINI_API_KEY")
+        or os.getenv("COHERE_API_KEY")
+        or os.getenv("OPENAI_API_KEY")
+    ):
         return _route_with_llm_fallback(question, debug_llm_io=debug_llm_io)
     return route_question_rule(question)
 
@@ -44,19 +48,37 @@ def _route_with_llm_fallback(
         from .llm import LlmRouterError, route_with_llm
     except Exception as exc:
         decision = route_question_rule(question)
+        llm_debug = None
+        if debug_llm_io:
+            llm_debug = {
+                "component": "router",
+                "fallback": "rule",
+                "error": f"LLM router unavailable: {exc}",
+                "input": {"question": question},
+            }
         return RouteDecision(
             decision.route,
             f"LLM router unavailable ({exc}); {decision.reason}",
             decision.sql_request,
+            llm_debug=llm_debug,
         )
 
     try:
-        decision = route_with_llm(question)
+        decision = route_with_llm(question, debug_llm_io=debug_llm_io)
     except LlmRouterError as exc:
         fallback = route_question_rule(question)
+        llm_debug = None
+        if debug_llm_io:
+            llm_debug = {
+                "component": "router",
+                "fallback": "rule",
+                "error": f"LLM routing failed: {exc}",
+                "input": {"question": question},
+            }
         return RouteDecision(
             fallback.route,
             f"LLM routing failed ({exc}); {fallback.reason}",
             fallback.sql_request,
+            llm_debug=llm_debug,
         )
     return decision
