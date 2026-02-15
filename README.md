@@ -323,15 +323,22 @@ Print LLM inputs/outputs (router + agent) to stderr:
 uv run rag-tag --input
 ```
 
+Show full JSON details below each answer:
+
+```bash
+uv run rag-tag --verbose
+```
+
 Enable Logfire tracing (PydanticAI observability):
 
 ```bash
 LOGFIRE_TOKEN=your_write_token_here uv run rag-tag --trace
 ```
 
-Note: Logfire is optional and requires `pip install logfire`. 
-- `LOGFIRE_TOKEN` must be a **write token** (not read token). Read tokens are for the query API only and will cause 401 errors.
-- Alternative: Run `logfire auth` to authenticate without setting token in environment.
+Note: Logfire is optional and requires `pip install logfire`.
+- `LOGFIRE_TOKEN` must be a **write token** (not read token).
+- Read tokens are for the query API only and will cause 401 errors if used for ingestion.
+- Alternative: Run `logfire auth` to authenticate without setting a token in the environment.
 - If `LOGFIRE_TOKEN` is not set, tracing works locally without cloud sync (useful for development).
 - Optional: Set `LOGFIRE_PROJECT_NAME` to specify a project.
 
