@@ -17,7 +17,10 @@ This file is for agentic coding assistants operating in this repository.
 - Graph is currently built in NetworkX with distance-based adjacency.
 - SQL schema exists and is wired into the router for counts/lists.
 - Project now uses a clean `src/` layout with `rag_tag` package.
-- LLM providers are abstracted (Cohere/Gemini) with explicit GraphAgent workflow.
+- **Router and Graph Agent migrated to PydanticAI** (router complete, graph agent complete).
+- Router uses structured output with `google:gemini-2.5-flash` (default).
+- Graph Agent uses tool calling with `cohere:command-a-03-2025` (default).
+- Observability via Logfire (optional, enabled with `--trace` flag).
 - Tool outputs are normalized with a `{status,data,error}` envelope.
 
 ## Cursor/Copilot Rules
@@ -57,20 +60,19 @@ Use `uv` for all commands.
   - `GEMINI_API_KEY=... uv run rag-tag`
   - Debug LLM I/O:
     - `COHERE_API_KEY=... uv run rag-tag --input`
-  - Trace execution (JSONL):
-    - `uv run rag-tag --trace`
-    - `uv run rag-tag --trace --trace-path ./output/agent_trace.jsonl`
+  - Trace execution (Logfire):
+    - `LOGFIRE_TOKEN=... uv run rag-tag --trace`
   - Force router mode:
     - `ROUTER_MODE=rule uv run rag-tag`
     - `ROUTER_MODE=llm GEMINI_API_KEY=... uv run rag-tag`
-  - Provider overrides:
+  - Provider overrides (legacy, for compatibility):
     - `LLM_PROVIDER=gemini GEMINI_API_KEY=... uv run rag-tag`
     - `LLM_PROVIDER=cohere COHERE_API_KEY=... uv run rag-tag`
     - `AGENT_PROVIDER=cohere COHERE_API_KEY=... uv run rag-tag`
     - `ROUTER_PROVIDER=gemini GEMINI_API_KEY=... uv run rag-tag`
   - Model overrides:
     - `AGENT_MODEL=command-a-03-2025 COHERE_API_KEY=... uv run rag-tag`
-    - `GEMINI_MODEL=gemini-3-flash-preview GEMINI_API_KEY=... uv run rag-tag`
+    - `ROUTER_MODEL=gemini-2.5-flash GEMINI_API_KEY=... uv run rag-tag`
   - Use a specific SQLite DB:
     - `COHERE_API_KEY=... uv run rag-tag --db ./output/Building-Architecture.db`
   - Output formatting:
@@ -172,12 +174,17 @@ Use `uv` for all commands.
   - `__main__.py`: Entry point for `python -m rag_tag`
   - `paths.py`: Centralized path discovery utilities
 - `run_agent.py`: Main CLI application
-- `trace.py`: JSONL tracing utilities
+- `trace.py`: JSONL tracing utilities (legacy, kept for reference)
+- `observability.py`: Logfire integration for PydanticAI
 - `ifc_graph_tool.py`: Graph query interface
 - `ifc_sql_tool.py`: SQL query interface
 - `tui.py`: Terminal UI formatting
-- `agent/graph_agent.py`: Provider-agnostic graph agent workflow
-- `llm/`: Provider adapters, registry, and schemas
+- `agent/`: Graph agent implementation
+  - `graph_agent.py`: PydanticAI-based graph agent
+  - `graph_tools.py`: Typed tools for graph queries
+  - `models.py`: Output schemas (GraphAnswer)
+- `llm/`: LLM integration
+  - `pydantic_ai.py`: Model resolver for PydanticAI
   - `router/`: Query routing logic (rule-based and LLM-based)
   - `parser/`: IFC parsing and conversion pipeline
 - `scripts/`: Evaluation and utility scripts
