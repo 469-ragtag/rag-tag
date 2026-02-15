@@ -18,10 +18,12 @@ This file is for agentic coding assistants operating in this repository.
 - SQL schema exists and is wired into the router for counts/lists.
 - Project now uses a clean `src/` layout with `rag_tag` package.
 - **Router and Graph Agent migrated to PydanticAI** (router complete, graph agent complete).
-- Router uses structured output with `google:gemini-2.5-flash` (default).
+- Router uses structured output with `google-gla:gemini-2.5-flash` (default).
 - Graph Agent uses tool calling with `cohere:command-a-03-2025` (default).
 - Observability via Logfire (optional, enabled with `--trace` flag).
 - Tool outputs are normalized with a `{status,data,error}` envelope.
+- PydanticAI uses `google-gla` for AI Studio and `google-vertex` for Vertex AI (not `google`).
+- `COHERE_API_KEY` is automatically mapped to `CO_API_KEY` for Cohere provider compatibility.
 
 ## Cursor/Copilot Rules
 
@@ -65,14 +67,16 @@ Use `uv` for all commands.
   - Force router mode:
     - `ROUTER_MODE=rule uv run rag-tag`
     - `ROUTER_MODE=llm GEMINI_API_KEY=... uv run rag-tag`
-  - Provider overrides (legacy, for compatibility):
+  - Model overrides (use PydanticAI format: provider:model-name):
+    - `AGENT_MODEL=cohere:command-a-03-2025 COHERE_API_KEY=... uv run rag-tag`
+    - `ROUTER_MODEL=google-gla:gemini-2.5-flash GEMINI_API_KEY=... uv run rag-tag`
+    - `ROUTER_MODEL=google-gla:gemini-3-flash-preview GEMINI_API_KEY=... uv run rag-tag`
+    - `ROUTER_MODEL=google-vertex:gemini-2.5-flash GEMINI_API_KEY=... uv run rag-tag` (Vertex AI)
+  - Provider overrides (DEPRECATED - use ROUTER_MODEL/AGENT_MODEL instead):
     - `LLM_PROVIDER=gemini GEMINI_API_KEY=... uv run rag-tag`
     - `LLM_PROVIDER=cohere COHERE_API_KEY=... uv run rag-tag`
     - `AGENT_PROVIDER=cohere COHERE_API_KEY=... uv run rag-tag`
     - `ROUTER_PROVIDER=gemini GEMINI_API_KEY=... uv run rag-tag`
-  - Model overrides:
-    - `AGENT_MODEL=command-a-03-2025 COHERE_API_KEY=... uv run rag-tag`
-    - `ROUTER_MODEL=gemini-2.5-flash GEMINI_API_KEY=... uv run rag-tag`
   - Use a specific SQLite DB:
     - `COHERE_API_KEY=... uv run rag-tag --db ./output/Building-Architecture.db`
   - Output formatting:

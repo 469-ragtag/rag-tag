@@ -1,8 +1,7 @@
-"""LLM provider abstraction layer."""
+"""LLM integration using PydanticAI."""
 
 from __future__ import annotations
 
-from .models import AgentStep, ToolCall
-from .provider_registry import resolve_provider
+from .pydantic_ai import get_agent_model, get_router_model, resolve_model_from_provider
 
-__all__ = ["AgentStep", "ToolCall", "resolve_provider"]
+__all__ = ["get_agent_model", "get_router_model", "resolve_model_from_provider"]
