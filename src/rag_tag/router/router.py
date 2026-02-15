@@ -30,7 +30,7 @@ def route_question(question: str, *, debug_llm_io: bool = False) -> RouteDecisio
     if mode in {"llm", "gemini"}:
         return _route_with_llm_fallback(question, debug_llm_io=debug_llm_io)
 
-    if os.getenv("GEMINI_API_KEY"):
+    if os.getenv("GEMINI_API_KEY") or os.getenv("COHERE_API_KEY"):
         return _route_with_llm_fallback(question, debug_llm_io=debug_llm_io)
     return route_question_rule(question)
 

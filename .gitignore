@@ -11,3 +11,4 @@ wheels/
 .venv
 .env
 output/ifc_graph.html
+output/*.jsonl

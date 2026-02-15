@@ -40,11 +40,15 @@ def query_ifc_sql(db_path: Path, request: SqlRequest) -> dict[str, Any]:
             count = int(row["count"]) if row else 0
             summary = _count_summary(request, count)
             return {
-                "intent": request.intent,
-                "filters": _filters_payload(request),
-                "count": count,
-                "summary": summary,
-                "sql": {"query": query, "params": params},
+                "status": "ok",
+                "data": {
+                    "intent": request.intent,
+                    "filters": _filters_payload(request),
+                    "count": count,
+                    "summary": summary,
+                    "sql": {"query": query, "params": params},
+                },
+                "error": None,
             }
 
         if request.intent == "list":
@@ -62,18 +66,22 @@ def query_ifc_sql(db_path: Path, request: SqlRequest) -> dict[str, Any]:
             items = [dict(row) for row in rows]
             summary = _list_summary(request, total_count, limit)
             return {
-                "intent": request.intent,
-                "filters": _filters_payload(request),
-                "total_count": total_count,
-                "limit": limit,
-                "items": items,
-                "summary": summary,
-                "sql": {
-                    "query": list_query,
-                    "params": list_params,
-                    "count_query": count_query,
-                    "count_params": params,
+                "status": "ok",
+                "data": {
+                    "intent": request.intent,
+                    "filters": _filters_payload(request),
+                    "total_count": total_count,
+                    "limit": limit,
+                    "items": items,
+                    "summary": summary,
+                    "sql": {
+                        "query": list_query,
+                        "params": list_params,
+                        "count_query": count_query,
+                        "count_params": params,
+                    },
                 },
+                "error": None,
             }
 
         raise SqlQueryError(f"Unsupported SQL intent: {request.intent}")

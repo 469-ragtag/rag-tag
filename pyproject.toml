@@ -18,6 +18,8 @@ dependencies = [
     "pydantic>=2.7.0",
     "plotly>=6.5.2",
     "python-dotenv>=1.2.1",
+    "pydantic-ai-slim[google,cohere]>=0.0.1",
+    "logfire>=2.0.0",
 ]
 
 [project.scripts]
