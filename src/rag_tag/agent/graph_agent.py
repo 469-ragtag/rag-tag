@@ -36,6 +36,14 @@ Tool results are wrapped in an envelope:
 
 Use only the data field for reasoning. Call tools to gather information,
 then synthesize a clear answer. For list results, provide a count and sample.
+
+Output format (REQUIRED SCHEMA):
+You must return a JSON object with exactly these fields:
+- "answer" (string, required): Natural language answer to the question
+- "data" (object, optional): Structured data like counts, IDs, samples
+- "warning" (string, optional): Warning message if applicable
+
+Do NOT include any extra keys. Only use these three fields.
 """.strip()
 
 
@@ -57,6 +65,8 @@ class GraphAgent:
             deps_type=nx.DiGraph,
             output_type=GraphAnswer,
             system_prompt=SYSTEM_PROMPT,
+            retries=2,  # Tool call retries
+            output_retries=3,  # Output validation retries
         )
 
         # Register graph query tools

@@ -62,8 +62,10 @@ Use `uv` for all commands.
   - `GEMINI_API_KEY=... uv run rag-tag`
   - Debug LLM I/O:
     - `COHERE_API_KEY=... uv run rag-tag --input`
-  - Trace execution (Logfire):
+  - Trace execution (Logfire, requires WRITE token):
     - `LOGFIRE_TOKEN=... uv run rag-tag --trace`
+    - Note: LOGFIRE_TOKEN must be a write token (not read token)
+    - Alternative: Run `logfire auth` to authenticate
   - Force router mode:
     - `ROUTER_MODE=rule uv run rag-tag`
     - `ROUTER_MODE=llm GEMINI_API_KEY=... uv run rag-tag`
