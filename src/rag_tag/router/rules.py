@@ -87,7 +87,9 @@ _CLASS_ALIASES: dict[str, str] = {
 
 _LEVEL_RE = re.compile(r"\b(level|storey|story|floor)\s+([a-z0-9 _.-]+)")
 _LEVEL_STOP_WORDS = re.compile(
-    r"\b(with|that|which|near|adjacent|connected|having|where|and|or)\b"
+    r"\b(with|that|which|near|adjacent|connected|having|where|and|or"
+    r"|on|in|of|the|a|an"
+    r"|structure|building|house|model|project)\b"
 )
 
 
@@ -157,6 +159,15 @@ def _normalize_ifc_class(value: str) -> str:
 
 
 def _detect_level_like(question_lower: str) -> str | None:
+    if any(p in question_lower for p in (
+        "on the structure",
+        "in the structure",
+        "in the building",
+        "in the house",
+        "of the building",
+        "of the house",
+    )):
+        return None
     if "ground floor" in question_lower:
         return "ground floor"
     if "ground level" in question_lower:
