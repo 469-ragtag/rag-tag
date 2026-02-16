@@ -31,6 +31,10 @@ This file is for agentic coding assistants operating in this repository.
 - No Copilot rules detected (`.github/copilot-instructions.md` not present).
 - If these files are added later, treat them as higher priority and mirror key rules here.
 
+## Skills
+
+- Skills can be found in the `.agents/skills` folder.
+
 ## Environment + Tooling
 
 - Python: requires >=3.14 (see `pyproject.toml`)

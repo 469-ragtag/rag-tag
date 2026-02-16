@@ -1,6 +1,6 @@
 # rag-tag
 
-A research-oriented toolkit for **IFC-based digital twins** that combines **geometry-aware graph construction** with **LLM-driven graph reasoning**. The project turns BIM data into a structured knowledge graph and enables natural-language querying via a controlled, multi-step agent (Graph RAG).
+A research-oriented toolkit for **IFC-based digital twins** that turns BIM data into a geometry-aware graph and enables natural-language queries via a controlled, multi-step LLM agent (Graph RAG).
 
 ---
 
@@ -15,6 +15,15 @@ Industry Foundation Classes (IFC) models contain rich information about building
 3. Using an **LLM as a planning agent** that reasons over the graph via tool calls (Graph RAG)
 
 The result is a foundation for **LLM-assisted digital twins** that can answer spatial, semantic, and structural questions about buildings.
+
+## Pipeline (high level)
+
+**IFC -> CSV -> SQLite + NetworkX + LLM router/graph agent**
+
+1. **IFC -> CSV**: extract structured elements and properties.
+2. **CSV -> SQLite**: deterministic counts and aggregations (no hallucinations).
+3. **CSV -> NetworkX graph**: geometry-aware graph + spatial adjacency.
+4. **LLM routing + graph agent**: route queries to SQL or graph tools via PydanticAI.
 
 ---
 
@@ -123,6 +132,42 @@ uv run rag-tag-ifc-to-csv
 uv run rag-tag-csv-to-sql
 uv run rag-tag-csv-to-graph
 COHERE_API_KEY=your_key_here uv run rag-tag
+```
+
+## Setup and run (recommended flow)
+
+### 1) Install dependencies
+
+```bash
+uv sync --group dev
+```
+
+### 2) Configure API keys in .env
+
+Create a `.env` file at the project root:
+
+```
+GEMINI_API_KEY=your_gemini_key
+COHERE_API_KEY=your_cohere_key
+```
+
+**How .env is loaded**
+
+The CLI auto-loads `.env` from the project root at runtime (via `python-dotenv`).
+You can also export env vars directly in your shell if you prefer.
+
+### 3) Run the pipeline
+
+```bash
+uv run rag-tag-ifc-to-csv
+uv run rag-tag-csv-to-sql
+uv run rag-tag-csv-to-graph
+```
+
+### 4) Run the agent
+
+```bash
+uv run rag-tag
 ```
 
 ## Formatting & Linting (Ruff)
@@ -280,14 +325,7 @@ The LLM:
 
 ### Run the agent
 
-Set your API key:
-
-```bash
-COHERE_API_KEY=your_key_here
-GEMINI_API_KEY=your_key_here
-```
-
-Then start the interactive agent:
+Start the interactive agent:
 
 ```bash
 uv run rag-tag
