@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import math
+from collections import defaultdict
+from itertools import product
 from pathlib import Path
 
 import ifcopenshell
@@ -19,6 +22,62 @@ def distance_between_points(
     return float(np.linalg.norm(np.array(a, dtype=float) - np.array(b, dtype=float)))
 
 
+def _normalize_positions(
+    positions: list[tuple[float, float, float]],
+) -> np.ndarray | None:
+    """Convert positions to a contiguous float array with shape (n, 3)."""
+    if not positions:
+        return None
+    arr = np.asarray(positions, dtype=float)
+    if arr.ndim != 2 or arr.shape[1] != 3:
+        return None
+    return arr
+
+
+def _estimate_cell_size(positions: np.ndarray) -> float:
+    """Heuristic grid cell size from model extent and point density."""
+    mins = positions.min(axis=0)
+    maxs = positions.max(axis=0)
+    extent = maxs - mins
+    volume = float(np.prod(np.maximum(extent, 1e-9)))
+    avg_spacing = volume ** (1.0 / 3.0) / max(len(positions) ** (1.0 / 3.0), 1.0)
+    return max(avg_spacing, 0.5)
+
+
+def _cell_for_point(point: np.ndarray, cell_size: float) -> tuple[int, int, int]:
+    return tuple(np.floor(point / cell_size).astype(int))
+
+
+def _neighbor_cell_keys(key: tuple[int, int, int], radius: int):
+    """Yield cell keys in the shell at Chebyshev radius `radius`."""
+    if radius == 0:
+        yield key
+        return
+    xr = range(key[0] - radius, key[0] + radius + 1)
+    yr = range(key[1] - radius, key[1] + radius + 1)
+    zr = range(key[2] - radius, key[2] + radius + 1)
+    for cx, cy, cz in product(xr, yr, zr):
+        if (
+            max(abs(cx - key[0]), abs(cy - key[1]), abs(cz - key[2]))
+            == radius
+        ):
+            yield (cx, cy, cz)
+
+
+def _build_spatial_grid(
+    positions: np.ndarray, cell_size: float
+) -> dict[tuple[int, int, int], list[int]]:
+    grid: dict[tuple[int, int, int], list[int]] = defaultdict(list)
+    for idx, point in enumerate(positions):
+        grid[_cell_for_point(point, cell_size)].append(idx)
+    return grid
+
+
+def _distance_sq(a: np.ndarray, b: np.ndarray) -> float:
+    diff = a - b
+    return float(diff.dot(diff))
+
+
 def compute_adjacency_threshold(positions: list[tuple[float, float, float]]) -> float:
     """
     Derive a reasonable adjacency threshold from data.
@@ -27,17 +86,38 @@ def compute_adjacency_threshold(positions: list[tuple[float, float, float]]) -> 
     if len(positions) < 2:
         return 1.0
 
-    nn_distances = []
-    for i, p in enumerate(positions):
-        best = None
-        for j, q in enumerate(positions):
-            if i == j:
-                continue
-            d = distance_between_points(p, q)
-            if best is None or d < best:
-                best = d
-        if best is not None:
-            nn_distances.append(best)
+    pos = _normalize_positions(positions)
+    if pos is None:
+        return 1.0
+
+    cell_size = _estimate_cell_size(pos)
+    grid = _build_spatial_grid(pos, cell_size)
+    cell_keys_arr = np.asarray(list(grid.keys()), dtype=int)
+    min_key = cell_keys_arr.min(axis=0)
+    max_key = cell_keys_arr.max(axis=0)
+
+    nn_distances: list[float] = []
+    for i, point in enumerate(pos):
+        key = _cell_for_point(point, cell_size)
+        max_radius = int(np.max(np.maximum(max_key - key, key - min_key)))
+        best_sq = math.inf
+        found_any = False
+
+        for radius in range(max_radius + 1):
+            for neighbor_key in _neighbor_cell_keys(key, radius):
+                for j in grid.get(neighbor_key, []):
+                    if i == j:
+                        continue
+                    d2 = _distance_sq(point, pos[j])
+                    if d2 < best_sq:
+                        best_sq = d2
+                        found_any = True
+
+            if found_any and math.sqrt(best_sq) <= radius * cell_size:
+                break
+
+        if found_any:
+            nn_distances.append(math.sqrt(best_sq))
 
     if not nn_distances:
         return 1.0
@@ -80,15 +160,31 @@ def build_graph_with_properties(csv_path: str | Path, geom_data: dict) -> nx.DiG
         node_id = f"Type::{t}"
         G.add_node(node_id, label=t, class_="IfcTypeObject", geometry=None)
 
-    # Elements
-    for _, row in df.iterrows():
-        row_class = row["Class"]
-        geom = geom_data.get(row["GlobalId"])  # attach geometry if available
+    # Elements (itertuples is significantly faster than iterrows for large CSVs)
+    columns = list(df.columns)
+    col_idx = {col: idx for idx, col in enumerate(columns)}
+    class_idx = col_idx.get("Class")
+    gid_idx = col_idx.get("GlobalId")
+    name_idx = col_idx.get("Name")
+    level_idx = col_idx.get("Level")
+    type_idx = col_idx.get("TypeName")
+
+    if class_idx is None or gid_idx is None:
+        raise KeyError("CSV must include 'Class' and 'GlobalId' columns.")
+
+    for row in df.itertuples(index=False, name=None):
+        row_class = row[class_idx]
+        row_gid = row[gid_idx]
+        row_name = row[name_idx] if name_idx is not None else None
+        row_level = row[level_idx] if level_idx is not None else None
+        row_type = row[type_idx] if type_idx is not None else None
+        row_props = dict(zip(columns, row))
+        geom = geom_data.get(row_gid)  # attach geometry if available
 
         if row_class == "IfcBuildingStorey":
-            storey_name = row.get("Name")
+            storey_name = row_name
             if not isinstance(storey_name, str) or not storey_name.strip():
-                storey_name = str(row["GlobalId"])
+                storey_name = str(row_gid)
             node_id = storey_nodes.get(storey_name)
             if node_id is None:
                 node_id = f"Storey::{storey_name}"
@@ -103,25 +199,26 @@ def build_graph_with_properties(csv_path: str | Path, geom_data: dict) -> nx.DiG
             G.nodes[node_id].update(
                 label=storey_name,
                 class_="IfcBuildingStorey",
-                properties=row.to_dict(),
+                properties=row_props,
                 geometry=geom,
             )
             continue
 
-        eid = f"Element::{row['GlobalId']}"
+        eid = f"Element::{row_gid}"
+        label = row_name if isinstance(row_name, str) and row_name else row_gid
         G.add_node(
             eid,
-            label=row.get("Name", row["GlobalId"]),
+            label=label,
             class_=row_class,
-            properties=row.to_dict(),
+            properties=row_props,
             geometry=geom,  # new geometry property
         )
 
-        level_value = row.get("Level")
+        level_value = row_level
         if isinstance(level_value, str) and level_value in storey_nodes:
             G.add_edge(storey_nodes[level_value], eid, relation="contained_in")
 
-        type_name = row.get("TypeName")
+        type_name = row_type
         if isinstance(type_name, str) and type_name:
             G.add_edge(f"Type::{type_name}", eid, relation="typed_by")
 
@@ -158,15 +255,34 @@ def add_spatial_adjacency(
     if threshold is None:
         threshold = compute_adjacency_threshold(positions)
 
+    pos = _normalize_positions(positions)
+    if pos is None:
+        return threshold
+
+    # Grid with threshold-sized cells reduces pair checks to nearby buckets.
+    cell_size = max(float(threshold), 1e-6)
+    grid = _build_spatial_grid(pos, cell_size)
+    threshold_sq = float(threshold) * float(threshold)
+    neighbor_radius = int(math.ceil(float(threshold) / cell_size)) + 1
+
     for i, ni in enumerate(element_nodes):
-        pi = positions[i]
-        for j in range(i + 1, len(element_nodes)):
-            nj = element_nodes[j]
-            pj = positions[j]
-            d = distance_between_points(pi, pj)
-            if d <= threshold:
-                if not G.has_edge(ni, nj) and not G.has_edge(nj, ni):
-                    G.add_edge(ni, nj, relation="adjacent_to", distance=d)
+        pi = pos[i]
+        key = _cell_for_point(pi, cell_size)
+        for radius in range(neighbor_radius + 1):
+            for neighbor_key in _neighbor_cell_keys(key, radius):
+                for j in grid.get(neighbor_key, []):
+                    if j <= i:
+                        continue
+                    nj = element_nodes[j]
+                    d2 = _distance_sq(pi, pos[j])
+                    if d2 <= threshold_sq:
+                        if not G.has_edge(ni, nj) and not G.has_edge(nj, ni):
+                            G.add_edge(
+                                ni,
+                                nj,
+                                relation="adjacent_to",
+                                distance=math.sqrt(d2),
+                            )
 
     return threshold
 
