@@ -4,9 +4,9 @@ import argparse
 import sys
 from pathlib import Path
 
-from rag_tag.command_r_agent import CommandRAgent
-from rag_tag.ifc_graph_tool import query_ifc_graph
+from rag_tag.agent import GraphAgent
 from rag_tag.ifc_sql_tool import SqlQueryError, query_ifc_sql
+from rag_tag.observability import setup_logfire
 from rag_tag.paths import find_project_root
 from rag_tag.router import RouteDecision, route_question
 from rag_tag.tui import print_answer, print_question, print_welcome
@@ -39,28 +39,46 @@ def _sql_result(
     db_path: Path | None,
 ) -> dict[str, object]:
     if decision.sql_request is None:
+        error_msg = "Router did not produce a SQL request."
         return {
             "route": "sql",
             "decision": decision.reason,
-            "error": "Router did not produce a SQL request.",
+            "error": error_msg,
         }
     if db_path is None:
+        error_msg = "No SQLite database found. Run parser/csv_to_sql.py."
         return {
             "route": "sql",
             "decision": decision.reason,
-            "error": "No SQLite database found. Run parser/csv_to_sql.py.",
+            "error": error_msg,
         }
 
     try:
-        payload = query_ifc_sql(db_path, decision.sql_request)
+        envelope = query_ifc_sql(db_path, decision.sql_request)
     except SqlQueryError as exc:
+        error_str = str(exc)
         return {
             "route": "sql",
             "decision": decision.reason,
-            "error": str(exc),
+            "error": error_str,
         }
 
-    return {
+    # Check envelope status
+    if envelope["status"] == "error":
+        error_info = envelope.get("error", {})
+        error_msg = error_info.get("message", "Unknown SQL error")
+        error_code = error_info.get("code")
+        if error_code:
+            error_msg = f"{error_msg} (code: {error_code})"
+        return {
+            "route": "sql",
+            "decision": decision.reason,
+            "error": error_msg,
+        }
+
+    # Extract payload from envelope
+    payload = envelope["data"]
+    result: dict[str, object] = {
         "route": "sql",
         "decision": decision.reason,
         "db_path": str(db_path),
@@ -76,6 +94,8 @@ def _sql_result(
         "sql": payload.get("sql"),
     }
 
+    return result
+
 
 def _parse_bool(value: str | None) -> bool:
     if value is None:
@@ -86,6 +106,18 @@ def _parse_bool(value: str | None) -> bool:
     if normalized in {"0", "false", "no", "n", "off"}:
         return False
     raise argparse.ArgumentTypeError("Expected a boolean value (true/false).")
+
+
+def _create_graph_agent(*, debug_llm_io: bool = False) -> GraphAgent:
+    """Create graph agent with PydanticAI.
+
+    Args:
+        debug_llm_io: Enable debug printing of LLM I/O (not implemented in PydanticAI)
+
+    Returns:
+        Initialized GraphAgent instance
+    """
+    return GraphAgent(debug_llm_io=debug_llm_io)
 
 
 def main() -> int:
@@ -117,7 +149,16 @@ def main() -> int:
             "(defaults to newest .db in output/ or db/)."
         ),
     )
+    ap.add_argument(
+        "--trace",
+        action="store_true",
+        default=False,
+        help="Enable Logfire observability for PydanticAI agents.",
+    )
     args = ap.parse_args()
+
+    # Initialize Logfire if requested
+    setup_logfire(enabled=args.trace)
 
     graph = None
     agent = None
@@ -151,69 +192,14 @@ def main() -> int:
                 if graph is None:
                     graph = _load_graph()
                 if agent is None:
-                    agent = CommandRAgent(debug_llm_io=args.input)
+                    agent = _create_graph_agent(debug_llm_io=args.input)
 
-                state: dict[str, object] = {"history": []}
-                max_steps = 6
-                result: dict[str, object] = {}
-                for _ in range(max_steps):
-                    step = agent.plan(question, state)
-                    step_type = step.get("type")
-
-                    if step_type == "final":
-                        result = {
-                            "route": "graph",
-                            "decision": decision.reason,
-                            "answer": step.get("answer"),
-                        }
-                        break
-
-                    if step_type != "tool":
-                        result = {
-                            "route": "graph",
-                            "decision": decision.reason,
-                            "error": "Invalid step type",
-                            "step": step,
-                        }
-                        break
-
-                    action_value = step.get("action")
-                    params = step.get("params", {})
-                    if not isinstance(action_value, str) or not action_value:
-                        result = {
-                            "route": "graph",
-                            "decision": decision.reason,
-                            "error": "Invalid tool action",
-                            "step": step,
-                        }
-                        break
-                    tool_result = query_ifc_graph(graph, action_value, params)
-                    history = state.get("history", [])
-                    if isinstance(history, list):
-                        history.append(
-                            {
-                                "tool": {
-                                    "action": action_value,
-                                    "params": params,
-                                },
-                                "result": tool_result,
-                            }
-                        )
-                else:
-                    history = state.get("history", [])
-                    summary = (
-                        _summarize_graph_history(history)
-                        if isinstance(history, list)
-                        else None
-                    )
-                    result = {
-                        "route": "graph",
-                        "decision": decision.reason,
-                        "error": "Max steps exceeded",
-                        "history": history,
-                    }
-                    if summary:
-                        result.update(summary)
+                agent_result = agent.run(question, graph, max_steps=6)
+                result = {
+                    "route": "graph",
+                    "decision": decision.reason,
+                    **agent_result,
+                }
         except Exception as exc:
             # Print question even on error (decision may not exist).
             print_question(question, "?", "routing failed")
@@ -223,42 +209,6 @@ def main() -> int:
         print_answer(result, verbose=show_verbose)
 
     return 0
-
-
-def _summarize_graph_history(
-    history: list[dict[str, object]],
-) -> dict[str, object] | None:
-    for entry in reversed(history):
-        result = entry.get("result")
-        if not isinstance(result, dict):
-            continue
-        elements = result.get("elements")
-        if isinstance(elements, list):
-            labels = [
-                e.get("label") or e.get("id") for e in elements if isinstance(e, dict)
-            ]
-            sample = [label for label in labels if label]
-            return {
-                "answer": f"Found {len(elements)} elements.",
-                "data": {"sample": sample[:5]},
-            }
-        adjacent = result.get("adjacent")
-        if isinstance(adjacent, list):
-            labels = [
-                e.get("label") or e.get("id") for e in adjacent if isinstance(e, dict)
-            ]
-            sample = [label for label in labels if label]
-            return {
-                "answer": f"Found {len(adjacent)} adjacent elements.",
-                "data": {"sample": sample[:5]},
-            }
-        results = result.get("results")
-        if isinstance(results, list):
-            return {
-                "answer": f"Found {len(results)} traversal results.",
-                "data": {"sample": results[:5]},
-            }
-    return None
 
 
 if __name__ == "__main__":

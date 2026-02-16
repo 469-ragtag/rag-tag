@@ -17,6 +17,13 @@ This file is for agentic coding assistants operating in this repository.
 - Graph is currently built in NetworkX with distance-based adjacency.
 - SQL schema exists and is wired into the router for counts/lists.
 - Project now uses a clean `src/` layout with `rag_tag` package.
+- **Router and Graph Agent migrated to PydanticAI** (router complete, graph agent complete).
+- Router uses structured output with `google-gla:gemini-2.5-flash` (default).
+- Graph Agent uses tool calling with `cohere:command-a-03-2025` (default).
+- Observability via Logfire (optional, enabled with `--trace` flag).
+- Tool outputs are normalized with a `{status,data,error}` envelope.
+- PydanticAI uses `google-gla` for AI Studio and `google-vertex` for Vertex AI (not `google`).
+- `COHERE_API_KEY` is automatically mapped to `CO_API_KEY` for Cohere provider compatibility.
 
 ## Cursor/Copilot Rules
 
@@ -52,11 +59,29 @@ Use `uv` for all commands.
   - `uv run rag-tag-csv-to-graph`
 - Run the LLM agent (requires API key):
   - `COHERE_API_KEY=... uv run rag-tag`
+  - `GEMINI_API_KEY=... uv run rag-tag`
   - Debug LLM I/O:
     - `COHERE_API_KEY=... uv run rag-tag --input`
+  - Show full JSON details below each answer:
+    - `uv run rag-tag --verbose`
+  - Trace execution (Logfire, requires WRITE token):
+    - `LOGFIRE_TOKEN=... uv run rag-tag --trace`
+    - Note: LOGFIRE_TOKEN must be a write token (not read token)
+    - Read tokens are for the query API only and will cause 401 errors if used for ingestion.
+    - Alternative: Run `logfire auth` to authenticate
   - Force router mode:
     - `ROUTER_MODE=rule uv run rag-tag`
     - `ROUTER_MODE=llm GEMINI_API_KEY=... uv run rag-tag`
+  - Model overrides (use PydanticAI format: provider:model-name):
+    - `AGENT_MODEL=cohere:command-a-03-2025 COHERE_API_KEY=... uv run rag-tag`
+    - `ROUTER_MODEL=google-gla:gemini-2.5-flash GEMINI_API_KEY=... uv run rag-tag`
+    - `ROUTER_MODEL=google-gla:gemini-3-flash-preview GEMINI_API_KEY=... uv run rag-tag`
+    - `ROUTER_MODEL=google-vertex:gemini-2.5-flash GEMINI_API_KEY=... uv run rag-tag` (Vertex AI)
+  - Provider overrides (DEPRECATED - use ROUTER_MODEL/AGENT_MODEL instead):
+    - `LLM_PROVIDER=gemini GEMINI_API_KEY=... uv run rag-tag`
+    - `LLM_PROVIDER=cohere COHERE_API_KEY=... uv run rag-tag`
+    - `AGENT_PROVIDER=cohere COHERE_API_KEY=... uv run rag-tag`
+    - `ROUTER_PROVIDER=gemini GEMINI_API_KEY=... uv run rag-tag`
   - Use a specific SQLite DB:
     - `COHERE_API_KEY=... uv run rag-tag --db ./output/Building-Architecture.db`
   - Output formatting:
@@ -157,14 +182,20 @@ Use `uv` for all commands.
   - `__init__.py`: Package initialization
   - `__main__.py`: Entry point for `python -m rag_tag`
   - `paths.py`: Centralized path discovery utilities
-  - `run_agent.py`: Main CLI application
-  - `command_r_agent.py`: Cohere agent for graph reasoning
-  - `ifc_graph_tool.py`: Graph query interface
-  - `ifc_sql_tool.py`: SQL query interface
-  - `tui.py`: Terminal UI formatting
+- `run_agent.py`: Main CLI application
+- `trace.py`: JSONL tracing utilities (legacy, kept for reference)
+- `observability.py`: Logfire integration for PydanticAI
+- `ifc_graph_tool.py`: Graph query interface
+- `ifc_sql_tool.py`: SQL query interface
+- `tui.py`: Terminal UI formatting
+- `agent/`: Graph agent implementation
+  - `graph_agent.py`: PydanticAI-based graph agent
+  - `graph_tools.py`: Typed tools for graph queries
+  - `models.py`: Output schemas (GraphAnswer)
+- `llm/`: LLM integration
+  - `pydantic_ai.py`: Model resolver for PydanticAI
   - `router/`: Query routing logic (rule-based and LLM-based)
   - `parser/`: IFC parsing and conversion pipeline
 - `scripts/`: Evaluation and utility scripts
 - `output/`: Generated CSV, DB, and HTML files (created at runtime)
 - `IFC-Files/`: Source IFC models (not in repo)
-
