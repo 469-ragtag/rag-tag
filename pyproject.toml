@@ -20,6 +20,7 @@ dependencies = [
     "python-dotenv>=1.2.1",
     "pydantic-ai-slim[google,cohere]>=0.0.1",
     "logfire>=2.0.0",
+    "textual>=1.0.0",
 ]
 
 [project.scripts]
