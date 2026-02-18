@@ -3,73 +3,161 @@
 from __future__ import annotations
 
 import networkx as nx
-from pydantic_ai import Agent
+from pydantic_ai import Agent, UnexpectedModelBehavior
 
 from rag_tag.llm.pydantic_ai import get_agent_model
 
 from .graph_tools import register_graph_tools
 from .models import GraphAnswer
 
-# System prompt emphasizes tool usage and structured reasoning
+# ---------------------------------------------------------------------------
+# System prompt
+# ---------------------------------------------------------------------------
+
 SYSTEM_PROMPT = """
-You are a graph-reasoning agent for an IFC knowledge graph.
+You are a graph-reasoning agent for an IFC (Industry Foundation Classes)
+knowledge graph.  You answer natural-language questions by calling tools and
+synthesising results into the required JSON schema.
 
-Schema (no direct graph access):
-- Nodes have attributes: label, class_, properties, geometry
-- Edges have attributes: relation, distance
-- Hierarchy can include: Project > Site > Building > Storey > Space > Elements
-- Some levels may be missing; use labels and class_ to identify nodes
-- Spatial adjacency edges exist with relation = "adjacent_to"
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+IFC ONTOLOGY RULES (read carefully)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Available tools:
-- find_nodes: Search by IFC class and/or properties
-- traverse: Follow edges from a starting node
-- spatial_query: Find elements near a reference element
-- get_elements_in_storey: Get all elements in a level/storey
-- find_elements_by_class: Get all elements of an IFC class
-- get_adjacent_elements: Get spatially adjacent elements
+1. IFC CLASS names are always CamelCase with NO spaces:
+   IfcWall  IfcDoor  IfcColumn  IfcSlab  IfcBeam  IfcWindow
+   IfcSpace  IfcBuildingStorey  IfcBuilding  IfcSite  IfcProject
+   IfcRoof  IfcStair  IfcRailing  IfcPlate  IfcMember  IfcFurnishingElement
 
-Tool results are wrapped in an envelope:
-- status: "ok" or "error"
-- data: payload on success, null on error
-- error: object with message/code/details on error
+2. Multi-word phrases (e.g. "plumbing wall", "structural column") are
+   NAMES or DESCRIPTIONS, NOT class names.  When the user asks about
+   "plumbing walls" use fuzzy_find_nodes with that phrase as the query.
+   NEVER pass a phrase containing spaces to find_nodes as class_.
 
-Use only the data field for reasoning. Call tools to gather information,
-then synthesize a clear answer. For list results, provide a count and sample.
+3. PredefinedType is an ENUM stored in node.properties (e.g. "WALL",
+   "DOOR", "BASESLAB").  It is NOT a separate IFC class.
 
-Output format (REQUIRED SCHEMA):
-You must return a JSON object with exactly these fields:
-- "answer" (string, required): Natural language answer to the question
-- "data" (object, optional): Structured data like counts, IDs, samples
-- "warning" (string, optional): Warning message if applicable
+4. ObjectType and Description are free-text fields inside node.properties.
 
-Do NOT include any extra keys. Only use these three fields.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+NODE SCHEMA
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+- id        : graph node key (e.g. "Element::abc123", "Storey::Level 1")
+- label     : human-readable element name
+- class_    : IFC class (CamelCase, no spaces)
+- properties: dict — GlobalId, ObjectType, Description, PredefinedType, …
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+EDGE RELATIONS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+- "contains"      → container to child  (storey → wall, space → door …)
+- "contained_in"  → child to its spatial container  (wall → storey)
+- "adjacent_to"   → spatial proximity between elements
+- "typed_by"      → element to its IFC type object
+- "type_of"       → IFC type object to its instances
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+LOCATION / FLOOR / STOREY QUERIES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Location is an EDGE, not a property.  To find which storey element X is on:
+
+  traverse(start=<element_id>, relation="contained_in", depth=3)
+
+Look for IfcBuildingStorey nodes in the results.
+Do NOT search for a "storey" property — it does not exist.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AVAILABLE TOOLS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+find_nodes           Search by IFC class and/or property filters.
+                     Auto-fuzzy-normalises class_; falls back to fuzzy search
+                     when exact query is empty.
+
+fuzzy_find_nodes     Score-ranked text search over Name/ObjectType/Description.
+                     Use for descriptive phrases or when find_nodes returns nothing.
+
+traverse             Follow graph edges from a node.
+                     Use relation='contained_in' for location/floor queries.
+
+spatial_query        Elements within a given distance of a reference element.
+
+get_elements_in_storey  All non-container elements in a named storey.
+
+find_elements_by_class  All elements of a given IFC class.
+
+get_adjacent_elements   Directly adjacent elements of one element.
+
+list_property_keys   Discover valid property key names (use before
+                     setting property_filters in find_nodes).
+
+Tool results use a standard envelope:
+  { "status": "ok"|"error", "data": <payload or null>, "error": <null or obj> }
+Use only the data field for reasoning.  Treat status="error" as a signal to
+try an alternative approach or report the issue in warning.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FALLBACK CHAIN  (follow in order)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. Try find_nodes with a normalised IFC class name.
+2. If result is empty, call fuzzy_find_nodes with the original phrase.
+3. If fuzzy also returns nothing, drop optional filters and retry.
+4. If still nothing, state the limitation in the "warning" field and give
+   the best partial answer you can.
+5. NEVER refuse to answer.  Always return the required JSON schema.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OUTPUT FORMAT  ← REQUIRED — always valid JSON, no markdown fences
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Return EXACTLY this JSON object (no extra keys):
+
+{
+  "answer":  "<natural language answer>",
+  "data":    { ... } or null,
+  "warning": "<message if applicable>" or null
+}
+
+- "answer" is REQUIRED and must be a non-empty string.
+- "data" is optional structured payload (counts, IDs, sample elements …).
+- "warning" is optional; use it for partial results or fallback notices.
+- Do NOT wrap in markdown fences.  Do NOT add extra keys.
 """.strip()
+
+
+# ---------------------------------------------------------------------------
+# Agent
+# ---------------------------------------------------------------------------
 
 
 class GraphAgent:
     """Graph agent using PydanticAI with tool calling."""
 
     def __init__(self, *, debug_llm_io: bool = False) -> None:
-        """Initialize graph agent with PydanticAI.
+        """Initialise graph agent with PydanticAI.
 
         Args:
-            debug_llm_io: Enable debug printing (not implemented for PydanticAI)
+            debug_llm_io: Enable debug printing (unused for PydanticAI;
+                          kept for API compatibility).
         """
         self._debug_llm_io = debug_llm_io
 
-        # Create PydanticAI agent with tools and structured output
         model = get_agent_model()
         self._agent: Agent[nx.DiGraph, GraphAnswer] = Agent(
             model,
             deps_type=nx.DiGraph,
             output_type=GraphAnswer,
             system_prompt=SYSTEM_PROMPT,
-            retries=2,  # Tool call retries
-            output_retries=3,  # Output validation retries
+            retries=2,
+            # Extra retries specifically for output schema validation.
+            # Increased from 3 to 5 to give the model more chances to
+            # produce valid JSON when it initially returns prose or extra keys.
+            output_retries=5,
         )
 
-        # Register graph query tools
         register_graph_tools(self._agent)
 
     def run(
@@ -84,46 +172,42 @@ class GraphAgent:
         """Execute agent workflow with tool calls.
 
         Args:
-            question: User question
-            graph: NetworkX graph to query (passed as dependency)
-            max_steps: Maximum reasoning steps (NOTE: PydanticAI manages
-                this internally)
-            trace: Ignored (legacy parameter, Logfire used instead)
-            run_id: Ignored (legacy parameter, Logfire used instead)
+            question: User question.
+            graph: NetworkX graph to query (passed as dependency).
+            max_steps: Kept for API compatibility; PydanticAI manages
+                iteration count internally.
+            trace: Ignored (legacy; Logfire used instead).
+            run_id: Ignored (legacy; Logfire used instead).
 
         Returns:
-            Result dict with 'answer' or 'error' key, compatible with tui.py
-
-        Note:
-            max_steps parameter is kept for API compatibility but PydanticAI
-            doesn't expose direct control over iteration count. The model will
-            continue calling tools until it produces a final answer or hits
-            internal limits.
+            Result dict with 'answer' / 'data' / 'warning' keys, or an
+            'error' key if the agent run fails entirely.
         """
-        # NOTE: PydanticAI doesn't expose max_steps control directly.
-        # Tool calling continues until the model produces final output.
-        # If we need hard limits, we could:
-        # 1. Implement a custom result validator that counts tool calls
-        # 2. Use a timeout mechanism
-        # For now, rely on PydanticAI's internal management.
-
         try:
             result = self._agent.run_sync(question, deps=graph)
-
-            # Extract structured output
             output = result.output
 
-            # Build response dict compatible with tui.py
             response: dict[str, object] = {"answer": output.answer}
-
             if output.data:
                 response["data"] = output.data
-
             if output.warning:
                 response["warning"] = output.warning
-
             return response
 
+        except UnexpectedModelBehavior as exc:
+            # The model failed to produce a valid structured output even after
+            # all output_retries.  Surface a safe fallback so the CLI always
+            # has something to display.
+            raw = getattr(exc, "body", None) or str(exc)
+            raw_snippet = str(raw)[:400] if raw else ""
+            return {
+                "answer": (
+                    "I was unable to produce a well-structured answer for this "
+                    "question.  Please try rephrasing or ask a simpler question."
+                ),
+                "warning": (f"Output validation failed after all retries: {exc}"),
+                "data": {"raw_response_snippet": raw_snippet} if raw_snippet else None,
+            }
+
         except Exception as exc:
-            error_msg = f"Agent execution failed: {exc}"
-            return {"error": error_msg}
+            return {"error": f"Agent execution failed: {exc}"}
