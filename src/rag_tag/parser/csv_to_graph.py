@@ -57,10 +57,7 @@ def _neighbor_cell_keys(key: tuple[int, int, int], radius: int):
     yr = range(key[1] - radius, key[1] + radius + 1)
     zr = range(key[2] - radius, key[2] + radius + 1)
     for cx, cy, cz in product(xr, yr, zr):
-        if (
-            max(abs(cx - key[0]), abs(cy - key[1]), abs(cz - key[2]))
-            == radius
-        ):
+        if max(abs(cx - key[0]), abs(cy - key[1]), abs(cz - key[2])) == radius:
             yield (cx, cy, cz)
 
 
