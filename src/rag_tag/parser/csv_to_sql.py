@@ -46,7 +46,13 @@ def _coalesce(value: object) -> str | None:
 def _to_float(value: object) -> float | None:
     if pd.isna(value):
         return None
-    return float(value)
+    if isinstance(value, str) and value.strip() == "":
+        return None
+    try:
+        return float(value)
+    except (ValueError, TypeError) as exc:
+        logger.debug("Non-numeric QTO value %r: %s", value, exc)
+        return None
 
 
 # Map each CSV row to a tuple and batch-insert into the elements table
