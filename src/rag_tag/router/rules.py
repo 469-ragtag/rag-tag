@@ -20,6 +20,20 @@ _SPATIAL_CUES = (
     "far",
     "touch",
     "intersect",
+    "next to",
+    "beside",
+    "inside",
+    "contains",
+    "contain",
+    "contained",
+    "overlap",
+    "overlapping",
+    "touching",
+    "touches",
+    "above",
+    "below",
+    "in front of",
+    "behind",
 )
 
 _COUNT_CUES = (
@@ -51,6 +65,9 @@ _LIST_CUES = (
 )
 
 _IFC_CLASS_RE = re.compile(r"\bifc[a-z0-9_]+\b", re.IGNORECASE)
+_PROPERTY_CUE_RE = re.compile(
+    r"\b(with|having|whose|where|without)\b|\bthat\s+(has|have)\b"
+)
 
 _CLASS_ALIASES: dict[str, str] = {
     "wall": "IfcWall",
@@ -97,14 +114,21 @@ def route_question_rule(question: str) -> RouteDecision:
     q = question.strip()
     q_lower = q.lower()
 
-    if _has_spatial_cues(q_lower):
-        return RouteDecision("graph", "Spatial cue detected", None)
+    if _has_spatial_cues(q_lower) or _has_relation_cues(q_lower):
+        return RouteDecision("graph", "Spatial/relationship cue detected", None)
 
     sql_intent = _detect_sql_intent(q_lower)
     if sql_intent is None:
         return RouteDecision("graph", "No SQL intent detected", None)
 
-    ifc_class = _detect_ifc_class(q)
+    if _has_property_cues(q_lower):
+        return RouteDecision("graph", "Property/constraint cue detected", None)
+
+    ifc_classes = _detect_ifc_classes(q)
+    if len(ifc_classes) > 1:
+        return RouteDecision("graph", "Multiple IFC classes mentioned", None)
+
+    ifc_class = ifc_classes[0] if ifc_classes else None
     level_like = _detect_level_like(q_lower)
 
     if ifc_class is None and not _mentions_generic_elements(q_lower):
@@ -124,6 +148,16 @@ def _has_spatial_cues(question_lower: str) -> bool:
     return any(cue in question_lower for cue in _SPATIAL_CUES)
 
 
+def _has_relation_cues(question_lower: str) -> bool:
+    if "contains" in question_lower or "contained" in question_lower:
+        return True
+    return False
+
+
+def _has_property_cues(question_lower: str) -> bool:
+    return _PROPERTY_CUE_RE.search(question_lower) is not None
+
+
 def _detect_sql_intent(question_lower: str) -> SqlIntent | None:
     if any(cue in question_lower for cue in _COUNT_CUES):
         return "count"
@@ -135,15 +169,26 @@ def _detect_sql_intent(question_lower: str) -> SqlIntent | None:
 
 
 def _detect_ifc_class(question: str) -> str | None:
-    match = _IFC_CLASS_RE.search(question)
-    if match:
-        return _normalize_ifc_class(match.group(0))
+    classes = _detect_ifc_classes(question)
+    return classes[0] if classes else None
+
+
+def _detect_ifc_classes(question: str) -> list[str]:
+    matches: list[tuple[int, str]] = []
+    for match in _IFC_CLASS_RE.finditer(question):
+        matches.append((match.start(), _normalize_ifc_class(match.group(0))))
 
     question_lower = question.lower()
     for term, ifc_class in _CLASS_ALIASES.items():
-        if re.search(rf"\b{re.escape(term)}\b", question_lower):
-            return ifc_class
-    return None
+        for match in re.finditer(rf"\b{re.escape(term)}\b", question_lower):
+            matches.append((match.start(), ifc_class))
+
+    matches.sort(key=lambda item: item[0])
+    ordered: list[str] = []
+    for _, ifc_class in matches:
+        if ifc_class not in ordered:
+            ordered.append(ifc_class)
+    return ordered
 
 
 def _normalize_ifc_class(value: str) -> str:
