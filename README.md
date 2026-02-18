@@ -433,8 +433,6 @@ uv run rag-tag --tui --db ./output/Building-Architecture.db
 | `Page Up`     | Scroll output area up one page                      |
 | `Page Down`   | Scroll output area down one page                    |
 
-Mouse wheel also scrolls the output area at any time.
-
 ### TUI features
 
 - **Compact Q/A blocks**: each answer shows `[route]` label, routing reason, and summary.
@@ -443,7 +441,7 @@ Mouse wheel also scrolls the output area at any time.
 - **Status bar**: displays the database filename, last route, last query duration, and verbose state.
 - **"working..." indicator**: input is disabled and a placeholder is shown while the agent runs; it is replaced with the route label when done (or an error line if the query fails).
 - **History cap**: older visible output lines are pruned automatically to keep memory bounded; hidden verbose-detail lines do not count toward the cap.
-- **Worker cancellation**: pressing `q` or `ctrl+d` cancels any in-flight query worker before exiting.
+- **Worker cancellation**: pressing `q`, `ctrl+c`, or `ctrl+d` cancels any in-flight query worker before exiting.
 - **Plain text output**: no markup parsing; all output is ASCII-safe.
 
 ### stdin / pipe mode still works

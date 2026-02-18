@@ -5,6 +5,7 @@ from __future__ import annotations
 import functools
 import json
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -200,22 +201,41 @@ class QueryApp(App[None]):
         self._append_output("")
         self.query_one(Input).focus()
 
+    def _output_container(self) -> ScrollableContainer:
+        """Return the scrollable output container widget."""
+        return self.query_one("#output-container", ScrollableContainer)
+
+    def _output_panel(self) -> Vertical:
+        """Return the vertical output panel widget."""
+        return self.query_one("#output", Vertical)
+
+    def _cancel_worker(self) -> None:
+        """Cancel the active worker if it is still running."""
+        if self._worker is not None and not self._worker.is_finished:
+            self._worker.cancel()
+
+    def _apply_verbose_visibility(self) -> None:
+        """Apply the current verbose visibility to existing widgets."""
+        for widget in self.query(".verbose-detail"):
+            if self.show_verbose:
+                widget.add_class("visible")
+            else:
+                widget.remove_class("visible")
+
     # ------------------------------------------------------------------ actions
 
     async def action_quit(self) -> None:
         """Cancel any running worker then exit the application."""
-        if self._worker is not None and not self._worker.is_finished:
-            self._worker.cancel()
+        self._cancel_worker()
         self.exit()
 
     def on_unmount(self) -> None:
         """Cancel any running worker when the app tears down."""
-        if self._worker is not None and not self._worker.is_finished:
-            self._worker.cancel()
+        self._cancel_worker()
 
     def action_clear_output(self) -> None:
         """Remove all lines from the output area."""
-        output = self.query_one("#output", Vertical)
+        output = self._output_panel()
         for child in list(output.children):
             child.remove()
         # Working widget was a child of output; it no longer exists.
@@ -225,24 +245,16 @@ class QueryApp(App[None]):
     def action_toggle_verbose(self) -> None:
         """Toggle visibility of verbose JSON detail for all Q/A blocks."""
         self.show_verbose = not self.show_verbose
-        for widget in self.query(".verbose-detail"):
-            if self.show_verbose:
-                widget.add_class("visible")
-            else:
-                widget.remove_class("visible")
+        self._apply_verbose_visibility()
         self._update_status(self._status_text())
 
     def action_scroll_page_up(self) -> None:
         """Scroll the output area up one page (works while Input has focus)."""
-        self.query_one("#output-container", ScrollableContainer).scroll_page_up(
-            animate=True
-        )
+        self._output_container().scroll_page_up(animate=True)
 
     def action_scroll_page_down(self) -> None:
         """Scroll the output area down one page (works while Input has focus)."""
-        self.query_one("#output-container", ScrollableContainer).scroll_page_down(
-            animate=True
-        )
+        self._output_container().scroll_page_down(animate=True)
 
     # --------------------------------------------------------------- input flow
 
@@ -267,11 +279,9 @@ class QueryApp(App[None]):
 
         # Placeholder that will be replaced with [route] reason once done.
         self._working_widget = Static("   working...", classes="route", markup=False)
-        output = self.query_one("#output", Vertical)
+        output = self._output_panel()
         output.mount(self._working_widget)
-        self.query_one("#output-container", ScrollableContainer).scroll_end(
-            animate=False
-        )
+        self._output_container().scroll_end(animate=False)
 
         # Run the (blocking) query in a background thread to keep UI live.
         # Store the handle so it can be cancelled on quit or unmount.
@@ -282,6 +292,19 @@ class QueryApp(App[None]):
         )
 
     # ------------------------------------------------------------------ worker
+
+    @staticmethod
+    def _worker_cancelled(worker: Worker | None) -> bool:
+        """Return True when the worker has been cancelled."""
+        return worker is not None and worker.is_cancelled
+
+    def _safe_call_from_thread(self, func: Callable[..., Any], *args: Any) -> bool:
+        """Call into the main thread, returning False if the app is gone."""
+        try:
+            self.call_from_thread(func, *args)
+        except Exception:
+            return False
+        return True
 
     def _execute_query(self, question: str) -> None:
         """Execute a query in the worker thread.
@@ -297,14 +320,12 @@ class QueryApp(App[None]):
 
         # Bail immediately if already cancelled (e.g. user pressed quit before
         # the thread even started).
-        if worker is not None and worker.is_cancelled:
+        if self._worker_cancelled(worker):
             return
 
-        try:
-            self.call_from_thread(
-                self._update_status, f"Processing: {self._truncate(question, 40)}"
-            )
-        except Exception:
+        if not self._safe_call_from_thread(
+            self._update_status, f"Processing: {self._truncate(question, 40)}"
+        ):
             # App may have shut down between submit and first update.
             return
 
@@ -324,26 +345,21 @@ class QueryApp(App[None]):
             duration_ms = (time.monotonic() - t0) * 1000.0
 
             # Re-check after the (potentially slow) LLM call.
-            if worker is not None and worker.is_cancelled:
+            if self._worker_cancelled(worker):
                 return
 
-            try:
-                self.call_from_thread(self._display_result, result, duration_ms)
-            except Exception:
-                pass  # App shut down while query was executing.
+            self._safe_call_from_thread(self._display_result, result, duration_ms)
 
         except Exception as exc:
             duration_ms = (time.monotonic() - t0) * 1000.0
-            if worker is not None and worker.is_cancelled:
+            if self._worker_cancelled(worker):
                 return
-            try:
-                self.call_from_thread(
-                    self._on_query_error,
-                    f"Query execution failed: {exc}",
-                    duration_ms,
-                )
-            except Exception:
-                pass
+            self._safe_call_from_thread(
+                self._on_query_error,
+                f"Query execution failed: {exc}",
+                duration_ms,
+            )
+            return
 
     # ----------------------------------------------------------------- display
 
@@ -383,8 +399,7 @@ class QueryApp(App[None]):
         self._append_verbose_detail(result)
 
         self._append_output("-" * 60, style="divider")
-        self._update_status(self._status_text())
-        self._finalize_input()
+        self._finish_query()
 
     def _on_query_error(self, error_msg: str, duration_ms: float) -> None:
         """Handle a top-level worker exception on the main event loop."""
@@ -396,6 +411,10 @@ class QueryApp(App[None]):
             self._working_widget = None
         else:
             self._append_output(f"Error: {error_msg}", style="error")
+        self._finish_query()
+
+    def _finish_query(self) -> None:
+        """Update status and re-enable input after a query."""
         self._update_status(self._status_text())
         self._finalize_input()
 
@@ -479,7 +498,7 @@ class QueryApp(App[None]):
                 Verbose-detail widgets are excluded from the history cap so that
                 hidden JSON lines do not displace visible Q/A content.
         """
-        output = self.query_one("#output", Vertical)
+        output = self._output_panel()
 
         # Keep memory bounded.  Verbose-detail widgets (hidden by default) must
         # not count toward the cap or they would silently crowd out visible lines.
@@ -492,18 +511,18 @@ class QueryApp(App[None]):
                     child.remove()
 
         # Build the CSS class string.
-        classes = style
+        classes: list[str] = []
+        if style:
+            classes.append(style)
         if verbose:
-            classes = (f"{style} verbose-detail").strip()
+            classes.append("verbose-detail")
             if self.show_verbose:
-                classes += " visible"
+                classes.append("visible")
 
-        line = Static(text, classes=classes, markup=False)
+        line = Static(text, classes=" ".join(classes), markup=False)
         output.mount(line)
 
-        self.query_one("#output-container", ScrollableContainer).scroll_end(
-            animate=False
-        )
+        self._output_container().scroll_end(animate=False)
 
     def _update_status(self, text: str) -> None:
         """Replace the status-bar content."""

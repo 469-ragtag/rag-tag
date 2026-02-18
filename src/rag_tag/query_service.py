@@ -59,29 +59,16 @@ def execute_sql_query(
         Result dict with answer, data, or error
     """
     if decision.sql_request is None:
-        error_msg = "Router did not produce a SQL request."
-        return {
-            "route": "sql",
-            "decision": decision.reason,
-            "error": error_msg,
-        }
+        return _sql_error(decision, "Router did not produce a SQL request.")
     if db_path is None:
-        error_msg = "No SQLite database found. Run parser/csv_to_sql.py."
-        return {
-            "route": "sql",
-            "decision": decision.reason,
-            "error": error_msg,
-        }
+        return _sql_error(
+            decision, "No SQLite database found. Run parser/csv_to_sql.py."
+        )
 
     try:
         envelope = query_ifc_sql(db_path, decision.sql_request)
     except SqlQueryError as exc:
-        error_str = str(exc)
-        return {
-            "route": "sql",
-            "decision": decision.reason,
-            "error": error_str,
-        }
+        return _sql_error(decision, str(exc))
 
     # Check envelope status
     if envelope["status"] == "error":
@@ -90,11 +77,7 @@ def execute_sql_query(
         error_code = error_info.get("code")
         if error_code:
             error_msg = f"{error_msg} (code: {error_code})"
-        return {
-            "route": "sql",
-            "decision": decision.reason,
-            "error": error_msg,
-        }
+        return _sql_error(decision, error_msg)
 
     # Extract payload from envelope
     payload = envelope["data"]
@@ -115,6 +98,15 @@ def execute_sql_query(
     }
 
     return result
+
+
+def _sql_error(decision: RouteDecision, message: str) -> dict[str, Any]:
+    """Build a SQL error result payload."""
+    return {
+        "route": "sql",
+        "decision": decision.reason,
+        "error": message,
+    }
 
 
 def execute_graph_query(
@@ -174,17 +166,32 @@ def execute_query(
             return {"result": result, "graph": graph, "agent": agent}
 
         # Graph route
-        if graph is None:
-            graph = load_graph()
-        if agent is None:
-            agent = GraphAgent(debug_llm_io=debug_llm_io)
-
+        graph, agent = _ensure_graph_context(graph, agent, debug_llm_io)
         result = execute_graph_query(question, graph, agent, decision)
         return {"result": result, "graph": graph, "agent": agent}
 
     except Exception as exc:
-        error_result = {"error": str(exc), "route": "?", "decision": "routing failed"}
-        if decision is not None:
-            error_result["route"] = decision.route
-            error_result["decision"] = decision.reason
+        error_result = _routing_error(decision, str(exc))
         return {"result": error_result, "graph": graph, "agent": agent}
+
+
+def _ensure_graph_context(
+    graph: nx.DiGraph | None,
+    agent: GraphAgent | None,
+    debug_llm_io: bool,
+) -> tuple[nx.DiGraph, GraphAgent]:
+    """Load graph and agent instances when missing."""
+    if graph is None:
+        graph = load_graph()
+    if agent is None:
+        agent = GraphAgent(debug_llm_io=debug_llm_io)
+    return graph, agent
+
+
+def _routing_error(decision: RouteDecision | None, message: str) -> dict[str, Any]:
+    """Build a routing error result payload."""
+    error_result = {"error": message, "route": "?", "decision": "routing failed"}
+    if decision is not None:
+        error_result["route"] = decision.route
+        error_result["decision"] = decision.reason
+    return error_result

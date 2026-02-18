@@ -21,6 +21,17 @@ def _parse_bool(value: str | None) -> bool:
     raise argparse.ArgumentTypeError("Expected a boolean value (true/false).")
 
 
+def _resolve_db_path(db_path: Path | None) -> tuple[Path | None, str | None]:
+    if db_path is None:
+        return find_sqlite_db(), None
+
+    candidate = db_path.expanduser().resolve()
+    if candidate.is_file():
+        return candidate, None
+
+    return None, f"SQLite database not found: {candidate}"
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="IFC query agent CLI")
     ap.add_argument(
@@ -68,19 +79,13 @@ def main() -> int:
     setup_logfire(enabled=args.trace)
 
     # Resolve database path
-    db_path: Path | None
-    if args.db is not None:
-        candidate = args.db.expanduser().resolve()
-        if candidate.is_file():
-            db_path = candidate
-        else:
-            print(f"SQLite database not found: {candidate}", file=sys.stderr)
-            # The user explicitly specified a path that does not exist.
-            # Do not silently fall back to auto-detection; exit with an error
-            # so the problem is visible rather than hidden behind a wrong DB.
-            return 1
-    else:
-        db_path = find_sqlite_db()
+    db_path, db_error = _resolve_db_path(args.db)
+    if db_error:
+        print(db_error, file=sys.stderr)
+        # The user explicitly specified a path that does not exist.
+        # Do not silently fall back to auto-detection; exit with an error
+        # so the problem is visible rather than hidden behind a wrong DB.
+        return 1
 
     # Launch TUI if requested
     if args.tui:
@@ -94,6 +99,8 @@ def main() -> int:
     agent = None
 
     print_welcome(str(db_path) if db_path else None)
+
+    show_verbose = args.verbose or args.input
 
     for line in sys.stdin:
         question = line.strip()
@@ -126,7 +133,6 @@ def main() -> int:
             print_question(question, "?", "routing failed")
             result = {"error": str(exc)}
 
-        show_verbose = args.verbose or args.input
         print_answer(result, verbose=show_verbose)
 
     return 0
