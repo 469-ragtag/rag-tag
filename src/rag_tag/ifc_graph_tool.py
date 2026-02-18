@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections import deque
 from typing import Any, Dict, Iterable
 
 import networkx as nx
@@ -50,99 +51,6 @@ def query_ifc_graph(
     def _normalize_text(value: str) -> str:
         return re.sub(r"[^a-z0-9]+", " ", value.lower()).strip()
 
-    def _compact_text(value: str) -> str:
-        return re.sub(r"[^a-z0-9]+", "", value.lower())
-
-    def _extract_numeric_tokens(value: str) -> set[str]:
-        return set(re.findall(r"\d+", value))
-
-    def _extract_ordinal_tokens(value: str) -> set[int]:
-        ordinals = set()
-        for raw in re.findall(r"\b(\d+)(?:st|nd|rd|th)\b", value):
-            ordinals.add(int(raw))
-        return ordinals
-
-    def _all_storey_nodes() -> list[str]:
-        nodes = []
-        for n, d in G.nodes(data=True):
-            if not str(n).startswith("Storey::"):
-                continue
-            if str(d.get("class_", "")).lower() == "ifcbuildingstorey":
-                nodes.append(n)
-        return nodes
-
-    def _resolve_storey_node(
-        storey_query: str,
-    ) -> tuple[str | None, Dict[str, Any] | None]:
-        query = storey_query.strip()
-        if not query:
-            return None, {"error": "Missing param: storey"}
-
-        direct_node = f"Storey::{query}"
-        if direct_node in G:
-            cls = str(G.nodes[direct_node].get("class_", ""))
-            if cls.lower() == "ifcbuildingstorey":
-                return direct_node, None
-
-        exact_matches = _find_nodes_by_label(query, class_filter="IfcBuildingStorey")
-        if len(exact_matches) == 1:
-            return exact_matches[0], None
-        if len(exact_matches) > 1:
-            return None, {"error": "Ambiguous storey", "candidates": exact_matches}
-
-        query_norm = _normalize_text(query)
-        query_compact = _compact_text(query)
-        query_tokens = set(query_norm.split())
-        query_nums = _extract_numeric_tokens(query_norm)
-        query_ords = _extract_ordinal_tokens(query_norm)
-
-        norm_exact: list[str] = []
-        token_matches: list[tuple[int, str]] = []
-        for node in _all_storey_nodes():
-            label = str(G.nodes[node].get("label", ""))
-            label_norm = _normalize_text(label)
-            label_compact = _compact_text(label)
-            label_tokens = set(label_norm.split())
-            label_nums = _extract_numeric_tokens(label_norm)
-            label_ords = _extract_ordinal_tokens(label_norm)
-
-            if label_norm == query_norm:
-                norm_exact.append(node)
-                continue
-
-            score = 0
-            if query_tokens and query_tokens.issubset(label_tokens):
-                score += 2
-            if query_nums and query_nums.intersection(label_nums):
-                score += 2
-            if query_ords and query_ords.intersection(label_ords):
-                score += 2
-            if "ground" in query_tokens and (
-                "ground" in label_tokens or "00" in label_nums
-            ):
-                score += 2
-            if query_norm and query_norm in label_norm:
-                score += 1
-            if query_compact and query_compact in label_compact:
-                score += 1
-            if score > 0:
-                token_matches.append((score, node))
-
-        if len(norm_exact) == 1:
-            return norm_exact[0], None
-        if len(norm_exact) > 1:
-            return None, {"error": "Ambiguous storey", "candidates": norm_exact}
-
-        if token_matches:
-            token_matches.sort(key=lambda item: item[0], reverse=True)
-            best_score = token_matches[0][0]
-            best = [node for score, node in token_matches if score == best_score]
-            if len(best) == 1:
-                return best[0], None
-            return None, {"error": "Ambiguous storey", "candidates": best}
-
-        return None, {"error": f"Storey not found: {storey_query}"}
-
     def _resolve_element_id(
         element_id: str,
     ) -> tuple[str | None, Dict[str, Any] | None]:
@@ -163,8 +71,112 @@ def query_ifc_graph(
             return None, {"error": "Ambiguous element_id", "candidates": matches}
         return None, {"error": f"Element not found: {element_id}"}
 
-    def _descendants(start: str) -> Iterable[str]:
-        return nx.descendants(G, start)
+    def _resolve_storey_node(
+        storey_query: str,
+    ) -> tuple[str | None, Dict[str, Any] | None]:
+        query = storey_query.strip()
+        if not query:
+            return None, {"error": "Missing param: storey"}
+
+        # Direct id match supports new Storey::<GlobalId> identity.
+        direct = f"Storey::{query}"
+        if direct in G and (
+            str(G.nodes[direct].get("class_", "")).lower() == "ifcbuildingstorey"
+        ):
+            return direct, None
+
+        # Exact label match (legacy/user-friendly).
+        exact = _find_nodes_by_label(query, class_filter="IfcBuildingStorey")
+        if len(exact) == 1:
+            return exact[0], None
+        if len(exact) > 1:
+            return None, {"error": "Ambiguous storey", "candidates": exact}
+
+        # Normalized label fallback (spaces/punctuation/case).
+        qn = _normalize_text(query)
+        norm_matches: list[str] = []
+        for n, d in G.nodes(data=True):
+            if str(d.get("class_", "")).lower() != "ifcbuildingstorey":
+                continue
+            if _normalize_text(str(d.get("label", ""))) == qn:
+                norm_matches.append(n)
+        if len(norm_matches) == 1:
+            return norm_matches[0], None
+        if len(norm_matches) > 1:
+            return None, {"error": "Ambiguous storey", "candidates": norm_matches}
+
+        return None, {"error": f"Storey not found: {storey_query}"}
+
+    def _storey_elements(start: str) -> Iterable[str]:
+        """Traverse only containment edges to avoid leakage via spatial links."""
+        visited = {start}
+        q = deque([start])
+        while q:
+            node = q.popleft()
+            for nbr in G.successors(node):
+                edge = G[node][nbr]
+                if edge.get("relation") != "contained_in":
+                    continue
+                if nbr in visited:
+                    continue
+                visited.add(nbr)
+                q.append(nbr)
+                yield nbr
+
+    def _spatial_neighbors(node_id: str) -> Iterable[tuple[str, Dict[str, Any]]]:
+        """Yield unique spatial neighbors across both outgoing and incoming edges."""
+        seen: set[str] = set()
+        spatial_relations = {"adjacent_to", "connected_to"}
+
+        for nbr in G.successors(node_id):
+            if nbr in seen:
+                continue
+            edge = G[node_id][nbr]
+            if edge.get("relation") not in spatial_relations:
+                continue
+            seen.add(nbr)
+            yield nbr, edge
+
+        for nbr in G.predecessors(node_id):
+            if nbr in seen:
+                continue
+            edge = G[nbr][node_id]
+            if edge.get("relation") not in spatial_relations:
+                continue
+            seen.add(nbr)
+            yield nbr, edge
+
+    def _topology_neighbors(
+        node_id: str,
+        allowed_relations: set[str] | None = None,
+    ) -> Iterable[tuple[str, Dict[str, Any]]]:
+        """Yield unique topology neighbors across both directions."""
+        seen: set[tuple[str, str]] = set()
+        topology_relations = {"above", "below", "overlaps_xy", "intersects_bbox"}
+        if allowed_relations is None:
+            allowed_relations = topology_relations
+
+        for nbr in G.successors(node_id):
+            edge = G[node_id][nbr]
+            relation = str(edge.get("relation"))
+            if relation not in allowed_relations:
+                continue
+            key = (nbr, relation)
+            if key in seen:
+                continue
+            seen.add(key)
+            yield nbr, edge
+
+        for nbr in G.predecessors(node_id):
+            edge = G[nbr][node_id]
+            relation = str(edge.get("relation"))
+            if relation not in allowed_relations:
+                continue
+            key = (nbr, relation)
+            if key in seen:
+                continue
+            seen.add(key)
+            yield nbr, edge
 
     def _node_payload(node_id: str) -> Dict[str, Any]:
         data = G.nodes[node_id]
@@ -187,15 +199,21 @@ def query_ifc_graph(
     if action == "get_elements_in_storey":
         storey = params.get("storey")
         if not storey:
-            return {"error": "Missing param: storey"}
-        node, err = _resolve_storey_node(str(storey))
+            return _err("Missing param: storey", "missing_param")
+        if not isinstance(storey, str):
+            return _err("Invalid param: storey must be a string", "invalid")
+        node, err = _resolve_storey_node(storey)
         if err:
-            return err
+            error_msg = err.get("error", "Unknown error")
+            if "Ambiguous" in str(error_msg):
+                return _err(
+                    str(error_msg),
+                    "ambiguous",
+                    {"candidates": err.get("candidates", [])},
+                )
+            return _err(str(error_msg), "not_found")
         if node is None:
-            return {"error": f"Storey not found: {storey}"}
-
-        class_filter = params.get("class")
-        normalized_class = _normalize_class(str(class_filter)) if class_filter else None
+            return _err(f"Storey not found: {storey}", "not_found")
 
         container_classes = {
             "IfcProject",
@@ -209,13 +227,10 @@ def query_ifc_graph(
         }
 
         elements = []
-        for e in _descendants(node):
+        for e in _storey_elements(node):
             cls = G.nodes[e].get("class_")
             if cls in container_classes:
                 continue
-            if normalized_class is not None:
-                if str(cls or "").lower() != normalized_class.lower():
-                    continue
             elements.append(
                 {
                     "id": e,
@@ -223,13 +238,7 @@ def query_ifc_graph(
                     "class_": cls,
                 }
             )
-        return {
-            "storey": storey,
-            "storey_node": node,
-            "storey_class": "IfcBuildingStorey",
-            "class": normalized_class,
-            "elements": elements,
-        }
+        return _ok({"storey": storey, "elements": elements})
 
     if action == "find_elements_by_class":
         cls = params.get("class")
@@ -272,18 +281,73 @@ def query_ifc_graph(
             return _err(f"Element not found: {element_id}", "not_found")
 
         neighbors = []
-        for nbr in G.neighbors(resolved):
-            edge = G[resolved][nbr]
-            if edge.get("relation") == "adjacent_to":
-                neighbors.append(
-                    {
-                        "id": nbr,
-                        "label": G.nodes[nbr].get("label"),
-                        "class_": G.nodes[nbr].get("class_"),
-                        "distance": edge.get("distance"),
-                    }
-                )
+        for nbr, edge in _spatial_neighbors(resolved):
+            neighbors.append(
+                {
+                    "id": nbr,
+                    "label": G.nodes[nbr].get("label"),
+                    "class_": G.nodes[nbr].get("class_"),
+                    "relation": edge.get("relation"),
+                    "distance": edge.get("distance"),
+                }
+            )
         return _ok({"element_id": resolved, "adjacent": neighbors})
+
+    if action == "get_topology_neighbors":
+        element_id = params.get("element_id")
+        relation = params.get("relation")
+        if not element_id:
+            return _err("Missing param: element_id", "missing_param")
+        if not isinstance(element_id, str):
+            return _err("Invalid param: element_id must be a string", "invalid")
+        if not relation:
+            return _err("Missing param: relation", "missing_param")
+        if not isinstance(relation, str):
+            return _err("Invalid param: relation must be a string", "invalid")
+
+        relation_value = relation.strip().lower()
+        allowed = {"above", "below", "overlaps_xy", "intersects_bbox"}
+        if relation_value not in allowed:
+            return _err(
+                f"Unsupported topology relation: {relation}",
+                "invalid",
+                {"allowed_relations": sorted(allowed)},
+            )
+
+        resolved, err = _resolve_element_id(element_id)
+        if err:
+            error_msg = err.get("error", "Unknown error")
+            if "Ambiguous" in str(error_msg):
+                return _err(
+                    str(error_msg),
+                    "ambiguous",
+                    {"candidates": err.get("candidates", [])},
+                )
+            return _err(str(error_msg), "not_found")
+        if resolved is None:
+            return _err(f"Element not found: {element_id}", "not_found")
+
+        neighbors = []
+        for nbr, edge in _topology_neighbors(resolved, {relation_value}):
+            neighbors.append(
+                {
+                    "id": nbr,
+                    "label": G.nodes[nbr].get("label"),
+                    "class_": G.nodes[nbr].get("class_"),
+                    "relation": edge.get("relation"),
+                    "vertical_gap": edge.get("vertical_gap"),
+                    "overlap_area_xy": edge.get("overlap_area_xy"),
+                    "source": edge.get("source"),
+                }
+            )
+
+        return _ok(
+            {
+                "element_id": resolved,
+                "relation": relation_value,
+                "neighbors": neighbors,
+            }
+        )
 
     if action == "find_nodes":
         cls = params.get("class")
@@ -387,10 +451,7 @@ def query_ifc_graph(
             return _err("Invalid param: max_distance must be a number", "invalid")
 
         results = []
-        for nbr in G.neighbors(resolved):
-            edge = G[resolved][nbr]
-            if edge.get("relation") != "adjacent_to":
-                continue
+        for nbr, edge in _spatial_neighbors(resolved):
             dist = edge.get("distance")
             if dist is None or float(dist) > max_distance_value:
                 continue
@@ -402,6 +463,7 @@ def query_ifc_graph(
                     "id": nbr,
                     "label": G.nodes[nbr].get("label"),
                     "class_": G.nodes[nbr].get("class_"),
+                    "relation": edge.get("relation"),
                     "distance": dist,
                 }
             )
@@ -409,6 +471,112 @@ def query_ifc_graph(
             {
                 "near": resolved,
                 "max_distance": max_distance_value,
+                "results": results,
+            }
+        )
+
+    if action == "find_elements_above":
+        element_id = params.get("element_id")
+        max_gap = params.get("max_gap")
+        if not element_id:
+            return _err("Missing param: element_id", "missing_param")
+        if not isinstance(element_id, str):
+            return _err("Invalid param: element_id must be a string", "invalid")
+        max_gap_value: float | None = None
+        if max_gap is not None:
+            try:
+                max_gap_value = float(max_gap)
+            except (TypeError, ValueError):
+                return _err("Invalid param: max_gap must be a number", "invalid")
+
+        resolved, err = _resolve_element_id(element_id)
+        if err:
+            error_msg = err.get("error", "Unknown error")
+            if "Ambiguous" in str(error_msg):
+                return _err(
+                    str(error_msg),
+                    "ambiguous",
+                    {"candidates": err.get("candidates", [])},
+                )
+            return _err(str(error_msg), "not_found")
+        if resolved is None:
+            return _err(f"Element not found: {element_id}", "not_found")
+
+        results = []
+        for nbr, edge in _topology_neighbors(resolved, {"above"}):
+            gap = edge.get("vertical_gap")
+            if (
+                max_gap_value is not None
+                and gap is not None
+                and float(gap) > max_gap_value
+            ):
+                continue
+            results.append(
+                {
+                    "id": nbr,
+                    "label": G.nodes[nbr].get("label"),
+                    "class_": G.nodes[nbr].get("class_"),
+                    "relation": "above",
+                    "vertical_gap": gap,
+                }
+            )
+        return _ok(
+            {
+                "element_id": resolved,
+                "max_gap": max_gap_value,
+                "results": results,
+            }
+        )
+
+    if action == "find_elements_below":
+        element_id = params.get("element_id")
+        max_gap = params.get("max_gap")
+        if not element_id:
+            return _err("Missing param: element_id", "missing_param")
+        if not isinstance(element_id, str):
+            return _err("Invalid param: element_id must be a string", "invalid")
+        max_gap_value: float | None = None
+        if max_gap is not None:
+            try:
+                max_gap_value = float(max_gap)
+            except (TypeError, ValueError):
+                return _err("Invalid param: max_gap must be a number", "invalid")
+
+        resolved, err = _resolve_element_id(element_id)
+        if err:
+            error_msg = err.get("error", "Unknown error")
+            if "Ambiguous" in str(error_msg):
+                return _err(
+                    str(error_msg),
+                    "ambiguous",
+                    {"candidates": err.get("candidates", [])},
+                )
+            return _err(str(error_msg), "not_found")
+        if resolved is None:
+            return _err(f"Element not found: {element_id}", "not_found")
+
+        results = []
+        for nbr, edge in _topology_neighbors(resolved, {"below"}):
+            gap = edge.get("vertical_gap")
+            if (
+                max_gap_value is not None
+                and gap is not None
+                and float(gap) > max_gap_value
+            ):
+                continue
+            results.append(
+                {
+                    "id": nbr,
+                    "label": G.nodes[nbr].get("label"),
+                    "class_": G.nodes[nbr].get("class_"),
+                    "relation": "below",
+                    "vertical_gap": gap,
+                }
+            )
+        return _ok(
+            {
+                "element_id": resolved,
+                "max_gap": max_gap_value,
                 "results": results,
             }
         )

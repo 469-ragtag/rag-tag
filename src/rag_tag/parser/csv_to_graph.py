@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import html
+import json
 import math
 from collections import defaultdict
 from itertools import product
@@ -11,12 +13,13 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.io as pio
-from ifc_geometry_parse import extract_geometry_data, get_ifc_model
-from ifc_to_csv import _find_ifc_dir, _find_project_root
+
+from rag_tag.parser.ifc_geometry_parse import extract_geometry_data, get_ifc_model
+from rag_tag.paths import find_ifc_dir, find_project_root
 
 script_dir = Path(__file__).resolve().parent
-project_root = _find_project_root(script_dir) or script_dir
-ifc_dir = _find_ifc_dir(script_dir)
+project_root = find_project_root(script_dir) or script_dir
+ifc_dir = find_ifc_dir(script_dir)
 if ifc_dir is None:
     raise FileNotFoundError("Could not find 'IFC-Files/' folder.")
 
@@ -39,6 +42,84 @@ def distance_between_points(
 ) -> float:
     """Euclidean distance between two 3D points."""
     return float(np.linalg.norm(np.array(a, dtype=float) - np.array(b, dtype=float)))
+
+
+def distance_between_bboxes(
+    a: tuple[tuple[float, float, float], tuple[float, float, float]],
+    b: tuple[tuple[float, float, float], tuple[float, float, float]],
+) -> float:
+    """Minimum Euclidean distance between axis-aligned bboxes (0 if overlapping)."""
+    (amin, amax) = a
+    (bmin, bmax) = b
+    axis_gaps = []
+    for i in range(3):
+        gap = max(bmin[i] - amax[i], amin[i] - bmax[i], 0.0)
+        axis_gaps.append(gap)
+    return float(np.linalg.norm(np.array(axis_gaps, dtype=float)))
+
+
+def _extract_centroid(
+    geom: object | None,
+) -> tuple[float, float, float] | None:
+    if isinstance(geom, dict):
+        centroid = geom.get("centroid")
+        if centroid is None:
+            return None
+        return tuple(float(v) for v in centroid)
+    if geom is None:
+        return None
+    return tuple(float(v) for v in geom)
+
+
+def _extract_bbox(
+    geom: object | None,
+) -> tuple[tuple[float, float, float], tuple[float, float, float]] | None:
+    if not isinstance(geom, dict):
+        return None
+    bbox = geom.get("bbox")
+    if bbox is None:
+        return None
+    min_xyz, max_xyz = bbox
+    return (
+        tuple(float(v) for v in min_xyz),
+        tuple(float(v) for v in max_xyz),
+    )
+
+
+def _bbox_center(
+    bbox: tuple[tuple[float, float, float], tuple[float, float, float]],
+) -> tuple[float, float, float]:
+    (min_xyz, max_xyz) = bbox
+    return (
+        (min_xyz[0] + max_xyz[0]) / 2.0,
+        (min_xyz[1] + max_xyz[1]) / 2.0,
+        (min_xyz[2] + max_xyz[2]) / 2.0,
+    )
+
+
+def _bbox_xy_overlap_area(
+    a: tuple[tuple[float, float, float], tuple[float, float, float]],
+    b: tuple[tuple[float, float, float], tuple[float, float, float]],
+) -> float:
+    ax0, ay0, _ = a[0]
+    ax1, ay1, _ = a[1]
+    bx0, by0, _ = b[0]
+    bx1, by1, _ = b[1]
+    overlap_x = max(0.0, min(ax1, bx1) - max(ax0, bx0))
+    overlap_y = max(0.0, min(ay1, by1) - max(ay0, by0))
+    return float(overlap_x * overlap_y)
+
+
+def _bboxes_intersect(
+    a: tuple[tuple[float, float, float], tuple[float, float, float]],
+    b: tuple[tuple[float, float, float], tuple[float, float, float]],
+) -> bool:
+    (amin, amax) = a
+    (bmin, bmax) = b
+    for i in range(3):
+        if amax[i] < bmin[i] or bmax[i] < amin[i]:
+            return False
+    return True
 
 
 def _normalize_positions(
@@ -76,10 +157,7 @@ def _neighbor_cell_keys(key: tuple[int, int, int], radius: int):
     yr = range(key[1] - radius, key[1] + radius + 1)
     zr = range(key[2] - radius, key[2] + radius + 1)
     for cx, cy, cz in product(xr, yr, zr):
-        if (
-            max(abs(cx - key[0]), abs(cy - key[1]), abs(cz - key[2]))
-            == radius
-        ):
+        if max(abs(cx - key[0]), abs(cy - key[1]), abs(cz - key[2])) == radius:
             yield (cx, cy, cz)
 
 
@@ -90,6 +168,31 @@ def _build_spatial_grid(
     for idx, point in enumerate(positions):
         grid[_cell_for_point(point, cell_size)].append(idx)
     return grid
+
+
+def build_spatial_grid(
+    nodes: dict[str, dict[str, object]],
+    cell_size: float,
+) -> dict[tuple[int, int, int], list[str]]:
+    """Build a centroid-based spatial grid over element nodes."""
+    grid: dict[tuple[int, int, int], list[str]] = defaultdict(list)
+    for node_id, data in nodes.items():
+        centroid = data.get("centroid")
+        if not isinstance(centroid, tuple) or len(centroid) != 3:
+            continue
+        cell = tuple(int(c // cell_size) for c in centroid)
+        grid[cell].append(node_id)
+    return grid
+
+
+def get_neighboring_cells(cell: tuple[int, int, int]) -> list[tuple[int, int, int]]:
+    cx, cy, cz = cell
+    return [
+        (cx + dx, cy + dy, cz + dz)
+        for dx in (-1, 0, 1)
+        for dy in (-1, 0, 1)
+        for dz in (-1, 0, 1)
+    ]
 
 
 def _distance_sq(a: np.ndarray, b: np.ndarray) -> float:
@@ -145,7 +248,11 @@ def compute_adjacency_threshold(positions: list[tuple[float, float, float]]) -> 
     return max(0.5, median_nn * 1.5)
 
 
-def build_graph_with_properties(csv_path: str | Path, geom_data: dict) -> nx.DiGraph:
+def build_graph_with_properties(
+    csv_path: str | Path,
+    geom_data: dict,
+    ifc_model: object | None = None,
+) -> nx.DiGraph:
     """
     Build a hierarchical IFC graph and attach geometry data to nodes.
     `geom_data` should be a dict mapping GlobalId -> geometry info (e.g., centroid
@@ -159,27 +266,16 @@ def build_graph_with_properties(csv_path: str | Path, geom_data: dict) -> nx.DiG
     G.add_node("IfcBuilding", label="Building", class_="IfcBuilding", geometry=None)
     G.add_edge("IfcProject", "IfcBuilding", relation="aggregates")
 
-    # Collect actual IfcBuildingStorey elements from the CSV
-    storey_series = df.loc[df["Class"] == "IfcBuildingStorey", "Name"].dropna()
-    actual_storeys = [str(name) for name in storey_series.unique()]
+    G.graph["edge_categories"] = {
+        "hierarchy": ["aggregates", "contained_in"],
+        "typing": ["typed_by"],
+        "spatial": ["adjacent_to", "connected_to"],
+        "topology": ["above", "below", "overlaps_xy", "intersects_bbox"],
+    }
 
-    storey_nodes: dict[str, str] = {}
+    storey_nodes_by_gid: dict[str, str] = {}
+    storey_nodes_by_name: dict[str, list[str]] = {}
 
-    # Create Storey nodes only for actual IfcBuildingStorey elements
-    for storey_name in actual_storeys:
-        node_id = f"Storey::{storey_name}"
-        storey_nodes[storey_name] = node_id
-        G.add_node(
-            node_id, label=storey_name, class_="IfcBuildingStorey", geometry=None
-        )
-        G.add_edge("IfcBuilding", node_id, relation="aggregates")
-
-    # Types
-    for t in df["TypeName"].dropna().unique():
-        node_id = f"Type::{t}"
-        G.add_node(node_id, label=t, class_="IfcTypeObject", geometry=None)
-
-    # Elements (itertuples is significantly faster than iterrows for large CSVs)
     columns = list(df.columns)
     col_idx = {col: idx for idx, col in enumerate(columns)}
     class_idx = col_idx.get("Class")
@@ -191,55 +287,127 @@ def build_graph_with_properties(csv_path: str | Path, geom_data: dict) -> nx.DiG
     if class_idx is None or gid_idx is None:
         raise KeyError("CSV must include 'Class' and 'GlobalId' columns.")
 
+    # Create storey nodes with stable IDs based on GlobalId.
     for row in df.itertuples(index=False, name=None):
         row_class = row[class_idx]
+        if row_class != "IfcBuildingStorey":
+            continue
+
         row_gid = row[gid_idx]
+        if row_gid is None:
+            continue
+        gid = str(row_gid).strip()
+        if not gid:
+            continue
+
+        row_name = row[name_idx] if name_idx is not None else None
+        storey_name = (
+            row_name.strip() if isinstance(row_name, str) and row_name.strip() else gid
+        )
+        row_props = dict(zip(columns, row))
+        geom = geom_data.get(gid)
+        centroid = _extract_centroid(geom)
+        bbox = _extract_bbox(geom)
+
+        node_id = f"Storey::{gid}"
+        G.add_node(
+            node_id,
+            label=storey_name,
+            class_="IfcBuildingStorey",
+            properties=row_props,
+            geometry=centroid,
+            bbox=bbox,
+        )
+        G.add_edge("IfcBuilding", node_id, relation="aggregates")
+
+        storey_nodes_by_gid[gid] = node_id
+        storey_nodes_by_name.setdefault(storey_name, []).append(node_id)
+
+    # Create element nodes and containment edges.
+    for row in df.itertuples(index=False, name=None):
+        row_class = row[class_idx]
+        if row_class == "IfcBuildingStorey":
+            continue
+
+        row_gid = row[gid_idx]
+        if row_gid is None:
+            continue
+        gid = str(row_gid).strip()
+        if not gid:
+            continue
+
         row_name = row[name_idx] if name_idx is not None else None
         row_level = row[level_idx] if level_idx is not None else None
         row_type = row[type_idx] if type_idx is not None else None
         row_props = dict(zip(columns, row))
-        geom = geom_data.get(row_gid)  # attach geometry if available
+        geom = geom_data.get(gid)
+        centroid = _extract_centroid(geom)
+        bbox = _extract_bbox(geom)
 
-        if row_class == "IfcBuildingStorey":
-            storey_name = row_name
-            if not isinstance(storey_name, str) or not storey_name.strip():
-                storey_name = str(row_gid)
-            node_id = storey_nodes.get(storey_name)
-            if node_id is None:
-                node_id = f"Storey::{storey_name}"
-                storey_nodes[storey_name] = node_id
-                G.add_node(
-                    node_id,
-                    label=storey_name,
-                    class_="IfcBuildingStorey",
-                    geometry=None,
-                )
-                G.add_edge("IfcBuilding", node_id, relation="aggregates")
-            G.nodes[node_id].update(
-                label=storey_name,
-                class_="IfcBuildingStorey",
-                properties=row_props,
-                geometry=geom,
-            )
-            continue
-
-        eid = f"Element::{row_gid}"
-        label = row_name if isinstance(row_name, str) and row_name else row_gid
+        eid = f"Element::{gid}"
+        label = (
+            row_name.strip() if isinstance(row_name, str) and row_name.strip() else gid
+        )
+        type_label = (
+            row_type.strip() if isinstance(row_type, str) and row_type.strip() else None
+        )
         G.add_node(
             eid,
             label=label,
             class_=row_class,
             properties=row_props,
-            geometry=geom,  # new geometry property
+            type_label=type_label,
+            geometry=centroid,
+            bbox=bbox,
+            z_min=(bbox[0][2] if bbox is not None else None),
+            z_max=(bbox[1][2] if bbox is not None else None),
+            height=((bbox[1][2] - bbox[0][2]) if bbox is not None else None),
+            footprint_bbox_2d=(
+                (bbox[0][0], bbox[0][1], bbox[1][0], bbox[1][1])
+                if bbox is not None
+                else None
+            ),
         )
 
-        level_value = row_level
-        if isinstance(level_value, str) and level_value in storey_nodes:
-            G.add_edge(storey_nodes[level_value], eid, relation="contained_in")
+        if isinstance(row_level, str):
+            level = row_level.strip()
+            if level in storey_nodes_by_gid:
+                G.add_edge(storey_nodes_by_gid[level], eid, relation="contained_in")
+            else:
+                candidates = storey_nodes_by_name.get(level, [])
+                if len(candidates) == 1:
+                    G.add_edge(candidates[0], eid, relation="contained_in")
 
-        type_name = row_type
-        if isinstance(type_name, str) and type_name:
-            G.add_edge(f"Type::{type_name}", eid, relation="typed_by")
+    # Add explicit type-object nodes and typed_by edges.
+    if ifc_model is not None and hasattr(ifc_model, "by_type"):
+        for element in ifc_model.by_type("IfcElement"):
+            element_gid = getattr(element, "GlobalId", None)
+            if not element_gid:
+                continue
+            element_node = f"Element::{element_gid}"
+            if element_node not in G:
+                continue
+
+            for rel in getattr(element, "IsTypedBy", None) or []:
+                type_obj = getattr(rel, "RelatingType", None)
+                if type_obj is None:
+                    continue
+                type_gid = getattr(type_obj, "GlobalId", None)
+                if type_gid:
+                    type_node = f"Type::{type_gid}"
+                else:
+                    type_name = getattr(type_obj, "Name", None) or type_obj.is_a()
+                    type_node = f"Type::{type_name}"
+
+                if type_node not in G:
+                    G.add_node(
+                        type_node,
+                        label=getattr(type_obj, "Name", None) or type_obj.is_a(),
+                        class_=type_obj.is_a(),
+                        node_type="Type",
+                    )
+
+                G.add_edge(element_node, type_node, relation="typed_by")
 
     return G
 
@@ -248,15 +416,19 @@ def add_spatial_adjacency(
     G: nx.DiGraph, geom_data: dict, threshold: float | None = None
 ) -> float:
     """
-    Add adjacency edges between elements that are within a spatial threshold.
+    Add spatial edges between elements.
+    - connected_to: bbox intersects/touches (distance = 0)
+    - adjacent_to: within threshold distance
     Returns the threshold used.
     """
-    element_nodes = []
-    positions = []
+    element_nodes: list[str] = []
+    positions: list[tuple[float, float, float]] = []
+    bboxes: list[
+        tuple[tuple[float, float, float], tuple[float, float, float]] | None
+    ] = []
 
     for n, d in G.nodes(data=True):
         if d.get("class_") in {
-            "IfcTypeObject",
             "IfcBuilding",
             "IfcProject",
             "IfcBuildingStorey",
@@ -266,10 +438,17 @@ def add_spatial_adjacency(
             continue
         gid = d.get("properties", {}).get("GlobalId")
         geom = geom_data.get(gid)
-        if geom is None:
+        centroid = _extract_centroid(geom)
+        bbox = _extract_bbox(geom)
+        if centroid is None and bbox is None:
+            continue
+        if centroid is None and bbox is not None:
+            centroid = _bbox_center(bbox)
+        if centroid is None:
             continue
         element_nodes.append(n)
-        positions.append(tuple(geom))
+        positions.append(centroid)
+        bboxes.append(bbox)
 
     if threshold is None:
         threshold = compute_adjacency_threshold(positions)
@@ -278,32 +457,113 @@ def add_spatial_adjacency(
     if pos is None:
         return threshold
 
-    # Grid with threshold-sized cells reduces pair checks to nearby buckets.
     cell_size = max(float(threshold), 1e-6)
     grid = _build_spatial_grid(pos, cell_size)
-    threshold_sq = float(threshold) * float(threshold)
+    seen_pairs: set[tuple[str, str]] = set()
     neighbor_radius = int(math.ceil(float(threshold) / cell_size)) + 1
 
-    for i, ni in enumerate(element_nodes):
-        pi = pos[i]
-        key = _cell_for_point(pi, cell_size)
+    for i, node_a in enumerate(element_nodes):
+        centroid_a = pos[i]
+        bbox_a = bboxes[i]
+        key = _cell_for_point(centroid_a, cell_size)
         for radius in range(neighbor_radius + 1):
             for neighbor_key in _neighbor_cell_keys(key, radius):
                 for j in grid.get(neighbor_key, []):
-                    if j <= i:
+                    if j == i:
                         continue
-                    nj = element_nodes[j]
-                    d2 = _distance_sq(pi, pos[j])
-                    if d2 <= threshold_sq:
-                        if not G.has_edge(ni, nj) and not G.has_edge(nj, ni):
-                            G.add_edge(
-                                ni,
-                                nj,
-                                relation="adjacent_to",
-                                distance=math.sqrt(d2),
-                            )
+                    node_b = element_nodes[j]
+                    pair = tuple(sorted((node_a, node_b)))
+                    if pair in seen_pairs:
+                        continue
+                    seen_pairs.add(pair)
+
+                    centroid_b = pos[j]
+                    bbox_b = bboxes[j]
+
+                    if bbox_a is not None and bbox_b is not None:
+                        d = distance_between_bboxes(bbox_a, bbox_b)
+                    else:
+                        d = distance_between_points(centroid_a, centroid_b)
+
+                    if d <= threshold:
+                        relation = "connected_to" if d <= 1e-9 else "adjacent_to"
+                        G.add_edge(node_a, node_b, relation=relation, distance=d)
+                        G.add_edge(node_b, node_a, relation=relation, distance=d)
 
     return threshold
+
+
+def add_topology_facts(G: nx.DiGraph) -> None:
+    """
+    Add topology-derived symbolic relations using element bboxes:
+    - intersects_bbox (bidirectional)
+    - overlaps_xy (bidirectional, with overlap_area_xy)
+    - above / below (directed pair with vertical_gap)
+    """
+    element_nodes = []
+    element_bboxes = []
+    for n, d in G.nodes(data=True):
+        if not str(n).startswith("Element::"):
+            continue
+        bbox = d.get("bbox")
+        if bbox is None:
+            continue
+        element_nodes.append(n)
+        element_bboxes.append(bbox)
+
+    for i, a in enumerate(element_nodes):
+        bbox_a = element_bboxes[i]
+        for j in range(i + 1, len(element_nodes)):
+            b = element_nodes[j]
+            bbox_b = element_bboxes[j]
+
+            # 3D intersection fact
+            if _bboxes_intersect(bbox_a, bbox_b):
+                G.add_edge(
+                    a,
+                    b,
+                    relation="intersects_bbox",
+                    source="topology",
+                )
+                G.add_edge(
+                    b,
+                    a,
+                    relation="intersects_bbox",
+                    source="topology",
+                )
+
+            # 2D footprint overlap fact
+            overlap_area = _bbox_xy_overlap_area(bbox_a, bbox_b)
+            if overlap_area > 0.0:
+                G.add_edge(
+                    a,
+                    b,
+                    relation="overlaps_xy",
+                    overlap_area_xy=overlap_area,
+                    source="topology",
+                )
+                G.add_edge(
+                    b,
+                    a,
+                    relation="overlaps_xy",
+                    overlap_area_xy=overlap_area,
+                    source="topology",
+                )
+
+            # Vertical ordering facts based on z extents.
+            a_min_z = float(bbox_a[0][2])
+            a_max_z = float(bbox_a[1][2])
+            b_min_z = float(bbox_b[0][2])
+            b_max_z = float(bbox_b[1][2])
+
+            if a_min_z > b_max_z:
+                gap = a_min_z - b_max_z
+                G.add_edge(a, b, relation="above", vertical_gap=gap, source="topology")
+                G.add_edge(b, a, relation="below", vertical_gap=gap, source="topology")
+            elif b_min_z > a_max_z:
+                gap = b_min_z - a_max_z
+                G.add_edge(b, a, relation="above", vertical_gap=gap, source="topology")
+                G.add_edge(a, b, relation="below", vertical_gap=gap, source="topology")
 
 
 def plot_interactive_graph(G: nx.DiGraph, out_html: Path):
@@ -335,33 +595,37 @@ def plot_interactive_graph(G: nx.DiGraph, out_html: Path):
         "IfcProject": "purple",
         "IfcBuilding": "blue",
         "IfcBuildingStorey": "orange",
-        "IfcTypeObject": "red",
     }
     node_category_map = {
         "IfcProject": "Project root",
         "IfcBuilding": "Building container",
         "IfcBuildingStorey": "Storey / floor container",
-        "IfcTypeObject": "Type definition",
     }
     edge_color_map = {
         "aggregates": "#6b7280",
         "contained_in": "#2563eb",
-        "typed_by": "#b91c1c",
+        "typed_by": "#ca8a04",
+        "connected_to": "#ef4444",
         "adjacent_to": "#059669",
     }
     edge_relation_explanations = {
         "aggregates": "parent decomposes into child",
         "contained_in": "element belongs to a storey/space",
-        "typed_by": "element is assigned to a type",
+        "typed_by": "element is classified by a type object",
+        "connected_to": "bboxes intersect or touch",
         "adjacent_to": "elements are spatially near each other",
     }
 
     node_groups: dict[str, dict[str, list]] = {}
+    node_group_colors: dict[str, str] = {}
+    node_group_labels: dict[str, str] = {}
     for n, d in G.nodes(data=True):
         x, y, z = pos[n]
         cls = str(d.get("class_") or "Unknown")
+        is_type_node = str(d.get("node_type", "")).lower() == "type"
+        group_key = f"Type::{cls}" if is_type_node else cls
         group = node_groups.setdefault(
-            cls,
+            group_key,
             {
                 "x": [],
                 "y": [],
@@ -369,10 +633,22 @@ def plot_interactive_graph(G: nx.DiGraph, out_html: Path):
                 "hover": [],
             },
         )
+        if group_key not in node_group_colors:
+            node_group_colors[group_key] = (
+                "#eab308" if is_type_node else node_color_map.get(cls, "green")
+            )
+        node_group_labels[group_key] = (
+            f"Type Node: {cls}" if is_type_node else f"Node: {cls}"
+        )
 
         props = d.get("properties", {})
         hover_text = "<br>".join(
             f"<b>{k}</b>: {v}" for k, v in props.items() if v not in ("", None)
+        )
+        category_label = (
+            "Type object"
+            if is_type_node
+            else node_category_map.get(cls, "Physical element / other IFC class")
         )
         group["x"].append(x)
         group["y"].append(y)
@@ -381,7 +657,7 @@ def plot_interactive_graph(G: nx.DiGraph, out_html: Path):
             f"<b>{d.get('label', '')}</b><br>"
             f"Class: {cls}<br>"
             "Category: "
-            f"{node_category_map.get(cls, 'Physical element / other IFC class')}<br>"
+            f"{category_label}<br>"
             f"{hover_text}"
         )
 
@@ -442,6 +718,56 @@ def plot_interactive_graph(G: nx.DiGraph, out_html: Path):
     scene_span = max(span_x, span_y, span_z, 1.0)
     base_label_offset = max(0.15, scene_span * 0.008)
     bucket_size = base_label_offset * 2.0
+    plane_padding = max(0.25, scene_span * 0.02)
+
+    storey_spans = []
+    for node_id, node_data in G.nodes(data=True):
+        if node_data.get("class_") != "IfcBuildingStorey":
+            continue
+
+        child_positions = []
+        child_bboxes = []
+        for child_id in G.successors(node_id):
+            if not str(child_id).startswith("Element::"):
+                continue
+            child_pos = pos.get(child_id)
+            if child_pos is not None:
+                child_positions.append(child_pos)
+            child_bbox = G.nodes[child_id].get("bbox")
+            if child_bbox is not None:
+                child_bboxes.append(child_bbox)
+
+        if not child_positions:
+            continue
+
+        if child_bboxes:
+            mins = np.array([bbox[0] for bbox in child_bboxes], dtype=float)
+            maxs = np.array([bbox[1] for bbox in child_bboxes], dtype=float)
+            min_x = float(mins[:, 0].min()) - plane_padding
+            max_x = float(maxs[:, 0].max()) + plane_padding
+            min_y = float(mins[:, 1].min()) - plane_padding
+            max_y = float(maxs[:, 1].max()) + plane_padding
+            z_bottom = float(mins[:, 2].min())
+            z_top = float(maxs[:, 2].max())
+        else:
+            child_arr = np.array(child_positions, dtype=float)
+            min_x = float(child_arr[:, 0].min()) - plane_padding
+            max_x = float(child_arr[:, 0].max()) + plane_padding
+            min_y = float(child_arr[:, 1].min()) - plane_padding
+            max_y = float(child_arr[:, 1].max()) + plane_padding
+            z_bottom = float(child_arr[:, 2].min())
+            z_top = float(child_arr[:, 2].max())
+
+        storey_spans.append(
+            {
+                "label": str(node_data.get("label", node_id)),
+                "x": [min_x, max_x, max_x, min_x, min_x],
+                "y": [min_y, min_y, max_y, max_y, min_y],
+                "z_bottom": [z_bottom] * 5,
+                "z_top": [z_top] * 5,
+                "count": len(child_positions),
+            }
+        )
 
     buckets: dict[tuple[int, int, int], list[tuple[str, int]]] = {}
     for rel, edge in edge_groups.items():
@@ -511,6 +837,106 @@ def plot_interactive_graph(G: nx.DiGraph, out_html: Path):
     traces = []
     trace_meta: list[tuple[str, str]] = []
 
+    bbox_x = []
+    bbox_y = []
+    bbox_z = []
+    bbox_edge_pairs = [
+        (0, 1),
+        (1, 2),
+        (2, 3),
+        (3, 0),
+        (4, 5),
+        (5, 6),
+        (6, 7),
+        (7, 4),
+        (0, 4),
+        (1, 5),
+        (2, 6),
+        (3, 7),
+    ]
+    for node_id, node_data in G.nodes(data=True):
+        if not str(node_id).startswith("Element::"):
+            continue
+        bbox = node_data.get("bbox")
+        if bbox is None:
+            continue
+        min_xyz, max_xyz = bbox
+        x0, y0, z0 = (float(min_xyz[0]), float(min_xyz[1]), float(min_xyz[2]))
+        x1, y1, z1 = (float(max_xyz[0]), float(max_xyz[1]), float(max_xyz[2]))
+        corners = [
+            (x0, y0, z0),
+            (x1, y0, z0),
+            (x1, y1, z0),
+            (x0, y1, z0),
+            (x0, y0, z1),
+            (x1, y0, z1),
+            (x1, y1, z1),
+            (x0, y1, z1),
+        ]
+        for a, b in bbox_edge_pairs:
+            ax, ay, az = corners[a]
+            bx, by, bz = corners[b]
+            bbox_x += [ax, bx, None]
+            bbox_y += [ay, by, None]
+            bbox_z += [az, bz, None]
+
+    if bbox_x:
+        traces.append(
+            go.Scatter3d(
+                x=bbox_x,
+                y=bbox_y,
+                z=bbox_z,
+                mode="lines",
+                line=dict(width=2, color="#f59e0b"),
+                opacity=0.5,
+                hoverinfo="none",
+                name="BBox wireframe",
+                legendgroup="bbox",
+                showlegend=True,
+                visible=False,
+            )
+        )
+        trace_meta.append(("bbox", "bbox"))
+
+    for i, span in enumerate(storey_spans):
+        traces.append(
+            go.Scatter3d(
+                x=span["x"],
+                y=span["y"],
+                z=span["z_bottom"],
+                mode="lines",
+                line=dict(width=5, color="#fb923c"),
+                hovertemplate=(
+                    f"Storey: {span['label']}<br>"
+                    f"Span: bottom<br>"
+                    f"Elements: {span['count']}<extra></extra>"
+                ),
+                name="Storey span (bottom/top)",
+                legendgroup="storey_plane",
+                showlegend=i == 0,
+            )
+        )
+        trace_meta.append(("storey_plane", "IfcBuildingStorey"))
+
+        traces.append(
+            go.Scatter3d(
+                x=span["x"],
+                y=span["y"],
+                z=span["z_top"],
+                mode="lines",
+                line=dict(width=5, color="#fb923c"),
+                hovertemplate=(
+                    f"Storey: {span['label']}<br>"
+                    f"Span: top<br>"
+                    f"Elements: {span['count']}<extra></extra>"
+                ),
+                name="Storey span (bottom/top)",
+                legendgroup="storey_plane",
+                showlegend=False,
+            )
+        )
+        trace_meta.append(("storey_plane", "IfcBuildingStorey"))
+
     for rel in sorted(edge_groups):
         edge = edge_groups[rel]
         edge_color = edge_color_map.get(rel, "#4b5563")
@@ -566,9 +992,10 @@ def plot_interactive_graph(G: nx.DiGraph, out_html: Path):
         )
         trace_meta.append(("edge_label", rel))
 
-    for cls in sorted(node_groups):
-        node = node_groups[cls]
-        node_color = node_color_map.get(cls, "green")
+    for group_key in sorted(node_groups):
+        node = node_groups[group_key]
+        node_color = node_group_colors.get(group_key, "green")
+        label = node_group_labels.get(group_key, f"Node: {group_key}")
         traces.append(
             go.Scatter3d(
                 x=node["x"],
@@ -578,23 +1005,37 @@ def plot_interactive_graph(G: nx.DiGraph, out_html: Path):
                 marker=dict(size=6, color=node_color),
                 hoverinfo="text",
                 hovertext=node["hover"],
-                name=f"Node: {cls}",
-                legendgroup=f"node::{cls}",
+                name=label,
+                legendgroup=f"node::{group_key}",
                 showlegend=True,
             )
         )
-        trace_meta.append(("node", cls))
+        trace_meta.append(("node", group_key))
 
-    def _mask(mode: str, show_edge_annotations: bool = False) -> list[bool]:
-        hierarchy_rels = {"aggregates", "contained_in", "typed_by"}
-        spatial_rels = {"adjacent_to"}
+    def _mask(
+        mode: str,
+        show_edge_annotations: bool = False,
+        show_bboxes: bool = False,
+    ) -> list[bool]:
+        edge_categories = G.graph.get("edge_categories", {})
+        hierarchy_rels = set(
+            edge_categories.get("hierarchy", ["aggregates", "contained_in"])
+        )
+        typing_rels = set(edge_categories.get("typing", ["typed_by"]))
+        spatial_rels = set(
+            edge_categories.get("spatial", ["adjacent_to", "connected_to"])
+        )
         visible = []
         for kind, name in trace_meta:
             is_edge_label = kind == "edge_label"
+            is_bbox = kind == "bbox"
+            if is_bbox:
+                visible.append(show_bboxes)
+                continue
             if mode == "all":
                 visible.append(not is_edge_label or show_edge_annotations)
             elif mode == "nodes":
-                visible.append(kind == "node")
+                visible.append(kind in {"node", "storey_plane"})
             elif mode == "edges":
                 visible.append(
                     kind in {"edge", "edge_hover"}
@@ -602,7 +1043,7 @@ def plot_interactive_graph(G: nx.DiGraph, out_html: Path):
                 )
             elif mode == "hierarchy":
                 visible.append(
-                    kind == "node"
+                    kind in {"node", "storey_plane"}
                     or (kind in {"edge", "edge_hover"} and name in hierarchy_rels)
                     or (
                         is_edge_label
@@ -612,13 +1053,17 @@ def plot_interactive_graph(G: nx.DiGraph, out_html: Path):
                 )
             elif mode == "spatial":
                 visible.append(
-                    kind == "node"
+                    kind in {"node", "storey_plane"}
                     or (kind in {"edge", "edge_hover"} and name in spatial_rels)
                     or (
-                        is_edge_label
-                        and show_edge_annotations
-                        and name in spatial_rels
+                        is_edge_label and show_edge_annotations and name in spatial_rels
                     )
+                )
+            elif mode == "typing":
+                visible.append(
+                    kind in {"node", "storey_plane"}
+                    or (kind in {"edge", "edge_hover"} and name in typing_rels)
+                    or (is_edge_label and show_edge_annotations and name in typing_rels)
                 )
             else:
                 visible.append(not is_edge_label or show_edge_annotations)
@@ -647,22 +1092,50 @@ def plot_interactive_graph(G: nx.DiGraph, out_html: Path):
         "all": {
             "base": _mask("all"),
             "with_annotations": _mask("all", show_edge_annotations=True),
+            "with_bboxes": _mask("all", show_bboxes=True),
+            "with_annotations_and_bboxes": _mask(
+                "all", show_edge_annotations=True, show_bboxes=True
+            ),
         },
         "nodes": {
             "base": _mask("nodes"),
             "with_annotations": _mask("nodes", show_edge_annotations=True),
+            "with_bboxes": _mask("nodes", show_bboxes=True),
+            "with_annotations_and_bboxes": _mask(
+                "nodes", show_edge_annotations=True, show_bboxes=True
+            ),
         },
         "edges": {
             "base": _mask("edges"),
             "with_annotations": _mask("edges", show_edge_annotations=True),
+            "with_bboxes": _mask("edges", show_bboxes=True),
+            "with_annotations_and_bboxes": _mask(
+                "edges", show_edge_annotations=True, show_bboxes=True
+            ),
         },
         "hierarchy": {
             "base": _mask("hierarchy"),
             "with_annotations": _mask("hierarchy", show_edge_annotations=True),
+            "with_bboxes": _mask("hierarchy", show_bboxes=True),
+            "with_annotations_and_bboxes": _mask(
+                "hierarchy", show_edge_annotations=True, show_bboxes=True
+            ),
         },
         "spatial": {
             "base": _mask("spatial"),
             "with_annotations": _mask("spatial", show_edge_annotations=True),
+            "with_bboxes": _mask("spatial", show_bboxes=True),
+            "with_annotations_and_bboxes": _mask(
+                "spatial", show_edge_annotations=True, show_bboxes=True
+            ),
+        },
+        "typing": {
+            "base": _mask("typing"),
+            "with_annotations": _mask("typing", show_edge_annotations=True),
+            "with_bboxes": _mask("typing", show_bboxes=True),
+            "with_annotations_and_bboxes": _mask(
+                "typing", show_edge_annotations=True, show_bboxes=True
+            ),
         },
     }
 
@@ -678,12 +1151,13 @@ def plot_interactive_graph(G: nx.DiGraph, out_html: Path):
         )
 
     node_items = []
-    for cls in sorted(node_groups):
-        node_color = node_color_map.get(cls, "green")
+    for group_key in sorted(node_groups):
+        node_color = node_group_colors.get(group_key, "green")
+        label = node_group_labels.get(group_key, f"Node: {group_key}")
         node_items.append(
             "<div class='legend-item'>"
             f"<span class='swatch dot' style='--swatch:{node_color}'></span>"
-            f"<span>Node: {html.escape(cls)}</span>"
+            f"<span>{html.escape(label)}</span>"
             "</div>"
         )
 
@@ -700,8 +1174,8 @@ def plot_interactive_graph(G: nx.DiGraph, out_html: Path):
     color_category_items = [
         ("purple", "Project root"),
         ("blue", "Building container"),
-        ("orange", "Storey/floor container"),
-        ("red", "Type definitions"),
+        ("orange", "Storey/floor container and top+bottom span lines"),
+        ("#eab308", "Type object nodes"),
         ("green", "Physical elements / other IFC classes"),
     ]
     color_items = "".join(
@@ -856,6 +1330,7 @@ def plot_interactive_graph(G: nx.DiGraph, out_html: Path):
       <button data-mode="edges">Edges Only</button>
       <button data-mode="hierarchy">Hierarchy</button>
       <button data-mode="spatial">Spatial</button>
+      <button data-mode="typing">Typing</button>
       <button
         id="toggle-edge-annotations"
         class="toggle"
@@ -863,6 +1338,14 @@ def plot_interactive_graph(G: nx.DiGraph, out_html: Path):
         aria-pressed="false"
       >
         Edge Labels: Off
+      </button>
+      <button
+        id="toggle-bboxes"
+        class="toggle"
+        type="button"
+        aria-pressed="false"
+      >
+        BBoxes: Off
       </button>
     </div>
     <div class="viewer-shell">
@@ -872,9 +1355,9 @@ def plot_interactive_graph(G: nx.DiGraph, out_html: Path):
         <div class="section-title">Color Categories</div>
         {color_items}
         <div class="section-title">Edges</div>
-        {''.join(edge_items)}
+        {"".join(edge_items)}
         <div class="section-title">Nodes</div>
-        {''.join(node_items)}
+        {"".join(node_items)}
       </aside>
     </div>
   </div>
@@ -887,16 +1370,24 @@ def plot_interactive_graph(G: nx.DiGraph, out_html: Path):
     const toggleEdgeAnnotationsButton = document.getElementById(
       "toggle-edge-annotations"
     );
+    const toggleBboxesButton = document.getElementById("toggle-bboxes");
     let currentMode = "all";
     let edgeAnnotationsEnabled = false;
+    let bboxesEnabled = false;
 
     function applyMode(mode) {{
       if (!viewer || !viewer.data) return;
       currentMode = mode;
       const modeMasks = masks[mode] || masks.all;
-      const visible = edgeAnnotationsEnabled
-        ? modeMasks.with_annotations
-        : modeMasks.base;
+      const maskKey =
+        edgeAnnotationsEnabled && bboxesEnabled
+          ? "with_annotations_and_bboxes"
+          : edgeAnnotationsEnabled
+          ? "with_annotations"
+          : bboxesEnabled
+          ? "with_bboxes"
+          : "base";
+      const visible = modeMasks[maskKey] || modeMasks.base;
       Plotly.restyle(viewer, {{ visible }});
       modeButtons.forEach((btn) =>
         btn.classList.toggle("active", btn.dataset.mode === mode)
@@ -917,6 +1408,19 @@ def plot_interactive_graph(G: nx.DiGraph, out_html: Path):
       toggleEdgeAnnotationsButton.textContent = edgeAnnotationsEnabled
         ? "Edge Labels: On"
         : "Edge Labels: Off";
+      applyMode(currentMode);
+    }});
+
+    toggleBboxesButton?.addEventListener("click", () => {{
+      bboxesEnabled = !bboxesEnabled;
+      toggleBboxesButton.classList.toggle("active", bboxesEnabled);
+      toggleBboxesButton.setAttribute(
+        "aria-pressed",
+        bboxesEnabled ? "true" : "false"
+      );
+      toggleBboxesButton.textContent = bboxesEnabled
+        ? "BBoxes: On"
+        : "BBoxes: Off";
       applyMode(currentMode);
     }});
 
@@ -996,10 +1500,14 @@ def build_graph(
     for item in geom_data:
         gid = item.get("GlobalId")
         if gid:
-            geom_dict[gid] = item.get("centroid")
+            geom_dict[gid] = {
+                "centroid": item.get("centroid"),
+                "bbox": item.get("bbox"),
+            }
 
-    G = build_graph_with_properties(csv_path, geom_dict)
+    G = build_graph_with_properties(csv_path, geom_dict, ifc_model=model)
     add_spatial_adjacency(G, geom_dict)
+    add_topology_facts(G)
     return G
 
 

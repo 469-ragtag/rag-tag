@@ -145,3 +145,67 @@ def register_graph_tools(agent):
         return query_ifc_graph(
             ctx.deps, "get_adjacent_elements", {"element_id": element_id}
         )
+
+    @agent.tool
+    def get_topology_neighbors(
+        ctx: RunContext[nx.DiGraph],
+        element_id: str,
+        relation: str,
+    ) -> dict[str, Any]:
+        """
+        Get topology-derived neighbors by relation.
+
+        Args:
+            element_id: Element ID (e.g., 'Element::abc123' or GlobalId)
+            relation: One of 'above', 'below', 'overlaps_xy', 'intersects_bbox'
+
+        Returns:
+            Envelope with status/data/error. Data contains topology neighbors.
+        """
+        return query_ifc_graph(
+            ctx.deps,
+            "get_topology_neighbors",
+            {"element_id": element_id, "relation": relation},
+        )
+
+    @agent.tool
+    def find_elements_above(
+        ctx: RunContext[nx.DiGraph],
+        element_id: str,
+        max_gap: float | None = None,
+    ) -> dict[str, Any]:
+        """
+        Find elements above a reference element.
+
+        Args:
+            element_id: Element ID (e.g., 'Element::abc123' or GlobalId)
+            max_gap: Optional maximum vertical gap in meters
+
+        Returns:
+            Envelope with status/data/error. Data contains elements above.
+        """
+        params: dict[str, Any] = {"element_id": element_id}
+        if max_gap is not None:
+            params["max_gap"] = max_gap
+        return query_ifc_graph(ctx.deps, "find_elements_above", params)
+
+    @agent.tool
+    def find_elements_below(
+        ctx: RunContext[nx.DiGraph],
+        element_id: str,
+        max_gap: float | None = None,
+    ) -> dict[str, Any]:
+        """
+        Find elements below a reference element.
+
+        Args:
+            element_id: Element ID (e.g., 'Element::abc123' or GlobalId)
+            max_gap: Optional maximum vertical gap in meters
+
+        Returns:
+            Envelope with status/data/error. Data contains elements below.
+        """
+        params: dict[str, Any] = {"element_id": element_id}
+        if max_gap is not None:
+            params["max_gap"] = max_gap
+        return query_ifc_graph(ctx.deps, "find_elements_below", params)
