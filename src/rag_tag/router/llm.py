@@ -35,11 +35,14 @@ def route_with_llm(question: str, *, debug_llm_io: bool = False) -> RouteDecisio
         ) from exc
 
     # Create PydanticAI agent with structured output
-    agent = Agent(
-        model,
-        output_type=LlmRouteResponse,
-        system_prompt=_build_system_prompt(),
-    )
+    try:
+        agent = Agent(
+            model,
+            output_type=LlmRouteResponse,
+            system_prompt=_build_system_prompt(),
+        )
+    except Exception as exc:
+        raise LlmRouterError(f"Failed to create router agent: {exc}") from exc
 
     # Run the agent synchronously (this is a sync codebase)
     try:
