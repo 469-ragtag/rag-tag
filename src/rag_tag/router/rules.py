@@ -34,6 +34,13 @@ _SPATIAL_CUES = (
     "below",
     "in front of",
     "behind",
+    "located",  # "Where is the kitchen located?"
+    "location",
+    "position",
+    "support",  # "What supports the beam?"
+    "supporting",
+    "resting on",
+    "on top of",
 )
 
 _COUNT_CUES = (
@@ -62,11 +69,14 @@ _LIST_CUES = (
     "which",
     "what are",
     "display",
+    "get",
+    "retrieve",
+    "identify",
 )
 
 _IFC_CLASS_RE = re.compile(r"\bifc[a-z0-9_]+\b", re.IGNORECASE)
 _PROPERTY_CUE_RE = re.compile(
-    r"\b(with|having|whose|where|without)\b|\bthat\s+(has|have)\b"
+    r"\b(with|having|whose|where|without|made of|material)\b|\bthat\s+(has|have)\b"
 )
 
 _CLASS_ALIASES: dict[str, str] = {
@@ -100,6 +110,31 @@ _CLASS_ALIASES: dict[str, str] = {
     "pipes": "IfcPipeSegment",
     "duct": "IfcDuctSegment",
     "ducts": "IfcDuctSegment",
+    "furniture": "IfcFurniture",
+    "furnishing": "IfcFurniture",
+    "sink": "IfcFlowTerminal",
+    "toilet": "IfcFlowTerminal",
+    "lamp": "IfcFlowTerminal",  # Or IfcLightFixture depending on parser
+    "railing": "IfcRailing",
+    "railings": "IfcRailing",
+    "ramp": "IfcRamp",
+    "ramps": "IfcRamp",
+    "chimney": "IfcChimney",
+    "chimneys": "IfcChimney",
+    "site": "IfcSite",
+    "project": "IfcProject",
+    "building": "IfcBuilding",
+    "covering": "IfcCovering",  # Flooring, cladding, ceilings
+    "coverings": "IfcCovering",
+    "floor": "IfcSlab",  # Common user synonym for slab
+    "floors": "IfcSlab",
+    "member": "IfcMember",  # Structural members
+    "members": "IfcMember",
+    "plate": "IfcPlate",
+    "plates": "IfcPlate",
+    "footing": "IfcFooting",
+    "footings": "IfcFooting",
+    "foundation": "IfcFooting",
 }
 
 _LEVEL_RE = re.compile(r"\b(level|storey|story|floor)\s+([a-z0-9 _.-]+)")
