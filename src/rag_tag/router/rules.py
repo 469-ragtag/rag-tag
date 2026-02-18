@@ -159,14 +159,17 @@ def _normalize_ifc_class(value: str) -> str:
 
 
 def _detect_level_like(question_lower: str) -> str | None:
-    if any(p in question_lower for p in (
-        "on the structure",
-        "in the structure",
-        "in the building",
-        "in the house",
-        "of the building",
-        "of the house",
-    )):
+    if any(
+        p in question_lower
+        for p in (
+            "on the structure",
+            "in the structure",
+            "in the building",
+            "in the house",
+            "of the building",
+            "of the house",
+        )
+    ):
         return None
     if "ground floor" in question_lower:
         return "ground floor"
