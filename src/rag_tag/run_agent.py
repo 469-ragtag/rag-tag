@@ -4,7 +4,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from rag_tag.observability import setup_logfire
+from rag_tag.observability import LogfireStatus, setup_logfire
 from rag_tag.query_service import execute_query, find_sqlite_db
 from rag_tag.router import route_question
 from rag_tag.tui import print_answer, print_question, print_welcome
@@ -75,8 +75,14 @@ def main() -> int:
     )
     args = ap.parse_args()
 
-    # Initialize Logfire if requested
-    setup_logfire(enabled=args.trace)
+    # Initialize Logfire if requested.
+    # When --tui is used, suppress console output (print/warnings) from
+    # setup_logfire so nothing is written to stderr before the TUI starts.
+    # The TUI banner will display trace status instead.
+    logfire_status: LogfireStatus = setup_logfire(
+        enabled=args.trace,
+        console=not args.tui,
+    )
 
     # Resolve database path
     db_path, db_error = _resolve_db_path(args.db)
@@ -91,7 +97,12 @@ def main() -> int:
     if args.tui:
         from rag_tag.textual_app import run_tui
 
-        run_tui(db_path=db_path, debug_llm_io=args.input)
+        run_tui(
+            db_path=db_path,
+            debug_llm_io=args.input,
+            trace_enabled=args.trace,
+            logfire_url=logfire_status.url if logfire_status.enabled else None,
+        )
         return 0
 
     # CLI mode (stdin loop)

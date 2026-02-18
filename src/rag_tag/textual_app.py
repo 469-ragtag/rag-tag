@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import functools
 import json
+import sys
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -11,6 +12,7 @@ from typing import Any
 
 import networkx as nx
 from textual.app import App, ComposeResult
+from textual.binding import Binding as _Binding
 from textual.containers import ScrollableContainer, Vertical
 from textual.reactive import reactive
 from textual.theme import Theme
@@ -49,6 +51,39 @@ _CATPPUCCIN_MOCHA = Theme(
     error="#f38ba8",  # Red
     dark=True,
 )
+
+
+# ---------------------------------------------------------------------------
+# Custom Input subclass: frees ctrl+d for the App-level quit binding.
+#
+# Textual's Input maps "delete,ctrl+d" to the delete_right action (readline
+# style forward-delete). Because the focused widget's bindings are checked
+# first, the App-level ("ctrl+d", "quit") binding is never reached.
+#
+# We replace that combined binding with a "delete"-only binding so that
+# ctrl+d no longer matches Input's BINDINGS and naturally bubbles up to the
+# App where the quit binding fires.
+# ---------------------------------------------------------------------------
+class _QueryInput(Input):
+    """Input widget that releases ctrl+d so the App can handle it as quit.
+
+    Textual's built-in Input combines delete and ctrl+d into one binding
+    (delete_right).  By redefining BINDINGS with only the delete key for
+    that action, ctrl+d is no longer consumed here and propagates to the
+    App-level binding ("ctrl+d" -> quit).
+    """
+
+    BINDINGS: list[_Binding] = [  # type: ignore[assignment]
+        _Binding(
+            key="delete",
+            action="delete_right",
+            description="Delete character right",
+            show=False,
+        )
+        if isinstance(b, _Binding) and b.key == "delete,ctrl+d"
+        else b
+        for b in Input.BINDINGS
+    ]
 
 
 class QueryApp(App[None]):
@@ -142,7 +177,14 @@ class QueryApp(App[None]):
     # Reactive flag: when True, verbose-detail widgets carry the .visible class.
     show_verbose: reactive[bool] = reactive(False)
 
-    def __init__(self, db_path: Path | None, *, debug_llm_io: bool = False) -> None:
+    def __init__(
+        self,
+        db_path: Path | None,
+        *,
+        debug_llm_io: bool = False,
+        trace_enabled: bool = False,
+        logfire_url: str | None = None,
+    ) -> None:
         """Initialize the TUI app.
 
         Args:
@@ -150,6 +192,11 @@ class QueryApp(App[None]):
             debug_llm_io: Enable LLM I/O debugging. Suppressed in TUI mode
                 because stderr output would corrupt the Textual display; a
                 warning is shown in the welcome banner instead.
+            trace_enabled: Whether Logfire tracing is active.  When True the
+                welcome banner shows trace status.
+            logfire_url: Logfire dashboard URL to show in the banner when
+                trace_enabled is True and cloud sync is active.  Pass None for
+                local-only tracing.
         """
         super().__init__()
         self.db_path = db_path
@@ -165,6 +212,9 @@ class QueryApp(App[None]):
         self._working_widget: Static | None = None
         # Handle to the active background worker (None when idle).
         self._worker: Worker | None = None
+        # Logfire trace state (shown in welcome banner).
+        self._trace_enabled: bool = trace_enabled
+        self._logfire_url: str | None = logfire_url
 
     def compose(self) -> ComposeResult:
         """Build the widget tree."""
@@ -174,7 +224,9 @@ class QueryApp(App[None]):
             with ScrollableContainer(id="output-container"):
                 yield Vertical(id="output")
             yield Static(self._status_text(), id="status-bar")
-            yield Input(placeholder="Type your question here...", id="query-input")
+            yield _QueryInput(
+                placeholder="Type your question here...", id="query-input"
+            )
 
         yield Footer()
 
@@ -198,8 +250,21 @@ class QueryApp(App[None]):
                 " (stderr output would corrupt the display).",
                 style="route",
             )
+        # Show Logfire trace status so users know where to find traces.
+        if self._trace_enabled:
+            if self._logfire_url:
+                self._append_output(
+                    f"Logfire trace active -- view at {self._logfire_url}",
+                    style="route",
+                )
+            else:
+                self._append_output(
+                    "Logfire trace active (local only)"
+                    " -- run `logfire auth` to enable cloud sync.",
+                    style="route",
+                )
         self._append_output("")
-        self.query_one(Input).focus()
+        self.query_one("#query-input", _QueryInput).focus()
 
     def _output_container(self) -> ScrollableContainer:
         """Return the scrollable output container widget."""
@@ -421,7 +486,7 @@ class QueryApp(App[None]):
     def _finalize_input(self) -> None:
         """Re-enable the input field and return focus to it."""
         try:
-            inp = self.query_one(Input)
+            inp = self.query_one("#query-input", _QueryInput)
             inp.disabled = False
             inp.focus()
         except Exception:
@@ -554,15 +619,50 @@ class QueryApp(App[None]):
         return text[: max_len - 3] + "..."
 
 
-def run_tui(db_path: Path | None = None, *, debug_llm_io: bool = False) -> None:
+def run_tui(
+    db_path: Path | None = None,
+    *,
+    debug_llm_io: bool = False,
+    trace_enabled: bool = False,
+    logfire_url: str | None = None,
+) -> None:
     """Launch the Textual TUI.
 
     Args:
         db_path: Path to SQLite database (or None to auto-detect).
         debug_llm_io: Pass --input flag through to router and agent.
+        trace_enabled: Whether Logfire tracing is active.  When True, stderr
+            is redirected to output/tui-trace.log for the duration of the TUI
+            session so that OpenTelemetry / Logfire log lines do not corrupt
+            the Textual display.
+        logfire_url: Logfire dashboard URL shown in the welcome banner when
+            trace_enabled is True and cloud sync is available.
     """
     if db_path is None:
         db_path = find_sqlite_db()
 
-    app = QueryApp(db_path, debug_llm_io=debug_llm_io)
-    app.run()
+    # When tracing is active, redirect stderr to a log file so that any
+    # OpenTelemetry / Logfire output (warnings, span-export errors, etc.)
+    # does not bleed into the Textual display.  logfire.configure() is
+    # already called with console=False before run_tui(), but third-party
+    # OTEL exporters and Python's warnings module can still write to stderr.
+    _log_fh = None
+    _orig_stderr = sys.stderr
+    if trace_enabled:
+        _log_path = Path("output") / "tui-trace.log"
+        _log_path.parent.mkdir(parents=True, exist_ok=True)
+        _log_fh = _log_path.open("a")
+        sys.stderr = _log_fh  # type: ignore[assignment]
+
+    try:
+        app = QueryApp(
+            db_path,
+            debug_llm_io=debug_llm_io,
+            trace_enabled=trace_enabled,
+            logfire_url=logfire_url,
+        )
+        app.run()
+    finally:
+        if _log_fh is not None:
+            sys.stderr = _orig_stderr
+            _log_fh.close()

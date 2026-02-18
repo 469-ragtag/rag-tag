@@ -12,3 +12,4 @@ wheels/
 .env
 output/ifc_graph.html
 output/*.jsonl
+output/*.log
