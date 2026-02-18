@@ -14,6 +14,7 @@ from textual.containers import ScrollableContainer, Vertical
 from textual.reactive import reactive
 from textual.theme import Theme
 from textual.widgets import Footer, Header, Input, Static
+from textual.worker import Worker
 
 from rag_tag.agent import GraphAgent
 from rag_tag.query_service import execute_query, find_sqlite_db
@@ -145,17 +146,24 @@ class QueryApp(App[None]):
 
         Args:
             db_path: Path to SQLite database (or None to auto-detect).
-            debug_llm_io: Enable LLM I/O debugging (passed through to router/agent).
+            debug_llm_io: Enable LLM I/O debugging. Suppressed in TUI mode
+                because stderr output would corrupt the Textual display; a
+                warning is shown in the welcome banner instead.
         """
         super().__init__()
         self.db_path = db_path
-        self.debug_llm_io = debug_llm_io
+        # --input / debug_llm_io would write to stderr and corrupt the TUI.
+        # Suppress it and record that we did so we can warn the user.
+        self._input_flag_ignored: bool = bool(debug_llm_io)
+        self.debug_llm_io: bool = False
         self.graph: nx.DiGraph | None = None
         self.agent: GraphAgent | None = None
         self._last_route: str = ""
         self._last_duration_ms: float = 0.0
         # Reference to the "working..." placeholder widget for the active query.
         self._working_widget: Static | None = None
+        # Handle to the active background worker (None when idle).
+        self._worker: Worker | None = None
 
     def compose(self) -> ComposeResult:
         """Build the widget tree."""
@@ -180,17 +188,30 @@ class QueryApp(App[None]):
         self._append_output(f"Database: {self.db_path or '(none)'}")
         self._append_output("Type a question and press Enter.")
         self._append_output(
-            "Keys: q=quit  ctrl+l=clear  v=toggle JSON details"
+            "Keys: q/ctrl+d=quit  ctrl+l=clear  v=toggle JSON details"
             "  PgUp/PgDn=scroll  mouse-wheel=scroll"
         )
+        if self._input_flag_ignored:
+            self._append_output(
+                "Note: --input flag ignored in TUI mode"
+                " (stderr output would corrupt the display).",
+                style="route",
+            )
         self._append_output("")
         self.query_one(Input).focus()
 
     # ------------------------------------------------------------------ actions
 
     async def action_quit(self) -> None:
-        """Exit the application."""
+        """Cancel any running worker then exit the application."""
+        if self._worker is not None and not self._worker.is_finished:
+            self._worker.cancel()
         self.exit()
+
+    def on_unmount(self) -> None:
+        """Cancel any running worker when the app tears down."""
+        if self._worker is not None and not self._worker.is_finished:
+            self._worker.cancel()
 
     def action_clear_output(self) -> None:
         """Remove all lines from the output area."""
@@ -253,7 +274,8 @@ class QueryApp(App[None]):
         )
 
         # Run the (blocking) query in a background thread to keep UI live.
-        self.run_worker(
+        # Store the handle so it can be cancelled on quit or unmount.
+        self._worker = self.run_worker(
             functools.partial(self._execute_query, question),
             exclusive=True,
             thread=True,
@@ -266,11 +288,25 @@ class QueryApp(App[None]):
 
         All UI mutations are marshalled back to the main event loop via
         call_from_thread, as required by Textual's thread-safety contract.
+        Cancellation is checked after any long operation so that a quit
+        or a new query does not produce stale UI updates.
         """
+        # Capture worker reference once; self._worker may be reassigned later.
+        worker = self._worker
         t0 = time.monotonic()
-        self.call_from_thread(
-            self._update_status, f"Processing: {self._truncate(question, 40)}"
-        )
+
+        # Bail immediately if already cancelled (e.g. user pressed quit before
+        # the thread even started).
+        if worker is not None and worker.is_cancelled:
+            return
+
+        try:
+            self.call_from_thread(
+                self._update_status, f"Processing: {self._truncate(question, 40)}"
+            )
+        except Exception:
+            # App may have shut down between submit and first update.
+            return
 
         try:
             result_bundle = execute_query(
@@ -286,13 +322,28 @@ class QueryApp(App[None]):
             self.agent = result_bundle.get("agent") or self.agent
 
             duration_ms = (time.monotonic() - t0) * 1000.0
-            self.call_from_thread(self._display_result, result, duration_ms)
+
+            # Re-check after the (potentially slow) LLM call.
+            if worker is not None and worker.is_cancelled:
+                return
+
+            try:
+                self.call_from_thread(self._display_result, result, duration_ms)
+            except Exception:
+                pass  # App shut down while query was executing.
 
         except Exception as exc:
             duration_ms = (time.monotonic() - t0) * 1000.0
-            self.call_from_thread(
-                self._on_query_error, f"Query execution failed: {exc}", duration_ms
-            )
+            if worker is not None and worker.is_cancelled:
+                return
+            try:
+                self.call_from_thread(
+                    self._on_query_error,
+                    f"Query execution failed: {exc}",
+                    duration_ms,
+                )
+            except Exception:
+                pass
 
     # ----------------------------------------------------------------- display
 
@@ -339,7 +390,9 @@ class QueryApp(App[None]):
         """Handle a top-level worker exception on the main event loop."""
         self._last_duration_ms = duration_ms
         if self._working_widget is not None:
-            self._working_widget.update(f"   [error] {self._truncate(error_msg, 80)}")
+            # Switch from .route to .error so the placeholder looks like an error.
+            self._working_widget.set_classes("error")
+            self._working_widget.update(f"   Error: {self._truncate(error_msg, 80)}")
             self._working_widget = None
         else:
             self._append_output(f"Error: {error_msg}", style="error")
@@ -423,15 +476,20 @@ class QueryApp(App[None]):
             text: Plain text (never interpreted as markup).
             style: CSS class(es) to apply.
             verbose: When True, the widget also gets the verbose-detail class.
+                Verbose-detail widgets are excluded from the history cap so that
+                hidden JSON lines do not displace visible Q/A content.
         """
         output = self.query_one("#output", Vertical)
 
-        # Keep memory bounded: remove the oldest children when over the limit.
-        children = list(output.children)
-        if len(children) >= _HISTORY_MAX:
-            remove_count = len(children) - _HISTORY_MAX + 1
-            for child in children[:remove_count]:
-                child.remove()
+        # Keep memory bounded.  Verbose-detail widgets (hidden by default) must
+        # not count toward the cap or they would silently crowd out visible lines.
+        if not verbose:
+            children = list(output.children)
+            non_verbose = [c for c in children if "verbose-detail" not in c.classes]
+            if len(non_verbose) >= _HISTORY_MAX:
+                remove_count = len(non_verbose) - _HISTORY_MAX + 1
+                for child in non_verbose[:remove_count]:
+                    child.remove()
 
         # Build the CSS class string.
         classes = style

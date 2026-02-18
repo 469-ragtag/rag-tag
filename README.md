@@ -422,21 +422,28 @@ uv run rag-tag --tui --db ./output/Building-Architecture.db
 
 ### TUI keybindings
 
-| Key       | Action                                            |
-|-----------|---------------------------------------------------|
-| `Enter`   | Submit question                                   |
-| `q`       | Quit                                              |
-| `ctrl+c`  | Quit                                              |
-| `ctrl+l`  | Clear output area                                 |
-| `v`       | Toggle verbose JSON detail per answer (default off) |
+| Key           | Action                                              |
+|---------------|-----------------------------------------------------|
+| `Enter`       | Submit question                                     |
+| `q`           | Quit                                                |
+| `ctrl+c`      | Quit                                                |
+| `ctrl+d`      | Quit                                                |
+| `ctrl+l`      | Clear output area                                   |
+| `v`           | Toggle verbose JSON detail per answer (default off) |
+| `Page Up`     | Scroll output area up one page                      |
+| `Page Down`   | Scroll output area down one page                    |
+
+Mouse wheel also scrolls the output area at any time.
 
 ### TUI features
 
 - **Compact Q/A blocks**: each answer shows `[route]` label, routing reason, and summary.
 - **Verbose JSON detail** (hidden by default): press `v` to show/hide the full result JSON for every answer already in the output.
+- **Scrolling**: `Page Up` / `Page Down` keys and mouse wheel scroll the output area even while the text input has focus.
 - **Status bar**: displays the database filename, last route, last query duration, and verbose state.
-- **"working..." indicator**: input is disabled and a placeholder is shown while the agent runs; it is replaced with the route label when done.
-- **History cap**: older output lines are pruned automatically to keep memory bounded.
+- **"working..." indicator**: input is disabled and a placeholder is shown while the agent runs; it is replaced with the route label when done (or an error line if the query fails).
+- **History cap**: older visible output lines are pruned automatically to keep memory bounded; hidden verbose-detail lines do not count toward the cap.
+- **Worker cancellation**: pressing `q` or `ctrl+d` cancels any in-flight query worker before exiting.
 - **Plain text output**: no markup parsing; all output is ASCII-safe.
 
 ### stdin / pipe mode still works

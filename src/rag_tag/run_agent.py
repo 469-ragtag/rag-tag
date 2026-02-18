@@ -75,7 +75,10 @@ def main() -> int:
             db_path = candidate
         else:
             print(f"SQLite database not found: {candidate}", file=sys.stderr)
-            db_path = None
+            # The user explicitly specified a path that does not exist.
+            # Do not silently fall back to auto-detection; exit with an error
+            # so the problem is visible rather than hidden behind a wrong DB.
+            return 1
     else:
         db_path = find_sqlite_db()
 
