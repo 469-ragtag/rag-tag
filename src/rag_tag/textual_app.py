@@ -12,6 +12,7 @@ import networkx as nx
 from textual.app import App, ComposeResult
 from textual.containers import ScrollableContainer, Vertical
 from textual.reactive import reactive
+from textual.theme import Theme
 from textual.widgets import Footer, Header, Input, Static
 
 from rag_tag.agent import GraphAgent
@@ -29,13 +30,31 @@ _LIST_DISPLAY_LIMIT = 10
 # Maximum sample items shown per graph Q/A block.
 _SAMPLE_DISPLAY_LIMIT = 10
 
+# ---------------------------------------------------------------------------
+# Catppuccin Mocha theme (https://catppuccin.com/palette)
+# ---------------------------------------------------------------------------
+_CATPPUCCIN_MOCHA = Theme(
+    name="catppuccin-mocha",
+    primary="#89b4fa",  # Blue
+    secondary="#cba6f7",  # Mauve
+    accent="#fab387",  # Peach
+    foreground="#cdd6f4",  # Text
+    background="#1e1e2e",  # Base
+    surface="#313244",  # Surface0
+    panel="#181825",  # Mantle
+    success="#a6e3a1",  # Green
+    warning="#f9e2af",  # Yellow
+    error="#f38ba8",  # Red
+    dark=True,
+)
+
 
 class QueryApp(App[None]):
     """A minimal Textual TUI for querying IFC data."""
 
     CSS = """
     Screen {
-        background: $surface;
+        background: $background;
     }
 
     #output-container {
@@ -45,11 +64,17 @@ class QueryApp(App[None]):
         margin: 1;
     }
 
+    /* height: auto lets the Vertical grow with its children so the
+       ScrollableContainer has real content to scroll over. */
+    #output {
+        height: auto;
+    }
+
     #status-bar {
         dock: bottom;
         height: 1;
-        background: $primary-darken-2;
-        color: $text;
+        background: $panel;
+        color: $foreground;
         padding: 0 2;
     }
 
@@ -64,7 +89,8 @@ class QueryApp(App[None]):
     }
 
     .route {
-        color: $text-muted;
+        color: $foreground;
+        text-style: dim;
     }
 
     .answer {
@@ -78,17 +104,20 @@ class QueryApp(App[None]):
     }
 
     .divider {
-        color: $primary-lighten-1;
+        color: $primary;
+        text-style: dim;
     }
 
     .item-row {
-        color: $text-muted;
+        color: $foreground;
+        text-style: dim;
     }
 
     /* Verbose JSON detail: hidden by default, shown when .visible is added. */
     .verbose-detail {
         display: none;
-        color: $text-muted;
+        color: $foreground;
+        text-style: dim;
     }
 
     .verbose-detail.visible {
@@ -102,6 +131,10 @@ class QueryApp(App[None]):
         ("ctrl+d", "quit", "Quit"),
         ("ctrl+l", "clear_output", "Clear"),
         ("v", "toggle_verbose", "Toggle details"),
+        # Page Up / Page Down scroll the output area even while the Input
+        # widget has focus (Input does not consume these keys).
+        ("page_up", "scroll_page_up", "Scroll up"),
+        ("page_down", "scroll_page_down", "Scroll down"),
     ]
 
     # Reactive flag: when True, verbose-detail widgets carry the .visible class.
@@ -136,12 +169,20 @@ class QueryApp(App[None]):
 
         yield Footer()
 
+    def on_load(self) -> None:
+        """Register the Catppuccin Mocha theme before the UI is composed."""
+        self.register_theme(_CATPPUCCIN_MOCHA)
+        self.theme = "catppuccin-mocha"
+
     def on_mount(self) -> None:
         """Populate the welcome banner and focus the input."""
         self._append_output("IFC Query Agent TUI")
         self._append_output(f"Database: {self.db_path or '(none)'}")
         self._append_output("Type a question and press Enter.")
-        self._append_output("Keys: q=quit  ctrl+l=clear  v=toggle JSON details")
+        self._append_output(
+            "Keys: q=quit  ctrl+l=clear  v=toggle JSON details"
+            "  PgUp/PgDn=scroll  mouse-wheel=scroll"
+        )
         self._append_output("")
         self.query_one(Input).focus()
 
@@ -169,6 +210,18 @@ class QueryApp(App[None]):
             else:
                 widget.remove_class("visible")
         self._update_status(self._status_text())
+
+    def action_scroll_page_up(self) -> None:
+        """Scroll the output area up one page (works while Input has focus)."""
+        self.query_one("#output-container", ScrollableContainer).scroll_page_up(
+            animate=True
+        )
+
+    def action_scroll_page_down(self) -> None:
+        """Scroll the output area down one page (works while Input has focus)."""
+        self.query_one("#output-container", ScrollableContainer).scroll_page_down(
+            animate=True
+        )
 
     # --------------------------------------------------------------- input flow
 
