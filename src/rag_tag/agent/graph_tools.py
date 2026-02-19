@@ -10,7 +10,7 @@ remains untouched. The key improvements are:
 - find_nodes: normalises class_ via rapidfuzz before querying; treats multi-word
   inputs as name searches; falls back to fuzzy_find_nodes when exact query is empty.
 - list_property_keys: discovers available property keys to aid filter selection.
-- traverse: docstring clarifies contained_in/contains semantics for location queries.
+- traverse: docstring clarifies contains/contained_in semantics for location queries.
 """
 
 from __future__ import annotations
@@ -191,8 +191,9 @@ def register_graph_tools(agent: Any) -> None:
     ) -> dict[str, Any]:
         """Traverse the graph from a starting node following edges.
 
-        For location/storey lookup, use relation='contained_in' and inspect
-        IfcBuildingStorey nodes in results.
+        For location/storey lookup:
+        - relation='contains' to move from storey/space -> contained elements
+        - relation='contained_in' to move from element -> containing structure
         """
         params: dict[str, Any] = {"start": start, "depth": depth}
         if relation:

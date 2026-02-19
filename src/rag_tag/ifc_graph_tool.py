@@ -55,13 +55,17 @@ def query_ifc_graph(
         element_id: str,
     ) -> tuple[str | None, Dict[str, Any] | None]:
         if element_id in G:
-            return element_id, None
+            if str(element_id).startswith("Element::"):
+                return element_id, None
+            return None, {"error": f"Invalid element_id (not an element): {element_id}"}
         if not element_id.startswith("Element::"):
             candidate = f"Element::{element_id}"
             if candidate in G:
                 return candidate, None
         matches = []
         for n, d in G.nodes(data=True):
+            if not str(n).startswith("Element::"):
+                continue
             gid = d.get("properties", {}).get("GlobalId")
             if gid == element_id:
                 matches.append(n)
@@ -115,7 +119,7 @@ def query_ifc_graph(
             node = q.popleft()
             for nbr in G.successors(node):
                 edge = G[node][nbr]
-                if edge.get("relation") != "contained_in":
+                if edge.get("relation") not in {"contains", "contained_in"}:
                     continue
                 if nbr in visited:
                     continue
@@ -283,6 +287,8 @@ def query_ifc_graph(
                     "ambiguous",
                     {"candidates": err.get("candidates", [])},
                 )
+            if "Invalid element_id" in str(error_msg):
+                return _err(str(error_msg), "invalid")
             return _err(str(error_msg), "not_found")
         if resolved is None:
             return _err(f"Element not found: {element_id}", "not_found")
@@ -337,6 +343,8 @@ def query_ifc_graph(
                     "ambiguous",
                     {"candidates": err.get("candidates", [])},
                 )
+            if "Invalid element_id" in str(error_msg):
+                return _err(str(error_msg), "invalid")
             return _err(str(error_msg), "not_found")
         if resolved is None:
             return _err(f"Element not found: {element_id}", "not_found")
@@ -381,6 +389,8 @@ def query_ifc_graph(
                     "ambiguous",
                     {"candidates": err.get("candidates", [])},
                 )
+            if "Invalid element_id" in str(error_msg):
+                return _err(str(error_msg), "invalid")
             return _err(str(error_msg), "not_found")
         if resolved is None:
             return _err(f"Element not found: {element_id}", "not_found")
@@ -440,13 +450,18 @@ def query_ifc_graph(
         visited = {start}
         frontier = {start}
         results = []
+        relation_filter: set[str] | None = None
+        if relation:
+            relation_filter = {relation}
+            if relation in {"contains", "contained_in"}:
+                relation_filter = {"contains", "contained_in"}
 
         for _ in range(depth):
             next_frontier = set()
             for node in frontier:
                 for nbr in G.successors(node):
                     edge = G[node][nbr]
-                    if relation and edge.get("relation") != relation:
+                    if relation_filter and edge.get("relation") not in relation_filter:
                         continue
                     if nbr in visited:
                         continue
@@ -460,6 +475,25 @@ def query_ifc_graph(
                             "node": _node_payload(nbr),
                         }
                     )
+                # Backward-compatibility for legacy graphs that only encoded
+                # container->child using relation="contained_in".
+                if relation == "contained_in":
+                    for pred in G.predecessors(node):
+                        edge = G[pred][node]
+                        if edge.get("relation") != "contained_in":
+                            continue
+                        if pred in visited:
+                            continue
+                        visited.add(pred)
+                        next_frontier.add(pred)
+                        results.append(
+                            {
+                                "from": node,
+                                "to": pred,
+                                "relation": edge.get("relation"),
+                                "node": _node_payload(pred),
+                            }
+                        )
             frontier = next_frontier
 
         return _ok(
@@ -491,6 +525,8 @@ def query_ifc_graph(
                     "ambiguous",
                     {"candidates": err.get("candidates", [])},
                 )
+            if "Invalid element_id" in str(error_msg):
+                return _err(str(error_msg), "invalid")
             return _err(str(error_msg), "not_found")
         if resolved is None:
             return _err(f"Element not found: {near}", "not_found")
@@ -549,6 +585,8 @@ def query_ifc_graph(
                     "ambiguous",
                     {"candidates": err.get("candidates", [])},
                 )
+            if "Invalid element_id" in str(error_msg):
+                return _err(str(error_msg), "invalid")
             return _err(str(error_msg), "not_found")
         if resolved is None:
             return _err(f"Element not found: {element_id}", "not_found")
@@ -602,6 +640,8 @@ def query_ifc_graph(
                     "ambiguous",
                     {"candidates": err.get("candidates", [])},
                 )
+            if "Invalid element_id" in str(error_msg):
+                return _err(str(error_msg), "invalid")
             return _err(str(error_msg), "not_found")
         if resolved is None:
             return _err(f"Element not found: {element_id}", "not_found")

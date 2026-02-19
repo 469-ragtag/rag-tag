@@ -262,6 +262,41 @@ def _distance_sq(a: np.ndarray, b: np.ndarray) -> float:
     return float(diff.dot(diff))
 
 
+def _add_canonical_containment_edge(
+    G: nx.DiGraph, container_id: str, child_id: str
+) -> None:
+    """Add containment in both canonical directions.
+
+    - contains: container -> child
+    - contained_in: child -> container
+    """
+    if container_id == child_id:
+        return
+    if container_id not in G or child_id not in G:
+        return
+    G.add_edge(container_id, child_id, relation="contains")
+    G.add_edge(child_id, container_id, relation="contained_in")
+
+
+def _resolve_node_ids_for_ifc_entity(
+    entity: object | None,
+    node_ids_by_gid: dict[str, list[str]],
+) -> list[str]:
+    """Resolve graph node IDs for an IFC entity, with root-node fallback."""
+    if entity is None:
+        return []
+    gid = getattr(entity, "GlobalId", None)
+    if isinstance(gid, str) and gid in node_ids_by_gid:
+        return node_ids_by_gid[gid]
+
+    cls = str(getattr(entity, "is_a", lambda: "")() or "")
+    if cls == "IfcProject":
+        return ["IfcProject"]
+    if cls == "IfcBuilding":
+        return ["IfcBuilding"]
+    return []
+
+
 def compute_adjacency_threshold(positions: list[tuple[float, float, float]]) -> float:
     """
     Derive a reasonable adjacency threshold from data.
@@ -329,7 +364,7 @@ def build_graph_with_properties(
     G.add_edge("IfcProject", "IfcBuilding", relation="aggregates")
 
     G.graph["edge_categories"] = {
-        "hierarchy": ["aggregates", "contained_in"],
+        "hierarchy": ["aggregates", "contains", "contained_in"],
         "typing": ["typed_by"],
         "spatial": ["adjacent_to", "connected_to"],
         "topology": [
@@ -344,6 +379,7 @@ def build_graph_with_properties(
 
     storey_nodes_by_gid: dict[str, str] = {}
     storey_nodes_by_name: dict[str, list[str]] = {}
+    node_ids_by_gid: dict[str, list[str]] = {}
 
     columns = list(df.columns)
     col_idx = {col: idx for idx, col in enumerate(columns)}
@@ -392,6 +428,7 @@ def build_graph_with_properties(
 
         storey_nodes_by_gid[gid] = node_id
         storey_nodes_by_name.setdefault(storey_name, []).append(node_id)
+        node_ids_by_gid.setdefault(gid, []).append(node_id)
 
     # Create element nodes and containment edges.
     for row in df.itertuples(index=False, name=None):
@@ -439,15 +476,33 @@ def build_graph_with_properties(
             ),
             mesh=_extract_mesh(geom),
         )
+        node_ids_by_gid.setdefault(gid, []).append(eid)
 
         if isinstance(row_level, str):
             level = row_level.strip()
             if level in storey_nodes_by_gid:
-                G.add_edge(storey_nodes_by_gid[level], eid, relation="contained_in")
+                _add_canonical_containment_edge(G, storey_nodes_by_gid[level], eid)
             else:
                 candidates = storey_nodes_by_name.get(level, [])
                 if len(candidates) == 1:
-                    G.add_edge(candidates[0], eid, relation="contained_in")
+                    _add_canonical_containment_edge(G, candidates[0], eid)
+
+    # Prefer IFC-native containment relationships when available.
+    if ifc_model is not None and hasattr(ifc_model, "by_type"):
+        for rel in ifc_model.by_type("IfcRelContainedInSpatialStructure"):
+            container_nodes = _resolve_node_ids_for_ifc_entity(
+                getattr(rel, "RelatingStructure", None),
+                node_ids_by_gid,
+            )
+            if not container_nodes:
+                continue
+            for child in getattr(rel, "RelatedElements", None) or []:
+                child_nodes = _resolve_node_ids_for_ifc_entity(child, node_ids_by_gid)
+                if not child_nodes:
+                    continue
+                for container_node in container_nodes:
+                    for child_node in child_nodes:
+                        _add_canonical_containment_edge(G, container_node, child_node)
 
     # Add explicit type-object nodes and typed_by edges.
     if ifc_model is not None and hasattr(ifc_model, "by_type"):
@@ -755,6 +810,7 @@ def plot_interactive_graph(G: nx.DiGraph, out_html: Path):
     }
     edge_color_map = {
         "aggregates": "#6b7280",
+        "contains": "#1d4ed8",
         "contained_in": "#2563eb",
         "typed_by": "#ca8a04",
         "connected_to": "#ef4444",
@@ -764,6 +820,7 @@ def plot_interactive_graph(G: nx.DiGraph, out_html: Path):
     }
     edge_relation_explanations = {
         "aggregates": "parent decomposes into child",
+        "contains": "container directly contains child",
         "contained_in": "element belongs to a storey/space",
         "typed_by": "element is classified by a type object",
         "connected_to": "bboxes intersect or touch",
@@ -1222,7 +1279,7 @@ def plot_interactive_graph(G: nx.DiGraph, out_html: Path):
     ) -> list[bool]:
         edge_categories = G.graph.get("edge_categories", {})
         hierarchy_rels = set(
-            edge_categories.get("hierarchy", ["aggregates", "contained_in"])
+            edge_categories.get("hierarchy", ["aggregates", "contains", "contained_in"])
         )
         typing_rels = set(edge_categories.get("typing", ["typed_by"]))
         spatial_rels = set(

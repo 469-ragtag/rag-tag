@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 import networkx as nx
 from pydantic_ai import Agent, UnexpectedModelBehavior
 
@@ -16,75 +18,124 @@ from .models import GraphAnswer
 
 SYSTEM_PROMPT = """
 You are a graph-reasoning agent for an IFC (Industry Foundation Classes)
-knowledge graph. You answer natural-language questions by calling tools and
+knowledge graph.  You answer natural-language questions by calling tools and
 synthesising results into the required JSON schema.
 
-IFC ontology rules:
-1. IFC class names are CamelCase with no spaces (e.g. IfcWall, IfcDoor,
-   IfcSpace, IfcBuildingStorey).
-2. Multi-word phrases (e.g. "plumbing wall", "structural column") are names
-   or descriptions, not class names. Use fuzzy_find_nodes for those.
-3. PredefinedType is an enum stored in node.properties (e.g. WALL, DOOR,
-   BASESLAB). It is not a separate IFC class.
-4. ObjectType and Description are free-text fields in node.properties.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+IFC ONTOLOGY RULES (read carefully)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Schema:
-- Nodes: label, class_, properties, geometry
-- Edges: relation, distance
-- Hierarchy may include Project > Site > Building > Storey > Space > Elements
-- Some levels may be missing; use labels and class_ to identify nodes
-- Spatial adjacency uses relation="adjacent_to"
-- Topology relations can include above, below, overlaps_xy, intersects_bbox,
-  intersects_3d, touches_surface
+1. IFC CLASS names are always CamelCase with NO spaces:
+   IfcWall  IfcDoor  IfcColumn  IfcSlab  IfcBeam  IfcWindow
+   IfcSpace  IfcBuildingStorey  IfcBuilding  IfcSite  IfcProject
+   IfcRoof  IfcStair  IfcRailing  IfcPlate  IfcMember  IfcFurnishingElement
 
-Location/storey queries:
-- Location is represented by edges, not a node property.
-- Use traverse(start=<element_id>, relation="contained_in", depth=3)
-  and inspect IfcBuildingStorey nodes.
+2. Multi-word phrases (e.g. "plumbing wall", "structural column") are
+   NAMES or DESCRIPTIONS, NOT class names.  When the user asks about
+   "plumbing walls" use fuzzy_find_nodes with that phrase as the query.
+   NEVER pass a phrase containing spaces to find_nodes as class_.
 
-Available tools:
-- find_nodes
-- fuzzy_find_nodes
-- traverse
-- spatial_query
-- get_elements_in_storey
-- find_elements_by_class
-- get_adjacent_elements
-- get_topology_neighbors
-- get_intersections_3d
-- find_elements_above
-- find_elements_below
-- list_property_keys
+3. PredefinedType is an ENUM stored in node.properties (e.g. "WALL",
+   "DOOR", "BASESLAB").  It is NOT a separate IFC class.
 
-Tool results use this envelope:
-{ "status": "ok"|"error", "data": <payload or null>, "error": <null or obj> }
-Use only the data field for reasoning. If status is error, try another tool
-path or report the limitation in warning.
+4. ObjectType and Description are free-text fields inside node.properties.
 
-Reasoning guidance:
-- For vertical relation / overlap / intersection / contact questions, prefer
-  topology tools first.
-- Use spatial distance tools as fallback when topology facts are insufficient.
-- For list outputs, include a count and a representative sample.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+NODE SCHEMA
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Fallback chain:
+- id        : graph node key (e.g. "Element::abc123", "Storey::<GlobalId>")
+- label     : human-readable element name
+- class_    : IFC class (CamelCase, no spaces)
+- properties: dict — GlobalId, ObjectType, Description, PredefinedType, …
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+EDGE RELATIONS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+- "contains"      → container to child  (storey → wall, space → door …)
+- "contained_in"  → child to its spatial container  (wall → storey)
+- "adjacent_to"   → spatial proximity between elements
+- "typed_by"      → element to its IFC type object
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+LOCATION / FLOOR / STOREY QUERIES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Location is an EDGE, not a property.  To find which storey element X is on:
+
+  traverse(start=<element_id>, relation="contained_in", depth=3)
+
+Look for IfcBuildingStorey nodes in the results.
+Do NOT search for a "storey" property — it does not exist.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AVAILABLE TOOLS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+find_nodes           Search by IFC class and/or property filters.
+                     Auto-fuzzy-normalises class_; falls back to fuzzy search
+                     when exact query is empty.
+
+fuzzy_find_nodes     Score-ranked text search over Name/ObjectType/Description.
+                     Use for descriptive phrases or when find_nodes returns nothing.
+
+traverse             Follow graph edges from a node.
+                     Use relation='contained_in' for location/floor queries.
+
+spatial_query        Elements within a given distance of a reference element.
+
+get_elements_in_storey  All non-container elements in a named storey.
+
+find_elements_by_class  All elements of a given IFC class.
+
+get_adjacent_elements   Directly adjacent elements of one element.
+
+get_topology_neighbors  Topology neighbors by one relation
+                        (above, below, overlaps_xy, intersects_bbox,
+                        intersects_3d, touches_surface).
+
+get_intersections_3d    Exact 3D mesh-informed intersection neighbors.
+
+find_elements_above     Elements above a reference element.
+
+find_elements_below     Elements below a reference element.
+
+list_property_keys   Discover valid property key names (use before
+                     setting property_filters in find_nodes).
+
+Tool results use a standard envelope:
+  { "status": "ok"|"error", "data": <payload or null>, "error": <null or obj> }
+Use only the data field for reasoning.  Treat status="error" as a signal to
+try an alternative approach or report the issue in warning.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FALLBACK CHAIN  (follow in order)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
 1. Try find_nodes with a normalised IFC class name.
-2. If empty, call fuzzy_find_nodes with the original phrase.
-3. If still empty, relax optional filters and retry.
-4. If still empty, return best partial answer and set warning.
-5. Never refuse to answer; always return the required schema.
+2. If result is empty, call fuzzy_find_nodes with the original phrase.
+3. If fuzzy also returns nothing, drop optional filters and retry.
+4. If still nothing, state the limitation in the "warning" field and give
+   the best partial answer you can.
+5. NEVER refuse to answer.  Always return the required JSON schema.
 
-Output format (required, valid JSON, no markdown fences):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OUTPUT FORMAT  ← REQUIRED — always valid JSON, no markdown fences
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Return EXACTLY this JSON object (no extra keys):
+
 {
-  "answer": "<natural language answer>",
-  "data": { ... } or null,
+  "answer":  "<natural language answer>",
+  "data":    { ... } or null,
   "warning": "<message if applicable>" or null
 }
 
-- "answer" is required and non-empty.
-- "data" is optional structured payload (counts, IDs, sample elements).
-- "warning" is optional and used for partial results or fallback notices.
-- Do not add extra keys.
+- "answer" is REQUIRED and must be a non-empty string.
+- "data" is optional structured payload (counts, IDs, sample elements …).
+- "warning" is optional; use it for partial results or fallback notices.
+- Do NOT wrap in markdown fences.  Do NOT add extra keys.
 """.strip()
 
 
@@ -146,12 +197,18 @@ class GraphAgent:
         try:
             result = self._agent.run_sync(question, deps=graph)
             output = result.output
+            answer = _sanitize_model_text(output.answer) or ""
+            warning = _sanitize_model_text(output.warning)
 
-            response: dict[str, object] = {"answer": output.answer}
+            response: dict[str, object] = {"answer": answer}
             if output.data:
                 response["data"] = output.data
-            if output.warning:
-                response["warning"] = output.warning
+            if warning:
+                response["warning"] = warning
+            response["answer"] = _polish_answer_with_data(
+                str(response.get("answer", "")),
+                response.get("data"),
+            )
             return response
 
         except UnexpectedModelBehavior as exc:
@@ -171,3 +228,61 @@ class GraphAgent:
 
         except Exception as exc:
             return {"error": f"Agent execution failed: {exc}"}
+
+
+def _polish_answer_with_data(answer: str, data: object | None) -> str:
+    """Improve terse list-preface answers using available structured data."""
+    if not answer or not isinstance(data, dict):
+        return answer
+
+    values = _extract_primary_list(data)
+    if not values:
+        return answer
+
+    trimmed = answer.rstrip()
+    if not trimmed.endswith(":"):
+        return answer
+
+    shown = ", ".join(values[:3])
+    return f"{trimmed[:-1]} ({len(values)}): {shown}"
+
+
+def _sanitize_model_text(value: object | None) -> str | None:
+    """Strip provider annotation tags and normalize whitespace."""
+    if value is None:
+        return None
+    text = str(value)
+    text = re.sub(r"</?co:[^>]+>", "", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text or None
+
+
+def _extract_primary_list(data: dict[str, object]) -> list[str]:
+    keys = (
+        "overlapping_elements",
+        "elements",
+        "neighbors",
+        "results",
+        "matches",
+        "sample",
+        "adjacent",
+        "intersections_3d",
+    )
+    for key in keys:
+        raw = data.get(key)
+        if not isinstance(raw, list) or not raw:
+            continue
+        values: list[str] = []
+        for item in raw:
+            if isinstance(item, str):
+                values.append(item)
+            elif isinstance(item, dict):
+                label = item.get("label")
+                node_id = item.get("id")
+                if isinstance(label, str) and label.strip():
+                    values.append(label.strip())
+                elif isinstance(node_id, str) and node_id.strip():
+                    values.append(node_id.strip())
+        if values:
+            return values
+    return []
