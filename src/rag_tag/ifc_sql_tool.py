@@ -5,6 +5,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+from rag_tag.ifc_class_taxonomy import expand_ifc_class_filter
 from rag_tag.router import SqlRequest
 
 
@@ -18,10 +19,12 @@ def query_ifc_sql(db_path: Path, request: SqlRequest) -> dict[str, Any]:
 
     where_clauses: list[str] = []
     params: list[object] = []
+    resolved_ifc_classes = expand_ifc_class_filter(request.ifc_class)
 
-    if request.ifc_class:
-        where_clauses.append("ifc_class = ?")
-        params.append(request.ifc_class)
+    if resolved_ifc_classes:
+        placeholders = ", ".join("?" for _ in resolved_ifc_classes)
+        where_clauses.append(f"ifc_class IN ({placeholders})")
+        params.extend(resolved_ifc_classes)
     if request.level_like:
         where_clauses.append("LOWER(level) LIKE ?")
         params.append(f"%{request.level_like.lower()}%")
@@ -43,7 +46,7 @@ def query_ifc_sql(db_path: Path, request: SqlRequest) -> dict[str, Any]:
                 "status": "ok",
                 "data": {
                     "intent": request.intent,
-                    "filters": _filters_payload(request),
+                    "filters": _filters_payload(request, resolved_ifc_classes),
                     "count": count,
                     "summary": summary,
                     "sql": {"query": query, "params": params},
@@ -69,7 +72,7 @@ def query_ifc_sql(db_path: Path, request: SqlRequest) -> dict[str, Any]:
                 "status": "ok",
                 "data": {
                     "intent": request.intent,
-                    "filters": _filters_payload(request),
+                    "filters": _filters_payload(request, resolved_ifc_classes),
                     "total_count": total_count,
                     "limit": limit,
                     "items": items,
@@ -89,9 +92,13 @@ def query_ifc_sql(db_path: Path, request: SqlRequest) -> dict[str, Any]:
         conn.close()
 
 
-def _filters_payload(request: SqlRequest) -> dict[str, Any]:
+def _filters_payload(
+    request: SqlRequest, resolved_ifc_classes: tuple[str, ...]
+) -> dict[str, Any]:
     payload = asdict(request)
     payload.pop("limit", None)
+    if resolved_ifc_classes:
+        payload["resolved_ifc_classes"] = list(resolved_ifc_classes)
     return payload
 
 

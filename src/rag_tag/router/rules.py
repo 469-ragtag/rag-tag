@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import re
 
+from rag_tag.ifc_class_taxonomy import CLASS_ALIASES, normalize_ifc_class
+
 from .models import RouteDecision, SqlIntent, SqlRequest
 
 _SPATIAL_CUES = (
@@ -79,64 +81,6 @@ _PROPERTY_CUE_RE = re.compile(
     r"\b(with|having|whose|where|without|made of|material)\b|\bthat\s+(has|have)\b"
 )
 
-_CLASS_ALIASES: dict[str, str] = {
-    "wall": "IfcWall",
-    "walls": "IfcWall",
-    "door": "IfcDoor",
-    "doors": "IfcDoor",
-    "window": "IfcWindow",
-    "windows": "IfcWindow",
-    "slab": "IfcSlab",
-    "slabs": "IfcSlab",
-    "column": "IfcColumn",
-    "columns": "IfcColumn",
-    "beam": "IfcBeam",
-    "beams": "IfcBeam",
-    "stair": "IfcStair",
-    "stairs": "IfcStair",
-    "stairwell": "IfcStair",
-    "stairwells": "IfcStair",
-    "space": "IfcSpace",
-    "spaces": "IfcSpace",
-    "room": "IfcSpace",
-    "rooms": "IfcSpace",
-    "roof": "IfcRoof",
-    "roofs": "IfcRoof",
-    "storey": "IfcBuildingStorey",
-    "storeys": "IfcBuildingStorey",
-    "story": "IfcBuildingStorey",
-    "stories": "IfcBuildingStorey",
-    "pipe": "IfcPipeSegment",
-    "pipes": "IfcPipeSegment",
-    "duct": "IfcDuctSegment",
-    "ducts": "IfcDuctSegment",
-    "furniture": "IfcFurniture",
-    "furnishing": "IfcFurniture",
-    "sink": "IfcFlowTerminal",
-    "toilet": "IfcFlowTerminal",
-    "lamp": "IfcFlowTerminal",  # Or IfcLightFixture depending on parser
-    "railing": "IfcRailing",
-    "railings": "IfcRailing",
-    "ramp": "IfcRamp",
-    "ramps": "IfcRamp",
-    "chimney": "IfcChimney",
-    "chimneys": "IfcChimney",
-    "site": "IfcSite",
-    "project": "IfcProject",
-    "building": "IfcBuilding",
-    "covering": "IfcCovering",  # Flooring, cladding, ceilings
-    "coverings": "IfcCovering",
-    "floor": "IfcSlab",  # Common user synonym for slab
-    "floors": "IfcSlab",
-    "member": "IfcMember",  # Structural members
-    "members": "IfcMember",
-    "plate": "IfcPlate",
-    "plates": "IfcPlate",
-    "footing": "IfcFooting",
-    "footings": "IfcFooting",
-    "foundation": "IfcFooting",
-}
-
 _LEVEL_RE = re.compile(r"\b(level|storey|story|floor)\s+([a-z0-9 _.-]+)")
 _LEVEL_STOP_WORDS = re.compile(
     r"\b(with|that|which|near|adjacent|connected|having|where|and|or"
@@ -211,10 +155,10 @@ def _detect_ifc_class(question: str) -> str | None:
 def _detect_ifc_classes(question: str) -> list[str]:
     matches: list[tuple[int, str]] = []
     for match in _IFC_CLASS_RE.finditer(question):
-        matches.append((match.start(), _normalize_ifc_class(match.group(0))))
+        matches.append((match.start(), normalize_ifc_class(match.group(0))))
 
     question_lower = question.lower()
-    for term, ifc_class in _CLASS_ALIASES.items():
+    for term, ifc_class in CLASS_ALIASES.items():
         for match in re.finditer(rf"\b{re.escape(term)}\b", question_lower):
             matches.append((match.start(), ifc_class))
 
@@ -224,18 +168,6 @@ def _detect_ifc_classes(question: str) -> list[str]:
         if ifc_class not in ordered:
             ordered.append(ifc_class)
     return ordered
-
-
-def _normalize_ifc_class(value: str) -> str:
-    cleaned = value.strip()
-    if not cleaned:
-        return cleaned
-    if not cleaned.lower().startswith("ifc"):
-        cleaned = f"Ifc{cleaned}"
-    core = cleaned[3:]
-    if not core:
-        return "Ifc"
-    return "Ifc" + core[0].upper() + core[1:]
 
 
 def _detect_level_like(question_lower: str) -> str | None:
