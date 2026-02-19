@@ -184,6 +184,7 @@ class QueryApp(App[None]):
         debug_llm_io: bool = False,
         trace_enabled: bool = False,
         logfire_url: str | None = None,
+        graph_dataset: str | None = None,
     ) -> None:
         """Initialize the TUI app.
 
@@ -197,9 +198,11 @@ class QueryApp(App[None]):
             logfire_url: Logfire dashboard URL to show in the banner when
                 trace_enabled is True and cloud sync is active.  Pass None for
                 local-only tracing.
+            graph_dataset: Optional dataset stem for graph loading.
         """
         super().__init__()
         self.db_path = db_path
+        self.graph_dataset = graph_dataset
         # --input / debug_llm_io would write to stderr and corrupt the TUI.
         # Suppress it and record that we did so we can warn the user.
         self._input_flag_ignored: bool = bool(debug_llm_io)
@@ -401,6 +404,7 @@ class QueryApp(App[None]):
                 self.graph,
                 self.agent,
                 debug_llm_io=self.debug_llm_io,
+                dataset=self.graph_dataset,
             )
 
             result: dict[str, Any] = result_bundle["result"]
@@ -625,6 +629,7 @@ def run_tui(
     debug_llm_io: bool = False,
     trace_enabled: bool = False,
     logfire_url: str | None = None,
+    graph_dataset: str | None = None,
 ) -> None:
     """Launch the Textual TUI.
 
@@ -637,6 +642,7 @@ def run_tui(
             the Textual display.
         logfire_url: Logfire dashboard URL shown in the welcome banner when
             trace_enabled is True and cloud sync is available.
+        graph_dataset: Optional dataset stem for graph loading.
     """
     if db_path is None:
         db_path = find_sqlite_db()
@@ -660,6 +666,7 @@ def run_tui(
             debug_llm_io=debug_llm_io,
             trace_enabled=trace_enabled,
             logfire_url=logfire_url,
+            graph_dataset=graph_dataset,
         )
         app.run()
     finally:

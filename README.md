@@ -355,6 +355,16 @@ Use a specific SQLite DB for SQL queries:
 uv run rag-tag --db ./output/Building-Architecture.db
 ```
 
+By default, graph queries use the same dataset stem as `--db`
+(for example, `--db ./output/ModelA.db` loads `output/ModelA.csv` and
+`IFC-Files/ModelA.ifc` for graph routing).
+
+Override graph dataset selection explicitly:
+
+```bash
+uv run rag-tag --db ./output/ModelA.db --graph-dataset ModelB
+```
+
 Print LLM inputs/outputs (router + agent) to stderr:
 
 ```bash
@@ -400,6 +410,9 @@ uv run rag-tag --tui
 GEMINI_API_KEY=... uv run rag-tag --tui
 uv run rag-tag --tui --db ./output/Building-Architecture.db
 ```
+
+When `--db` is provided in TUI mode, graph queries infer the same dataset
+stem by default. Use `--graph-dataset` to override that mapping.
 
 ### TUI layout
 

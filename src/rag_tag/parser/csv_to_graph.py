@@ -14,6 +14,8 @@ import plotly.graph_objects as go
 from rag_tag.parser.ifc_geometry_parse import extract_geometry_data, get_ifc_model
 from rag_tag.paths import find_ifc_dir, find_project_root
 
+DEFAULT_GRAPH_DATASET = "Building-Architecture"
+
 
 def distance_between_points(
     a: tuple[float, float, float], b: tuple[float, float, float]
@@ -445,7 +447,9 @@ def print_ifc_hierarchy(ifc_file_path, indent=0):
 
 
 def build_graph(
-    csv_path: Path | None = None, ifc_path: Path | None = None
+    csv_path: Path | None = None,
+    ifc_path: Path | None = None,
+    dataset: str | None = None,
 ) -> nx.DiGraph:
     """
     Build and return the IFC graph. If csv_path and ifc_path are not provided,
@@ -454,17 +458,37 @@ def build_graph(
     script_dir = Path(__file__).resolve().parent
     project_root = find_project_root(script_dir) or script_dir
 
-    if csv_path is None:
-        csv_dir = project_root / "output"
-        csv_path = csv_dir / "Building-Architecture.csv"
+    dataset_name = dataset.strip() if dataset else DEFAULT_GRAPH_DATASET
+    expected_csv_path = project_root / "output" / f"{dataset_name}.csv"
+    ifc_dir = find_ifc_dir(script_dir)
+    expected_ifc_path = (
+        ifc_dir / f"{dataset_name}.ifc"
+        if ifc_dir is not None
+        else project_root / "IFC-Files" / f"{dataset_name}.ifc"
+    )
 
+    csv_inferred = csv_path is None
+    if csv_path is None:
+        csv_path = expected_csv_path
+
+    ifc_inferred = ifc_path is None
     if ifc_path is None:
-        ifc_dir = find_ifc_dir(script_dir)
-        if ifc_dir is None:
-            raise FileNotFoundError("Could not find 'IFC-Files/' folder.")
-        ifc_path = next(ifc_dir.glob("Building-Architecture.ifc"), None)
-        if ifc_path is None:
-            raise FileNotFoundError("IFC file not found in IFC-Files/ folder.")
+        ifc_path = expected_ifc_path
+
+    if (csv_inferred and not csv_path.is_file()) or (
+        ifc_inferred and not ifc_path.is_file()
+    ):
+        raise FileNotFoundError(
+            f"Graph dataset '{dataset_name}' could not be resolved. "
+            f"Expected CSV: {expected_csv_path}; "
+            f"Expected IFC: {expected_ifc_path}. "
+            "Pass --graph-dataset <name> or --db pointing to a matching dataset."
+        )
+
+    if not csv_path.is_file():
+        raise FileNotFoundError(f"CSV file not found: {csv_path}")
+    if not ifc_path.is_file():
+        raise FileNotFoundError(f"IFC file not found: {ifc_path}")
 
     model = get_ifc_model(ifc_path)
     geom_data = extract_geometry_data(model)
@@ -490,13 +514,13 @@ def main() -> None:
     if ifc_dir is None:
         raise FileNotFoundError("Could not find 'IFC-Files/' folder.")
 
-    ifc_file = next(ifc_dir.glob("Building-Architecture.ifc"), None)
+    ifc_file = next(ifc_dir.glob(f"{DEFAULT_GRAPH_DATASET}.ifc"), None)
     if ifc_file is None:
         raise FileNotFoundError("IFC file not found in IFC-Files/ folder.")
 
     csv_dir = project_root / "output"
     csv_dir.mkdir(exist_ok=True)
-    csv_file = csv_dir / "Building-Architecture.csv"
+    csv_file = csv_dir / f"{DEFAULT_GRAPH_DATASET}.csv"
 
     html_dir = project_root / "output"
     html_dir.mkdir(parents=True, exist_ok=True)

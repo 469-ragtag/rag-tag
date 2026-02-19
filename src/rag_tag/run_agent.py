@@ -10,6 +10,13 @@ from rag_tag.router import route_question
 from rag_tag.tui import print_answer, print_question, print_welcome
 
 
+def _parse_dataset(value: str) -> str:
+    dataset = value.strip()
+    if not dataset:
+        raise argparse.ArgumentTypeError("Dataset name cannot be empty.")
+    return dataset
+
+
 def _parse_bool(value: str | None) -> bool:
     if value is None:
         return True
@@ -30,6 +37,16 @@ def _resolve_db_path(db_path: Path | None) -> tuple[Path | None, str | None]:
         return candidate, None
 
     return None, f"SQLite database not found: {candidate}"
+
+
+def _resolve_graph_dataset(
+    graph_dataset: str | None, db_path: Path | None
+) -> str:
+    if graph_dataset:
+        return graph_dataset
+    if db_path is not None:
+        return db_path.stem
+    return "Building-Architecture"
 
 
 def main() -> int:
@@ -58,7 +75,18 @@ def main() -> int:
         default=None,
         help=(
             "Path to SQLite database for SQL routing "
-            "(defaults to newest .db in output/ or db/)."
+            "(defaults to newest .db in output/ or db/; "
+            "graph dataset defaults to this DB stem)."
+        ),
+    )
+    ap.add_argument(
+        "--graph-dataset",
+        type=_parse_dataset,
+        default=None,
+        help=(
+            "Dataset stem for graph files (<project>/output/<stem>.csv and "
+            "<project>/IFC-Files/<stem>.ifc). "
+            "Overrides --db stem inference."
         ),
     )
     ap.add_argument(
@@ -93,6 +121,8 @@ def main() -> int:
         # so the problem is visible rather than hidden behind a wrong DB.
         return 1
 
+    selected_dataset = _resolve_graph_dataset(args.graph_dataset, db_path)
+
     # Launch TUI if requested
     if args.tui:
         from rag_tag.textual_app import run_tui
@@ -102,6 +132,7 @@ def main() -> int:
             debug_llm_io=args.input,
             trace_enabled=args.trace,
             logfire_url=logfire_status.url if logfire_status.enabled else None,
+            graph_dataset=selected_dataset,
         )
         return 0
 
@@ -132,6 +163,7 @@ def main() -> int:
                 agent,
                 decision=decision,
                 debug_llm_io=args.input,
+                dataset=selected_dataset,
             )
 
             # Extract components
