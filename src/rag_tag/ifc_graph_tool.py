@@ -152,7 +152,14 @@ def query_ifc_graph(
     ) -> Iterable[tuple[str, Dict[str, Any]]]:
         """Yield unique topology neighbors across both directions."""
         seen: set[tuple[str, str]] = set()
-        topology_relations = {"above", "below", "overlaps_xy", "intersects_bbox"}
+        topology_relations = {
+            "above",
+            "below",
+            "overlaps_xy",
+            "intersects_bbox",
+            "intersects_3d",
+            "touches_surface",
+        }
         if allowed_relations is None:
             allowed_relations = topology_relations
 
@@ -306,7 +313,14 @@ def query_ifc_graph(
             return _err("Invalid param: relation must be a string", "invalid")
 
         relation_value = relation.strip().lower()
-        allowed = {"above", "below", "overlaps_xy", "intersects_bbox"}
+        allowed = {
+            "above",
+            "below",
+            "overlaps_xy",
+            "intersects_bbox",
+            "intersects_3d",
+            "touches_surface",
+        }
         if relation_value not in allowed:
             return _err(
                 f"Unsupported topology relation: {relation}",
@@ -337,6 +351,8 @@ def query_ifc_graph(
                     "relation": edge.get("relation"),
                     "vertical_gap": edge.get("vertical_gap"),
                     "overlap_area_xy": edge.get("overlap_area_xy"),
+                    "intersection_volume": edge.get("intersection_volume"),
+                    "contact_area": edge.get("contact_area"),
                     "source": edge.get("source"),
                 }
             )
@@ -348,6 +364,41 @@ def query_ifc_graph(
                 "neighbors": neighbors,
             }
         )
+
+    if action == "get_intersections_3d":
+        element_id = params.get("element_id")
+        if not element_id:
+            return _err("Missing param: element_id", "missing_param")
+        if not isinstance(element_id, str):
+            return _err("Invalid param: element_id must be a string", "invalid")
+
+        resolved, err = _resolve_element_id(element_id)
+        if err:
+            error_msg = err.get("error", "Unknown error")
+            if "Ambiguous" in str(error_msg):
+                return _err(
+                    str(error_msg),
+                    "ambiguous",
+                    {"candidates": err.get("candidates", [])},
+                )
+            return _err(str(error_msg), "not_found")
+        if resolved is None:
+            return _err(f"Element not found: {element_id}", "not_found")
+
+        neighbors = []
+        for nbr, edge in _topology_neighbors(resolved, {"intersects_3d"}):
+            neighbors.append(
+                {
+                    "id": nbr,
+                    "label": G.nodes[nbr].get("label"),
+                    "class_": G.nodes[nbr].get("class_"),
+                    "relation": edge.get("relation"),
+                    "intersection_volume": edge.get("intersection_volume"),
+                    "contact_area": edge.get("contact_area"),
+                    "source": edge.get("source"),
+                }
+            )
+        return _ok({"element_id": resolved, "intersections_3d": neighbors})
 
     if action == "find_nodes":
         cls = params.get("class")

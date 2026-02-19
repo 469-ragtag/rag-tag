@@ -4,97 +4,10 @@ import argparse
 import sys
 from pathlib import Path
 
-from rag_tag.agent import GraphAgent
-from rag_tag.ifc_sql_tool import SqlQueryError, query_ifc_sql
-from rag_tag.observability import setup_logfire
-from rag_tag.paths import find_project_root
-from rag_tag.router import RouteDecision, route_question
+from rag_tag.observability import LogfireStatus, setup_logfire
+from rag_tag.query_service import execute_query, find_sqlite_db
+from rag_tag.router import route_question
 from rag_tag.tui import print_answer, print_question, print_welcome
-
-
-def _load_graph():
-    from rag_tag.parser.csv_to_graph import build_graph
-
-    return build_graph()
-
-
-def _find_sqlite_db() -> Path | None:
-    project_root = find_project_root(Path(__file__).resolve().parent)
-    if project_root is None:
-        return None
-    candidates: list[Path] = []
-    for folder_name in ("output", "db"):
-        folder = project_root / folder_name
-        if not folder.exists():
-            continue
-        candidates.extend(folder.glob("*.db"))
-    if not candidates:
-        return None
-    candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-    return candidates[0]
-
-
-def _sql_result(
-    decision: RouteDecision,
-    db_path: Path | None,
-) -> dict[str, object]:
-    if decision.sql_request is None:
-        error_msg = "Router did not produce a SQL request."
-        return {
-            "route": "sql",
-            "decision": decision.reason,
-            "error": error_msg,
-        }
-    if db_path is None:
-        error_msg = "No SQLite database found. Run parser/csv_to_sql.py."
-        return {
-            "route": "sql",
-            "decision": decision.reason,
-            "error": error_msg,
-        }
-
-    try:
-        envelope = query_ifc_sql(db_path, decision.sql_request)
-    except SqlQueryError as exc:
-        error_str = str(exc)
-        return {
-            "route": "sql",
-            "decision": decision.reason,
-            "error": error_str,
-        }
-
-    # Check envelope status
-    if envelope["status"] == "error":
-        error_info = envelope.get("error", {})
-        error_msg = error_info.get("message", "Unknown SQL error")
-        error_code = error_info.get("code")
-        if error_code:
-            error_msg = f"{error_msg} (code: {error_code})"
-        return {
-            "route": "sql",
-            "decision": decision.reason,
-            "error": error_msg,
-        }
-
-    # Extract payload from envelope
-    payload = envelope["data"]
-    result: dict[str, object] = {
-        "route": "sql",
-        "decision": decision.reason,
-        "db_path": str(db_path),
-        "answer": payload.get("summary"),
-        "data": {
-            "intent": payload.get("intent"),
-            "filters": payload.get("filters"),
-            "count": payload.get("count"),
-            "total_count": payload.get("total_count"),
-            "limit": payload.get("limit"),
-            "items": payload.get("items"),
-        },
-        "sql": payload.get("sql"),
-    }
-
-    return result
 
 
 def _parse_bool(value: str | None) -> bool:
@@ -108,16 +21,15 @@ def _parse_bool(value: str | None) -> bool:
     raise argparse.ArgumentTypeError("Expected a boolean value (true/false).")
 
 
-def _create_graph_agent(*, debug_llm_io: bool = False) -> GraphAgent:
-    """Create graph agent with PydanticAI.
+def _resolve_db_path(db_path: Path | None) -> tuple[Path | None, str | None]:
+    if db_path is None:
+        return find_sqlite_db(), None
 
-    Args:
-        debug_llm_io: Enable debug printing of LLM I/O (not implemented in PydanticAI)
+    candidate = db_path.expanduser().resolve()
+    if candidate.is_file():
+        return candidate, None
 
-    Returns:
-        Initialized GraphAgent instance
-    """
-    return GraphAgent(debug_llm_io=debug_llm_io)
+    return None, f"SQLite database not found: {candidate}"
 
 
 def main() -> int:
@@ -155,25 +67,51 @@ def main() -> int:
         default=False,
         help="Enable Logfire observability for PydanticAI agents.",
     )
+    ap.add_argument(
+        "--tui",
+        action="store_true",
+        default=False,
+        help="Launch Textual TUI instead of CLI.",
+    )
     args = ap.parse_args()
 
-    # Initialize Logfire if requested
-    setup_logfire(enabled=args.trace)
+    # Initialize Logfire if requested.
+    # When --tui is used, suppress console output (print/warnings) from
+    # setup_logfire so nothing is written to stderr before the TUI starts.
+    # The TUI banner will display trace status instead.
+    logfire_status: LogfireStatus = setup_logfire(
+        enabled=args.trace,
+        console=not args.tui,
+    )
 
+    # Resolve database path
+    db_path, db_error = _resolve_db_path(args.db)
+    if db_error:
+        print(db_error, file=sys.stderr)
+        # The user explicitly specified a path that does not exist.
+        # Do not silently fall back to auto-detection; exit with an error
+        # so the problem is visible rather than hidden behind a wrong DB.
+        return 1
+
+    # Launch TUI if requested
+    if args.tui:
+        from rag_tag.textual_app import run_tui
+
+        run_tui(
+            db_path=db_path,
+            debug_llm_io=args.input,
+            trace_enabled=args.trace,
+            logfire_url=logfire_status.url if logfire_status.enabled else None,
+        )
+        return 0
+
+    # CLI mode (stdin loop)
     graph = None
     agent = None
-    db_path: Path | None
-    if args.db is not None:
-        candidate = args.db.expanduser().resolve()
-        if candidate.is_file():
-            db_path = candidate
-        else:
-            print(f"SQLite database not found: {candidate}", file=sys.stderr)
-            db_path = None
-    else:
-        db_path = _find_sqlite_db()
 
     print_welcome(str(db_path) if db_path else None)
+
+    show_verbose = args.verbose or args.input
 
     for line in sys.stdin:
         question = line.strip()
@@ -186,26 +124,26 @@ def main() -> int:
             decision = route_question(question, debug_llm_io=args.input)
             print_question(question, decision.route, decision.reason)
 
-            if decision.route == "sql":
-                result = _sql_result(decision, db_path)
-            else:
-                if graph is None:
-                    graph = _load_graph()
-                if agent is None:
-                    agent = _create_graph_agent(debug_llm_io=args.input)
+            # Execute query via shared service
+            result_bundle = execute_query(
+                question,
+                db_path,
+                graph,
+                agent,
+                decision=decision,
+                debug_llm_io=args.input,
+            )
 
-                agent_result = agent.run(question, graph, max_steps=6)
-                result = {
-                    "route": "graph",
-                    "decision": decision.reason,
-                    **agent_result,
-                }
+            # Extract components
+            result = result_bundle["result"]
+            graph = result_bundle.get("graph") or graph
+            agent = result_bundle.get("agent") or agent
+
         except Exception as exc:
             # Print question even on error (decision may not exist).
             print_question(question, "?", "routing failed")
             result = {"error": str(exc)}
 
-        show_verbose = args.verbose or args.input
         print_answer(result, verbose=show_verbose)
 
     return 0

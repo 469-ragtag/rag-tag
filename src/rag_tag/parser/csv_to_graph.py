@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 import json
+import logging
 import math
 from collections import defaultdict
 from itertools import product
@@ -16,6 +17,17 @@ import plotly.io as pio
 
 from rag_tag.parser.ifc_geometry_parse import extract_geometry_data, get_ifc_model
 from rag_tag.paths import find_ifc_dir, find_project_root
+
+LOG = logging.getLogger(__name__)
+
+try:
+    from OCC.Core.BRepAlgoAPI import BRepAlgoAPI_Common
+    from OCC.Core.BRepGProp import brepgprop
+    from OCC.Core.GProp import GProp_GProps
+
+    OCC_AVAILABLE = True
+except Exception:
+    OCC_AVAILABLE = False
 
 script_dir = Path(__file__).resolve().parent
 project_root = find_project_root(script_dir) or script_dir
@@ -86,6 +98,25 @@ def _extract_bbox(
     )
 
 
+def _extract_mesh(
+    geom: object | None,
+) -> tuple[list[tuple[float, float, float]], list[tuple[int, int, int]]] | None:
+    if not isinstance(geom, dict):
+        return None
+    vertices = geom.get("mesh_vertices")
+    faces = geom.get("mesh_faces")
+    if not isinstance(vertices, list) or not isinstance(faces, list):
+        return None
+    try:
+        mesh_vertices = [tuple(float(v) for v in p) for p in vertices]
+        mesh_faces = [tuple(int(i) for i in f) for f in faces]
+    except (TypeError, ValueError):
+        return None
+    if not mesh_vertices or not mesh_faces:
+        return None
+    return mesh_vertices, mesh_faces
+
+
 def _bbox_center(
     bbox: tuple[tuple[float, float, float], tuple[float, float, float]],
 ) -> tuple[float, float, float]:
@@ -120,6 +151,37 @@ def _bboxes_intersect(
         if amax[i] < bmin[i] or bmax[i] < amin[i]:
             return False
     return True
+
+
+def _compute_common_metrics(shape_a, shape_b) -> tuple[float, float] | None:
+    """Compute exact common volume and surface area using OCC booleans."""
+    if not OCC_AVAILABLE:
+        return None
+    try:
+        common = BRepAlgoAPI_Common(shape_a, shape_b)
+        common.Build()
+        if not common.IsDone():
+            return None
+        common_shape = common.Shape()
+    except Exception as exc:
+        LOG.debug("OCC boolean common failed: %s", exc)
+        return None
+
+    try:
+        vol_props = GProp_GProps()
+        brepgprop.VolumeProperties(common_shape, vol_props)
+        intersection_volume = float(vol_props.Mass())
+    except Exception:
+        intersection_volume = 0.0
+
+    try:
+        surf_props = GProp_GProps()
+        brepgprop.SurfaceProperties(common_shape, surf_props)
+        contact_area = float(surf_props.Mass())
+    except Exception:
+        contact_area = 0.0
+
+    return max(intersection_volume, 0.0), max(contact_area, 0.0)
 
 
 def _normalize_positions(
@@ -270,7 +332,14 @@ def build_graph_with_properties(
         "hierarchy": ["aggregates", "contained_in"],
         "typing": ["typed_by"],
         "spatial": ["adjacent_to", "connected_to"],
-        "topology": ["above", "below", "overlaps_xy", "intersects_bbox"],
+        "topology": [
+            "above",
+            "below",
+            "overlaps_xy",
+            "intersects_bbox",
+            "intersects_3d",
+            "touches_surface",
+        ],
     }
 
     storey_nodes_by_gid: dict[str, str] = {}
@@ -317,6 +386,7 @@ def build_graph_with_properties(
             properties=row_props,
             geometry=centroid,
             bbox=bbox,
+            mesh=_extract_mesh(geom),
         )
         G.add_edge("IfcBuilding", node_id, relation="aggregates")
 
@@ -367,6 +437,7 @@ def build_graph_with_properties(
                 if bbox is not None
                 else None
             ),
+            mesh=_extract_mesh(geom),
         )
 
         if isinstance(row_level, str):
@@ -493,29 +564,65 @@ def add_spatial_adjacency(
     return threshold
 
 
-def add_topology_facts(G: nx.DiGraph) -> None:
+def add_topology_facts(G: nx.DiGraph, ifc_model: object | None = None) -> None:
     """
-    Add topology-derived symbolic relations using element bboxes:
+    Add topology-derived symbolic relations:
     - intersects_bbox (bidirectional)
     - overlaps_xy (bidirectional, with overlap_area_xy)
-    - above / below (directed pair with vertical_gap)
+    - above / below (directed pair with vertical_gap, only with XY overlap)
+    - intersects_3d (bidirectional, exact OCC boolean, stores intersection_volume)
+    - touches_surface (bidirectional, exact OCC boolean, stores contact_area)
     """
     element_nodes = []
     element_bboxes = []
+    element_gids = []
     for n, d in G.nodes(data=True):
         if not str(n).startswith("Element::"):
             continue
         bbox = d.get("bbox")
         if bbox is None:
             continue
+        gid = d.get("properties", {}).get("GlobalId")
+        if not gid:
+            continue
         element_nodes.append(n)
         element_bboxes.append(bbox)
+        element_gids.append(str(gid))
+
+    occ_shape_by_gid: dict[str, object] = {}
+    if OCC_AVAILABLE and ifc_model is not None and hasattr(ifc_model, "by_guid"):
+        try:
+            occ_settings = ifcopenshell.geom.settings()
+            occ_settings.set(occ_settings.USE_WORLD_COORDS, True)
+            occ_settings.set(occ_settings.DISABLE_OPENING_SUBTRACTIONS, True)
+            occ_settings.set(occ_settings.USE_PYTHON_OPENCASCADE, True)
+            for gid in element_gids:
+                try:
+                    elem = ifc_model.by_guid(gid)
+                    if elem is None:
+                        continue
+                    shape = ifcopenshell.geom.create_shape(occ_settings, elem)
+                    occ_shape_by_gid[gid] = shape.geometry
+                except Exception as exc:
+                    LOG.debug("Skipping OCC shape for %s: %s", gid, exc)
+        except Exception as exc:
+            LOG.warning(
+                "OCC topology initialization failed; skipping exact 3D facts: %s", exc
+            )
+            occ_shape_by_gid = {}
+    elif not OCC_AVAILABLE:
+        LOG.warning(
+            "pythonocc is not installed; "
+            "exact intersects_3d/touches_surface facts disabled."
+        )
 
     for i, a in enumerate(element_nodes):
         bbox_a = element_bboxes[i]
+        gid_a = element_gids[i]
         for j in range(i + 1, len(element_nodes)):
             b = element_nodes[j]
             bbox_b = element_bboxes[j]
+            gid_b = element_gids[j]
 
             # 3D intersection fact
             if _bboxes_intersect(bbox_a, bbox_b):
@@ -550,7 +657,52 @@ def add_topology_facts(G: nx.DiGraph) -> None:
                     source="topology",
                 )
 
+            if bbox_a is not None and bbox_b is not None:
+                shape_a = occ_shape_by_gid.get(gid_a)
+                shape_b = occ_shape_by_gid.get(gid_b)
+                if shape_a is not None and shape_b is not None:
+                    metrics = _compute_common_metrics(shape_a, shape_b)
+                    if metrics is not None:
+                        intersection_volume, contact_area = metrics
+                        if intersection_volume > 1e-9:
+                            G.add_edge(
+                                a,
+                                b,
+                                relation="intersects_3d",
+                                source="occ_boolean",
+                                intersection_volume=intersection_volume,
+                                contact_area=contact_area,
+                            )
+                            G.add_edge(
+                                b,
+                                a,
+                                relation="intersects_3d",
+                                source="occ_boolean",
+                                intersection_volume=intersection_volume,
+                                contact_area=contact_area,
+                            )
+                        elif contact_area > 1e-6:
+                            G.add_edge(
+                                a,
+                                b,
+                                relation="touches_surface",
+                                source="occ_boolean",
+                                intersection_volume=intersection_volume,
+                                contact_area=contact_area,
+                            )
+                            G.add_edge(
+                                b,
+                                a,
+                                relation="touches_surface",
+                                source="occ_boolean",
+                                intersection_volume=intersection_volume,
+                                contact_area=contact_area,
+                            )
+
             # Vertical ordering facts based on z extents.
+            # Gate by XY overlap to avoid far-away false positives.
+            if overlap_area <= 0.0:
+                continue
             a_min_z = float(bbox_a[0][2])
             a_max_z = float(bbox_a[1][2])
             b_min_z = float(bbox_b[0][2])
@@ -607,6 +759,8 @@ def plot_interactive_graph(G: nx.DiGraph, out_html: Path):
         "typed_by": "#ca8a04",
         "connected_to": "#ef4444",
         "adjacent_to": "#059669",
+        "intersects_3d": "#b91c1c",
+        "touches_surface": "#9333ea",
     }
     edge_relation_explanations = {
         "aggregates": "parent decomposes into child",
@@ -614,6 +768,8 @@ def plot_interactive_graph(G: nx.DiGraph, out_html: Path):
         "typed_by": "element is classified by a type object",
         "connected_to": "bboxes intersect or touch",
         "adjacent_to": "elements are spatially near each other",
+        "intersects_3d": "exact OCC-derived 3D intersection",
+        "touches_surface": "exact OCC-derived surface contact",
     }
 
     node_groups: dict[str, dict[str, list]] = {}
@@ -898,6 +1054,52 @@ def plot_interactive_graph(G: nx.DiGraph, out_html: Path):
         )
         trace_meta.append(("bbox", "bbox"))
 
+    mesh_groups: dict[str, dict[str, list[int | float]]] = {}
+    for node_id, node_data in G.nodes(data=True):
+        if not str(node_id).startswith("Element::"):
+            continue
+        mesh = node_data.get("mesh")
+        if mesh is None:
+            continue
+        vertices, faces = mesh
+        if not vertices or not faces:
+            continue
+        cls = str(node_data.get("class_") or "Element")
+        group = mesh_groups.setdefault(
+            cls, {"x": [], "y": [], "z": [], "i": [], "j": [], "k": []}
+        )
+        base = len(group["x"])
+        for vx, vy, vz in vertices:
+            group["x"].append(float(vx))
+            group["y"].append(float(vy))
+            group["z"].append(float(vz))
+        for a, b, c in faces:
+            group["i"].append(int(a) + base)
+            group["j"].append(int(b) + base)
+            group["k"].append(int(c) + base)
+
+    for idx, cls in enumerate(sorted(mesh_groups)):
+        mesh = mesh_groups[cls]
+        traces.append(
+            go.Mesh3d(
+                x=mesh["x"],
+                y=mesh["y"],
+                z=mesh["z"],
+                i=mesh["i"],
+                j=mesh["j"],
+                k=mesh["k"],
+                opacity=0.16,
+                color="#0ea5e9",
+                name=f"Mesh surface: {cls}",
+                legendgroup="mesh",
+                showlegend=idx == 0,
+                hoverinfo="skip",
+                flatshading=True,
+                visible=False,
+            )
+        )
+        trace_meta.append(("mesh", cls))
+
     for i, span in enumerate(storey_spans):
         traces.append(
             go.Scatter3d(
@@ -1016,6 +1218,7 @@ def plot_interactive_graph(G: nx.DiGraph, out_html: Path):
         mode: str,
         show_edge_annotations: bool = False,
         show_bboxes: bool = False,
+        show_meshes: bool = False,
     ) -> list[bool]:
         edge_categories = G.graph.get("edge_categories", {})
         hierarchy_rels = set(
@@ -1029,8 +1232,12 @@ def plot_interactive_graph(G: nx.DiGraph, out_html: Path):
         for kind, name in trace_meta:
             is_edge_label = kind == "edge_label"
             is_bbox = kind == "bbox"
+            is_mesh = kind == "mesh"
             if is_bbox:
                 visible.append(show_bboxes)
+                continue
+            if is_mesh:
+                visible.append(show_meshes)
                 continue
             if mode == "all":
                 visible.append(not is_edge_label or show_edge_annotations)
@@ -1069,6 +1276,27 @@ def plot_interactive_graph(G: nx.DiGraph, out_html: Path):
                 visible.append(not is_edge_label or show_edge_annotations)
         return visible
 
+    def _mask_variants(mode: str) -> dict[str, list[bool]]:
+        variants: dict[str, list[bool]] = {}
+        for show_edge_annotations in (False, True):
+            for show_bboxes in (False, True):
+                for show_meshes in (False, True):
+                    key_parts = []
+                    if show_edge_annotations:
+                        key_parts.append("annotations")
+                    if show_bboxes:
+                        key_parts.append("bboxes")
+                    if show_meshes:
+                        key_parts.append("meshes")
+                    key = "base" if not key_parts else "with_" + "_and_".join(key_parts)
+                    variants[key] = _mask(
+                        mode,
+                        show_edge_annotations=show_edge_annotations,
+                        show_bboxes=show_bboxes,
+                        show_meshes=show_meshes,
+                    )
+        return variants
+
     # Ensure output folder exists
     out_html.parent.mkdir(parents=True, exist_ok=True)
     fig = go.Figure(data=traces)
@@ -1089,54 +1317,12 @@ def plot_interactive_graph(G: nx.DiGraph, out_html: Path):
     )
 
     filter_masks = {
-        "all": {
-            "base": _mask("all"),
-            "with_annotations": _mask("all", show_edge_annotations=True),
-            "with_bboxes": _mask("all", show_bboxes=True),
-            "with_annotations_and_bboxes": _mask(
-                "all", show_edge_annotations=True, show_bboxes=True
-            ),
-        },
-        "nodes": {
-            "base": _mask("nodes"),
-            "with_annotations": _mask("nodes", show_edge_annotations=True),
-            "with_bboxes": _mask("nodes", show_bboxes=True),
-            "with_annotations_and_bboxes": _mask(
-                "nodes", show_edge_annotations=True, show_bboxes=True
-            ),
-        },
-        "edges": {
-            "base": _mask("edges"),
-            "with_annotations": _mask("edges", show_edge_annotations=True),
-            "with_bboxes": _mask("edges", show_bboxes=True),
-            "with_annotations_and_bboxes": _mask(
-                "edges", show_edge_annotations=True, show_bboxes=True
-            ),
-        },
-        "hierarchy": {
-            "base": _mask("hierarchy"),
-            "with_annotations": _mask("hierarchy", show_edge_annotations=True),
-            "with_bboxes": _mask("hierarchy", show_bboxes=True),
-            "with_annotations_and_bboxes": _mask(
-                "hierarchy", show_edge_annotations=True, show_bboxes=True
-            ),
-        },
-        "spatial": {
-            "base": _mask("spatial"),
-            "with_annotations": _mask("spatial", show_edge_annotations=True),
-            "with_bboxes": _mask("spatial", show_bboxes=True),
-            "with_annotations_and_bboxes": _mask(
-                "spatial", show_edge_annotations=True, show_bboxes=True
-            ),
-        },
-        "typing": {
-            "base": _mask("typing"),
-            "with_annotations": _mask("typing", show_edge_annotations=True),
-            "with_bboxes": _mask("typing", show_bboxes=True),
-            "with_annotations_and_bboxes": _mask(
-                "typing", show_edge_annotations=True, show_bboxes=True
-            ),
-        },
+        "all": _mask_variants("all"),
+        "nodes": _mask_variants("nodes"),
+        "edges": _mask_variants("edges"),
+        "hierarchy": _mask_variants("hierarchy"),
+        "spatial": _mask_variants("spatial"),
+        "typing": _mask_variants("typing"),
     }
 
     edge_items = []
@@ -1347,6 +1533,14 @@ def plot_interactive_graph(G: nx.DiGraph, out_html: Path):
       >
         BBoxes: Off
       </button>
+      <button
+        id="toggle-meshes"
+        class="toggle"
+        type="button"
+        aria-pressed="false"
+      >
+        Meshes: Off
+      </button>
     </div>
     <div class="viewer-shell">
       {plotly_div}
@@ -1371,23 +1565,25 @@ def plot_interactive_graph(G: nx.DiGraph, out_html: Path):
       "toggle-edge-annotations"
     );
     const toggleBboxesButton = document.getElementById("toggle-bboxes");
+    const toggleMeshesButton = document.getElementById("toggle-meshes");
     let currentMode = "all";
     let edgeAnnotationsEnabled = false;
     let bboxesEnabled = false;
+    let meshesEnabled = false;
+
+    function maskKey() {{
+      const parts = [];
+      if (edgeAnnotationsEnabled) parts.push("annotations");
+      if (bboxesEnabled) parts.push("bboxes");
+      if (meshesEnabled) parts.push("meshes");
+      return parts.length ? `with_${{parts.join("_and_")}}` : "base";
+    }}
 
     function applyMode(mode) {{
       if (!viewer || !viewer.data) return;
       currentMode = mode;
       const modeMasks = masks[mode] || masks.all;
-      const maskKey =
-        edgeAnnotationsEnabled && bboxesEnabled
-          ? "with_annotations_and_bboxes"
-          : edgeAnnotationsEnabled
-          ? "with_annotations"
-          : bboxesEnabled
-          ? "with_bboxes"
-          : "base";
-      const visible = modeMasks[maskKey] || modeMasks.base;
+      const visible = modeMasks[maskKey()] || modeMasks.base;
       Plotly.restyle(viewer, {{ visible }});
       modeButtons.forEach((btn) =>
         btn.classList.toggle("active", btn.dataset.mode === mode)
@@ -1421,6 +1617,19 @@ def plot_interactive_graph(G: nx.DiGraph, out_html: Path):
       toggleBboxesButton.textContent = bboxesEnabled
         ? "BBoxes: On"
         : "BBoxes: Off";
+      applyMode(currentMode);
+    }});
+
+    toggleMeshesButton?.addEventListener("click", () => {{
+      meshesEnabled = !meshesEnabled;
+      toggleMeshesButton.classList.toggle("active", meshesEnabled);
+      toggleMeshesButton.setAttribute(
+        "aria-pressed",
+        meshesEnabled ? "true" : "false"
+      );
+      toggleMeshesButton.textContent = meshesEnabled
+        ? "Meshes: On"
+        : "Meshes: Off";
       applyMode(currentMode);
     }});
 
@@ -1503,11 +1712,13 @@ def build_graph(
             geom_dict[gid] = {
                 "centroid": item.get("centroid"),
                 "bbox": item.get("bbox"),
+                "mesh_vertices": item.get("mesh_vertices"),
+                "mesh_faces": item.get("mesh_faces"),
             }
 
     G = build_graph_with_properties(csv_path, geom_dict, ifc_model=model)
     add_spatial_adjacency(G, geom_dict)
-    add_topology_facts(G)
+    add_topology_facts(G, ifc_model=model)
     return G
 
 

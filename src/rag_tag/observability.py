@@ -11,7 +11,26 @@ from __future__ import annotations
 
 import os
 import warnings
+from dataclasses import dataclass
 from pathlib import Path
+
+
+@dataclass
+class LogfireStatus:
+    """Result returned by setup_logfire().
+
+    Attributes:
+        enabled: True when Logfire was successfully configured and
+            PydanticAI instrumented.
+        cloud_sync: True when a LOGFIRE_TOKEN write-token was present, meaning
+            traces are forwarded to the Logfire cloud dashboard.
+        url: The Logfire dashboard base URL when cloud_sync is True, otherwise
+            an empty string.
+    """
+
+    enabled: bool = False
+    cloud_sync: bool = False
+    url: str = ""
 
 
 def _load_dotenv() -> None:
@@ -39,12 +58,21 @@ def _load_dotenv() -> None:
         current = parent
 
 
-def setup_logfire(enabled: bool = False) -> None:
+def setup_logfire(
+    enabled: bool = False,
+    console: bool = True,
+) -> LogfireStatus:
     """Configure Logfire instrumentation for PydanticAI.
 
     Args:
         enabled: If True, configure and enable Logfire instrumentation.
                  If False, Logfire is not configured (no-op).
+        console: If False, suppress all Logfire console output (warnings and
+                 print messages).  Set to False in TUI mode so that log lines
+                 do not corrupt the Textual display.
+
+    Returns:
+        LogfireStatus with enabled/cloud_sync/url populated.
 
     Note:
         Logfire requires a WRITE token for sending traces to the cloud.
@@ -59,7 +87,7 @@ def setup_logfire(enabled: bool = False) -> None:
         Optional: Set LOGFIRE_PROJECT_NAME to specify a project.
     """
     if not enabled:
-        return
+        return LogfireStatus()
 
     # Load .env before checking for token
     _load_dotenv()
@@ -67,15 +95,16 @@ def setup_logfire(enabled: bool = False) -> None:
     try:
         import logfire
     except ModuleNotFoundError:
-        warnings.warn(
-            "Logfire not installed. Install with: pip install logfire",
-            stacklevel=2,
-        )
-        return
+        if console:
+            warnings.warn(
+                "Logfire not installed. Install with: pip install logfire",
+                stacklevel=2,
+            )
+        return LogfireStatus()
 
     # Check if token is configured
     token = os.getenv("LOGFIRE_TOKEN")
-    if not token:
+    if not token and console:
         warnings.warn(
             "LOGFIRE_TOKEN not set. Set a WRITE token (not read token) in .env or "
             "run 'logfire auth' to authenticate. Read tokens are for query API only. "
@@ -83,31 +112,37 @@ def setup_logfire(enabled: bool = False) -> None:
             stacklevel=2,
         )
         # Logfire will still work locally, but won't send data to cloud
-        # Good for development/testing
 
-    # Configure Logfire with minimal settings
-    # This will auto-detect project from environment or create a new one
+    # Build configure kwargs.  When running inside the TUI we pass
+    # console=False so logfire never writes to stderr/stdout — that output
+    # would corrupt the Textual display.
+    configure_kwargs: dict[str, object] = {
+        "send_to_logfire": "if-token-present",
+    }
+    if not console:
+        configure_kwargs["console"] = False
+
     try:
-        logfire.configure(
-            # Use environment variables for token and project_name
-            # LOGFIRE_TOKEN (must be WRITE token), LOGFIRE_PROJECT_NAME
-            # 'if-token-present' sends only if write token exists or local
-            # credentials present
-            send_to_logfire="if-token-present",
-        )
+        logfire.configure(**configure_kwargs)  # type: ignore[arg-type]
     except Exception as exc:
-        warnings.warn(f"Failed to configure Logfire: {exc}", stacklevel=2)
-        return
+        if console:
+            warnings.warn(f"Failed to configure Logfire: {exc}", stacklevel=2)
+        return LogfireStatus()
 
     # Instrument PydanticAI for automatic tracing
     try:
         logfire.instrument_pydantic_ai()
     except Exception as exc:
-        warnings.warn(f"Failed to instrument PydanticAI: {exc}", stacklevel=2)
-        return
+        if console:
+            warnings.warn(f"Failed to instrument PydanticAI: {exc}", stacklevel=2)
+        return LogfireStatus()
 
-    # Success message (only if token is set)
     if token:
-        print("Logfire instrumentation enabled for PydanticAI")
+        url = "https://logfire.pydantic.dev"
+        if console:
+            print("Logfire instrumentation enabled for PydanticAI")
+        return LogfireStatus(enabled=True, cloud_sync=True, url=url)
     else:
-        print("Logfire instrumentation enabled (local only, no cloud sync)")
+        if console:
+            print("Logfire instrumentation enabled (local only, no cloud sync)")
+        return LogfireStatus(enabled=True, cloud_sync=False, url="")

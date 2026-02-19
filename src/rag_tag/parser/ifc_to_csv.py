@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 from pathlib import Path
 
 import ifcopenshell
@@ -8,6 +9,8 @@ import ifcopenshell.util.element as element
 import pandas as pd
 
 from rag_tag.paths import find_ifc_dir, find_project_root
+
+logger = logging.getLogger(__name__)
 
 
 def get_objects_data_by_class(model, class_type):
@@ -271,6 +274,16 @@ def export_to_excel(model, class_types, output_path):
                 continue
 
 
+def _log_skipped_summary(skipped: dict[str, str]) -> None:
+    """Log a warning summary of IFC classes that failed during processing."""
+    if not skipped:
+        return
+    logger.warning("--- Skipped class summary ---")
+    for cls, reason in skipped.items():
+        logger.warning("  %s: %s", cls, reason)
+    logger.warning("Total classes skipped: %d", len(skipped))
+
+
 def parse_ifc_to_csv(ifc_path: Path, csv_path: Path, class_type: str = None) -> int:  # type: ignore
     """
     Parse one IFC file and write CSV(s).
@@ -313,6 +326,7 @@ def parse_ifc_to_csv(ifc_path: Path, csv_path: Path, class_type: str = None) -> 
         ]
 
         total_rows = 0
+        skipped: dict[str, str] = {}
         for ct in class_types:
             try:
                 csv_name = f"{ifc_path.stem}_{ct.replace('Ifc', '')}.csv"
@@ -320,13 +334,18 @@ def parse_ifc_to_csv(ifc_path: Path, csv_path: Path, class_type: str = None) -> 
                 n = export_to_csv(model, ct, csv_path_class)
                 if n > 0:
                     total_rows += n
-            except Exception:
+            except Exception as exc:
+                logger.warning("Class %s failed: %s", ct, exc)
+                skipped[ct] = str(exc)
                 continue
 
+        _log_skipped_summary(skipped)
         return total_rows
 
 
 def main():
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+
     parser = argparse.ArgumentParser(
         description="Parse IFC file(s) from IFC-Files/ and export to CSV."
     )
@@ -419,13 +438,18 @@ def main():
                 "IfcBuilding",
             ]
 
+            skipped: dict[str, str] = {}
             for ct in class_types:
                 try:
                     data, attributes = get_objects_data_by_class(model, ct)
                     all_data.extend(data)
                     all_attributes.update(attributes)
-                except Exception:
+                except Exception as exc:
+                    logger.warning("Class %s failed for %s: %s", ct, p.name, exc)
+                    skipped[ct] = str(exc)
                     continue
+
+            _log_skipped_summary(skipped)
 
             if all_data:
                 attributes_list = sorted(all_attributes)
