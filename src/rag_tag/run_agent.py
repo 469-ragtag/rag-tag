@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 from rag_tag.observability import LogfireStatus, setup_logfire
-from rag_tag.query_service import execute_query, find_sqlite_db
+from rag_tag.query_service import execute_query, find_sqlite_dbs
 from rag_tag.router import route_question
 from rag_tag.tui import print_answer, print_question, print_welcome
 
@@ -21,15 +21,15 @@ def _parse_bool(value: str | None) -> bool:
     raise argparse.ArgumentTypeError("Expected a boolean value (true/false).")
 
 
-def _resolve_db_path(db_path: Path | None) -> tuple[Path | None, str | None]:
+def _resolve_db_paths(db_path: Path | None) -> tuple[list[Path], str | None]:
     if db_path is None:
-        return find_sqlite_db(), None
+        return find_sqlite_dbs(), None
 
     candidate = db_path.expanduser().resolve()
     if candidate.is_file():
-        return candidate, None
+        return [candidate], None
 
-    return None, f"SQLite database not found: {candidate}"
+    return [], f"SQLite database not found: {candidate}"
 
 
 def main() -> int:
@@ -84,8 +84,8 @@ def main() -> int:
         console=not args.tui,
     )
 
-    # Resolve database path
-    db_path, db_error = _resolve_db_path(args.db)
+    # Resolve database paths
+    db_paths, db_error = _resolve_db_paths(args.db)
     if db_error:
         print(db_error, file=sys.stderr)
         # The user explicitly specified a path that does not exist.
@@ -98,7 +98,7 @@ def main() -> int:
         from rag_tag.textual_app import run_tui
 
         run_tui(
-            db_path=db_path,
+            db_paths=db_paths,
             debug_llm_io=args.input,
             trace_enabled=args.trace,
             logfire_url=logfire_status.url if logfire_status.enabled else None,
@@ -109,7 +109,8 @@ def main() -> int:
     graph = None
     agent = None
 
-    print_welcome(str(db_path) if db_path else None)
+    db_label = ", ".join(p.name for p in db_paths) if db_paths else None
+    print_welcome(db_label)
 
     show_verbose = args.verbose or args.input
 
@@ -127,7 +128,7 @@ def main() -> int:
             # Execute query via shared service
             result_bundle = execute_query(
                 question,
-                db_path,
+                db_paths,
                 graph,
                 agent,
                 decision=decision,

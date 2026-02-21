@@ -20,7 +20,7 @@ from textual.widgets import Footer, Header, Input, Static
 from textual.worker import Worker
 
 from rag_tag.agent import GraphAgent
-from rag_tag.query_service import execute_query, find_sqlite_db
+from rag_tag.query_service import execute_query, find_sqlite_dbs
 
 # Maximum Static widgets kept in the output area before oldest are pruned.
 _HISTORY_MAX = 200
@@ -183,7 +183,7 @@ class QueryApp(App[None]):
 
     def __init__(
         self,
-        db_path: Path | None,
+        db_paths: list[Path],
         *,
         debug_llm_io: bool = False,
         trace_enabled: bool = False,
@@ -192,7 +192,7 @@ class QueryApp(App[None]):
         """Initialize the TUI app.
 
         Args:
-            db_path: Path to SQLite database (or None to auto-detect).
+            db_paths: SQLite databases to query (all loaded IFC models).
             debug_llm_io: Enable LLM I/O debugging. Suppressed in TUI mode
                 because stderr output would corrupt the Textual display; a
                 warning is shown in the welcome banner instead.
@@ -203,7 +203,7 @@ class QueryApp(App[None]):
                 local-only tracing.
         """
         super().__init__()
-        self.db_path = db_path
+        self.db_paths = db_paths
         # --input / debug_llm_io would write to stderr and corrupt the TUI.
         # Suppress it and record that we did so we can warn the user.
         self._input_flag_ignored: bool = bool(debug_llm_io)
@@ -242,7 +242,8 @@ class QueryApp(App[None]):
     def on_mount(self) -> None:
         """Populate the welcome banner and focus the input."""
         self._append_output("IFC Query Agent TUI")
-        self._append_output(f"Database: {self.db_path or '(none)'}")
+        db_label = ", ".join(p.name for p in self.db_paths) or "(none)"
+        self._append_output(f"Databases: {db_label}")
         self._append_output("Type a question and press Enter.")
         self._append_output(
             "Keys: q/ctrl+d=quit  ctrl+l=clear  v=toggle JSON details"
@@ -401,7 +402,7 @@ class QueryApp(App[None]):
         try:
             result_bundle = execute_query(
                 question,
-                self.db_path,
+                self.db_paths,
                 self.graph,
                 self.agent,
                 debug_llm_io=self.debug_llm_io,
@@ -608,7 +609,7 @@ class QueryApp(App[None]):
 
         Format: DB: <name> [| Route: <r>] [| <N>ms] | details:<on|off>
         """
-        db_name = self.db_path.name if self.db_path else "(no database)"
+        db_name = ", ".join(p.name for p in self.db_paths) or "(no database)"
         parts: list[str] = [f"DB: {db_name}"]
         if self._last_route:
             parts.append(f"Route: {self._last_route}")
@@ -630,7 +631,7 @@ class QueryApp(App[None]):
 
 
 def run_tui(
-    db_path: Path | None = None,
+    db_paths: list[Path] | None = None,
     *,
     debug_llm_io: bool = False,
     trace_enabled: bool = False,
@@ -639,7 +640,7 @@ def run_tui(
     """Launch the Textual TUI.
 
     Args:
-        db_path: Path to SQLite database (or None to auto-detect).
+        db_paths: SQLite databases to query (or None to auto-detect all).
         debug_llm_io: Pass --input flag through to router and agent.
         trace_enabled: Whether Logfire tracing is active.  When True, stderr
             is redirected to output/tui-trace.log for the duration of the TUI
@@ -648,8 +649,8 @@ def run_tui(
         logfire_url: Logfire dashboard URL shown in the welcome banner when
             trace_enabled is True and cloud sync is available.
     """
-    if db_path is None:
-        db_path = find_sqlite_db()
+    if db_paths is None:
+        db_paths = find_sqlite_dbs()
 
     # When tracing is active, redirect stderr to a log file so that any
     # OpenTelemetry / Logfire output (warnings, span-export errors, etc.)
@@ -666,7 +667,7 @@ def run_tui(
 
     try:
         app = QueryApp(
-            db_path,
+            db_paths,
             debug_llm_io=debug_llm_io,
             trace_enabled=trace_enabled,
             logfire_url=logfire_url,

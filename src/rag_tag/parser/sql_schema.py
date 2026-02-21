@@ -38,7 +38,8 @@ CREATE TABLE IF NOT EXISTS properties (
     element_id    INTEGER NOT NULL REFERENCES elements(express_id),
     pset_name     TEXT    NOT NULL,
     property_name TEXT    NOT NULL,
-    value         TEXT
+    value         TEXT,
+    is_official   INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS quantities (
@@ -46,7 +47,8 @@ CREATE TABLE IF NOT EXISTS quantities (
     element_id    INTEGER NOT NULL REFERENCES elements(express_id),
     qto_name      TEXT    NOT NULL,
     quantity_name TEXT    NOT NULL,
-    value         REAL
+    value         REAL,
+    is_official   INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_elements_class  ON elements(ifc_class);

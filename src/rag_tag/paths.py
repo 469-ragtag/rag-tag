@@ -24,3 +24,19 @@ def find_ifc_dir(start_dir: Path | None = None) -> Path | None:
         if candidate.is_dir():
             return candidate
     return None
+
+
+def find_bsdd_rdf_path(start_dir: Path | None = None) -> Path:
+    """
+    Returns the default path where we store the downloaded bSDD RDF snapshot.
+
+    We put it in output/metadata/bsdd/ifc43.ttl — next to the CSVs and
+    databases we generate, but in its own folder so it doesn't get mixed up.
+
+    The file won't exist until you run the refresh script for the first time.
+    That's okay — the schema registry handles a missing file without crashing.
+    """
+    root = find_project_root(start_dir)
+    if root is None:
+        root = Path.cwd()
+    return root / "output" / "metadata" / "bsdd" / "ifc43.ttl"

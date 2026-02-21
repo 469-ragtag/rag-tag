@@ -2,6 +2,12 @@
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.hatch.build.targets.wheel]
+packages = ["src/rag_tag"]
+
+[tool.hatch.build.targets.editable]
+packages = ["src/rag_tag"]
+
 [project]
 name = "rag-tag"
 version = "0.1.0"
@@ -22,13 +28,16 @@ dependencies = [
     "rapidfuzz>=3.0.0",
     "logfire>=2.0.0",
     "textual>=1.0.0",
+    "rdflib>=7.0.0",
 ]
 
 [project.scripts]
 rag-tag = "rag_tag.run_agent:main"
-rag-tag-ifc-to-csv = "rag_tag.parser.ifc_to_csv:main"
-rag-tag-csv-to-sql = "rag_tag.parser.csv_to_sql:main"
-rag-tag-csv-to-graph = "rag_tag.parser.csv_to_graph:main"
+rag-tag-ifc-to-jsonl = "rag_tag.parser.ifc_to_jsonl:main"
+rag-tag-jsonl-to-sql = "rag_tag.parser.jsonl_to_sql:main"
+rag-tag-jsonl-to-graph = "rag_tag.parser.jsonl_to_graph:main"
+rag-tag-generate-ontology-map = "scripts.generate_ontology_map:main"
+rag-tag-refresh-ifc43-rdf = "scripts.refresh_bsdd_ifc43_rdf:main"
 
 [dependency-groups]
 dev = [
