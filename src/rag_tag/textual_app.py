@@ -140,6 +140,10 @@ class QueryApp(App[None]):
         text-style: bold;
     }
 
+    .warning {
+        color: $warning;
+    }
+
     .divider {
         color: $primary;
         text-style: dim;
@@ -459,6 +463,12 @@ class QueryApp(App[None]):
             self._append_output(
                 f"A: {self._truncate(str(answer), 400)}", style="answer"
             )
+            warning = result.get("warning")
+            if warning:
+                self._append_output(
+                    f"Warning: {self._truncate(str(warning), 400)}",
+                    style="warning",
+                )
             if route == "sql":
                 self._display_sql_items(result)
             if route == "graph":

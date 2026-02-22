@@ -39,9 +39,7 @@ def _resolve_db_path(db_path: Path | None) -> tuple[Path | None, str | None]:
     return None, f"SQLite database not found: {candidate}"
 
 
-def _resolve_graph_dataset(
-    graph_dataset: str | None, db_path: Path | None
-) -> str:
+def _resolve_graph_dataset(graph_dataset: str | None, db_path: Path | None) -> str:
     if graph_dataset:
         return graph_dataset
     if db_path is not None:

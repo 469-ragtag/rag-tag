@@ -30,6 +30,37 @@ def _build_geom_settings() -> ifcopenshell.geom.settings:
     return settings
 
 
+def _extract_shape_mesh(
+    element, settings: ifcopenshell.geom.settings
+) -> tuple[np.ndarray | None, np.ndarray | None]:
+    """Return mesh vertices and triangular faces for an element."""
+    try:
+        shape = ifcopenshell.geom.create_shape(settings, element)
+    except Exception as exc:
+        LOG.debug("Mesh extraction failed for %s: %s", element.is_a(), exc)
+        return None, None
+
+    try:
+        verts = np.asarray(shape.geometry.verts, dtype=float).reshape(-1, 3)
+    except Exception:
+        verts = None
+
+    try:
+        faces_raw = np.asarray(shape.geometry.faces, dtype=int)
+        if faces_raw.size > 0 and faces_raw.size % 3 == 0:
+            faces = faces_raw.reshape(-1, 3)
+        else:
+            faces = None
+    except Exception:
+        faces = None
+
+    if verts is not None and verts.size == 0:
+        verts = None
+    if faces is not None and faces.size == 0:
+        faces = None
+    return verts, faces
+
+
 def get_element_centroid(
     element, settings: ifcopenshell.geom.settings
 ) -> np.ndarray | None:
@@ -170,8 +201,15 @@ def extract_geometry_data(model, class_types: list[str] = None):
     settings = _build_geom_settings()
 
     for elem in elements:
-        centroid = get_element_centroid(elem, settings)
-        bbox = get_element_bounding_box(elem, settings)
+        verts, faces = _extract_shape_mesh(elem, settings)
+        if verts is not None:
+            centroid = verts.mean(axis=0)
+            min_xyz = verts.min(axis=0)
+            max_xyz = verts.max(axis=0)
+            bbox = (min_xyz, max_xyz)
+        else:
+            centroid = None
+            bbox = None
 
         elem_data = {
             "GlobalId": getattr(elem, "GlobalId", ""),
@@ -186,6 +224,16 @@ def extract_geometry_data(model, class_types: list[str] = None):
                     tuple(float(v) for v in bbox[1]),
                 )
                 if bbox is not None
+                else None
+            ),
+            "mesh_vertices": (
+                [tuple(float(v) for v in p) for p in verts.tolist()]
+                if verts is not None
+                else None
+            ),
+            "mesh_faces": (
+                [tuple(int(idx) for idx in f) for f in faces.tolist()]
+                if faces is not None
                 else None
             ),
         }
