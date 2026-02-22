@@ -142,6 +142,9 @@ def _print_item_table(data: dict[str, Any]) -> None:
 def _print_graph_answer(result: dict[str, Any], *, verbose: bool) -> None:
     answer = result.get("answer") or "No answer produced."
     print(f"\n{_BOLD}{_GREEN}A:{_RESET} {answer}")
+    warning = result.get("warning")
+    if warning:
+        print(f"   {_YELLOW}Warning:{_RESET} {warning}")
 
     # Show sample elements if present.
     sample = (result.get("data") or {}).get("sample")

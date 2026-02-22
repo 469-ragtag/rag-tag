@@ -1,205 +1,261 @@
 # AGENTS.md
 
-This file is for agentic coding assistants operating in this repository.
+Operational instructions for coding agents working in this repository.
 
-## Project Summary
+## 1) Instruction Precedence (MUST FOLLOW)
+
+When instructions conflict, resolve in this order:
+
+1. System/developer/runtime instructions from the active coding environment
+2. This `AGENTS.md`
+3. User request
+4. Other repository docs (`README.md`, module docs, comments)
+
+If conflict remains unclear, ask the user explicitly before editing.
+
+## 2) Project Snapshot
 
 - Domain: BIM / IFC digital twins
 - Goal: Natural-language querying over IFC models using a hybrid retrieval pipeline
-  - Deterministic aggregations and counts via SQL (no hallucinations)
-  - Spatial/topological questions via graph traversal
-- Primary pipeline: IFC -> CSV -> SQLite + NetworkX graph + LLM tool interface
+    - Deterministic counts/aggregations via SQL (no hallucinations)
+    - Spatial/topological questions via graph traversal
+- Core pipeline: IFC -> CSV -> SQLite + NetworkX graph + LLM tool interface
 
-## Repo Status Snapshot
+Current state:
 
-- IFC parsing and export works via `src/rag_tag/parser/ifc_to_csv.py`.
-- Geometry extraction computes centroids and bounding boxes.
-- Graph is currently built in NetworkX with distance-based adjacency.
-- SQL schema exists and is wired into the router for counts/lists.
-- Project now uses a clean `src/` layout with `rag_tag` package.
-- **Router and Graph Agent migrated to PydanticAI** (router complete, graph agent complete).
-- Router uses structured output with `google-gla:gemini-2.5-flash` (default).
-- Graph Agent uses tool calling with `cohere:command-a-03-2025` (default).
-- Observability via Logfire (optional, enabled with `--trace` flag).
-- Tool outputs are normalized with a `{status,data,error}` envelope.
-- PydanticAI uses `google-gla` for AI Studio and `google-vertex` for Vertex AI (not `google`).
-- `COHERE_API_KEY` is automatically mapped to `CO_API_KEY` for Cohere provider compatibility.
+- IFC parsing/export works via `src/rag_tag/parser/ifc_to_csv.py`
+- Geometry extraction computes centroids and bounding boxes
+- Graph is NetworkX with distance-based adjacency
+- SQL schema exists and is used for counts/lists
+- Router and graph agent are migrated to PydanticAI
+- Router default model: `google-gla:gemini-2.5-flash`
+- Graph agent default model: `cohere:command-a-03-2025`
+- Optional observability via Logfire (`--trace`)
+- Tool outputs normalized as `{status,data,error}` envelope
+- PydanticAI providers: `google-gla` (AI Studio), `google-vertex` (Vertex)
+- `COHERE_API_KEY` is auto-mapped to `CO_API_KEY`
 
-## Cursor/Copilot Rules
+## 3) Default Operating Mode for Feature Work
 
-- No Cursor rules detected (`.cursorrules` / `.cursor/rules/` not present).
-- No Copilot rules detected (`.github/copilot-instructions.md` not present).
-- If these files are added later, treat them as higher priority and mirror key rules here.
+For any request to implement, modify, refactor, or build a feature/spec:
 
-## Skills
+### 3.1 Plan-First Gate (MANDATORY)
 
-- Skills can be found in the `.agents/skills` folder.
+1. Enter **plan mode first**.
+2. Produce a thorough end-to-end plan **before writing code**.
+3. Plan MUST include:
+    - Scope and non-goals
+    - Assumptions and dependencies
+    - Affected files/modules
+    - Validation strategy (lint/tests/manual checks)
+    - Ordered implementation steps with dependency notes
+4. Ask for **explicit user approval**.
+5. Only after approval, begin implementation.
 
-## Environment + Tooling
+Do not skip plan approval unless user explicitly says to bypass planning.
 
-- Python: requires >=3.14 (see `pyproject.toml`)
-- Package manager/runner: `uv` (use `uv run ...`)
-- Lint/format: `ruff` (configured in `pyproject.toml`)
-- Pre-commit: `pre-commit` is listed in dev deps
+### 3.2 Step-Batch Execution (MANDATORY)
 
-## Commands (Build/Lint/Test)
+Implement approved plans in batches, not all at once.
 
-Use `uv` for all commands.
+Batching policy:
 
-### Environment
+- Group tightly coupled, low-risk steps together.
+- Keep risky, cross-cutting, or ambiguous steps isolated.
+- Re-evaluate batch size based on new findings.
 
-- Sync environment:
-  - `uv sync --group dev`
-- Install pre-commit hooks:
-  - `uv run pre-commit install`
+After each batch, report:
 
-### Run scripts
+- What was completed
+- What remains
+- Any blockers or changed assumptions
 
-- IFC -> CSV:
-  - `uv run rag-tag-ifc-to-csv`
-- CSV -> SQLite:
-  - `uv run rag-tag-csv-to-sql`
-- CSV -> Graph (Plotly HTML):
-  - `uv run rag-tag-csv-to-graph`
-- Run the LLM agent (requires API key):
-  - `COHERE_API_KEY=... uv run rag-tag`
-  - `GEMINI_API_KEY=... uv run rag-tag`
-  - Debug LLM I/O:
-    - `COHERE_API_KEY=... uv run rag-tag --input`
-  - Show full JSON details below each answer:
-    - `uv run rag-tag --verbose`
-  - Trace execution (Logfire, requires WRITE token):
-    - `LOGFIRE_TOKEN=... uv run rag-tag --trace`
-    - Note: LOGFIRE_TOKEN must be a write token (not read token)
-    - Read tokens are for the query API only and will cause 401 errors if used for ingestion.
-    - Alternative: Run `logfire auth` to authenticate
-  - Force router mode:
-    - `ROUTER_MODE=rule uv run rag-tag`
-    - `ROUTER_MODE=llm GEMINI_API_KEY=... uv run rag-tag`
-  - Model overrides (use PydanticAI format: provider:model-name):
-    - `AGENT_MODEL=cohere:command-a-03-2025 COHERE_API_KEY=... uv run rag-tag`
-    - `ROUTER_MODEL=google-gla:gemini-2.5-flash GEMINI_API_KEY=... uv run rag-tag`
-    - `ROUTER_MODEL=google-gla:gemini-3-flash-preview GEMINI_API_KEY=... uv run rag-tag`
-    - `ROUTER_MODEL=google-vertex:gemini-2.5-flash GEMINI_API_KEY=... uv run rag-tag` (Vertex AI)
-  - Provider overrides (DEPRECATED - use ROUTER_MODEL/AGENT_MODEL instead):
-    - `LLM_PROVIDER=gemini GEMINI_API_KEY=... uv run rag-tag`
-    - `LLM_PROVIDER=cohere COHERE_API_KEY=... uv run rag-tag`
-    - `AGENT_PROVIDER=cohere COHERE_API_KEY=... uv run rag-tag`
-    - `ROUTER_PROVIDER=gemini GEMINI_API_KEY=... uv run rag-tag`
-  - Use a specific SQLite DB:
-    - `COHERE_API_KEY=... uv run rag-tag --db ./output/Building-Architecture.db`
-  - Output formatting:
-    - Questions and answers are prefixed with `Q:` / `A:` and separated by divider lines.
-- Evaluate routing:
-  - `uv run python scripts/eval_routing.py --db ./output/Building-Architecture.db`
+If scope changes materially, re-plan and re-confirm with the user.
 
-### Linting + Formatting (ruff)
+## 4) Execution Protocol (MUST)
 
-- Format all:
-  - `uv run ruff format .`
-- Check formatting (CI-safe):
-  - `uv run ruff format --check .`
-- Lint all:
-  - `uv run ruff check .`
-- Lint with autofix:
-  - `uv run ruff check --fix .`
-- Lint single file:
-  - `uv run ruff check path/to/file.py`
+1. Understand request and constraints fully.
+2. Gather only necessary context from code/docs.
+3. Prefer minimal, root-cause fixes over broad rewrites.
+4. Preserve existing architecture and style unless user requests redesign.
+5. Use safe, parameterized operations (especially SQL).
+6. Validate changed behavior with the most targeted checks first, then broader checks as needed.
+7. Provide concise handoff with changed files, validation run, and remaining risks.
+
+## 5) Scope and Safety Guardrails
+
+- Do not invent requirements.
+- Do not modify unrelated areas.
+- Do not fabricate IDs, GUIDs, outputs, or test results.
+- Do not claim completion without validation evidence.
+- If blocked by missing info, ask focused questions.
+- If a task is destructive or high-risk, confirm before executing.
+
+## 6) Skills Usage
+
+Skills are in `.agents/skills`.
+
+Use these when applicable:
+
+- `ifcopenshell-python` skill for changes involving `ifcopenshell`
+- `pydantic-ai` skill for changes involving PydanticAI (most of this repo)
+
+## 7) Environment and Tooling
+
+- Python: `>=3.14` (see `pyproject.toml`)
+- Package manager/runner: `uv`
+- Lint/format: `ruff`
+- Pre-commit available in dev dependencies
+
+### Setup
+
+- Sync env: `uv sync --group dev`
+- Install hooks: `uv run pre-commit install`
+
+### Main scripts
+
+- IFC -> CSV: `uv run rag-tag-ifc-to-csv`
+- CSV -> SQLite: `uv run rag-tag-csv-to-sql`
+- CSV -> Graph: `uv run rag-tag-csv-to-graph`
+- Run app: `uv run rag-tag`
+
+Examples:
+
+- `COHERE_API_KEY=... uv run rag-tag`
+- `GEMINI_API_KEY=... uv run rag-tag`
+- `COHERE_API_KEY=... uv run rag-tag --input`
+- `uv run rag-tag --verbose`
+- `LOGFIRE_TOKEN=... uv run rag-tag --trace`
+
+Router/model overrides:
+
+- `ROUTER_MODE=rule uv run rag-tag`
+- `ROUTER_MODE=llm GEMINI_API_KEY=... uv run rag-tag`
+- `AGENT_MODEL=cohere:command-a-03-2025 COHERE_API_KEY=... uv run rag-tag`
+- `ROUTER_MODEL=google-gla:gemini-2.5-flash GEMINI_API_KEY=... uv run rag-tag`
+- `ROUTER_MODEL=google-gla:gemini-3-flash-preview GEMINI_API_KEY=... uv run rag-tag`
+- `ROUTER_MODEL=google-vertex:gemini-2.5-flash GEMINI_API_KEY=... uv run rag-tag`
+
+Use specific DB:
+
+- `COHERE_API_KEY=... uv run rag-tag --db ./output/Building-Architecture.db`
+
+Evaluate routing:
+
+- `uv run python scripts/eval_routing.py --db ./output/Building-Architecture.db`
+
+### Lint/format
+
+- Format: `uv run ruff format .`
+- Check format: `uv run ruff format --check .`
+- Lint: `uv run ruff check .`
+- Lint + fix: `uv run ruff check --fix .`
+- Lint one file: `uv run ruff check path/to/file.py`
 
 ### Tests
 
-- No tests are currently present in the repo.
-- If tests are added, standard commands should be:
-  - `uv run pytest`
-  - `uv run pytest tests/test_file.py`
-  - `uv run pytest tests/test_file.py::test_name`
+- No tests currently in repo.
+- If tests are added:
+    - `uv run pytest`
+    - `uv run pytest tests/test_file.py`
+    - `uv run pytest tests/test_file.py::test_name`
 
-## Code Style Guidelines
+## 8) Code Style and Quality Rules
 
-### Formatting
+### Formatting and imports
 
-- Use `ruff format` and avoid manual formatting tweaks.
-- Keep line length <= 88 (see `pyproject.toml`).
-- Prefer clarity over compact one-liners.
+- Use `ruff format`; avoid manual style-only churn.
+- Keep line length `<= 88`.
+- Import groups: stdlib, third-party, local.
+- Avoid wildcard/unused imports.
+- Prefer absolute imports from `rag_tag`.
 
-### Imports
+### Types and naming
 
-- Group imports: stdlib, third-party, local.
-- Avoid wildcard imports and unused imports (ruff will flag).
-- Use absolute imports from `rag_tag` package (e.g., `from rag_tag.router import ...`).
+- Type public functions and core pipeline logic.
+- Prefer `pathlib.Path` over `str` for file paths.
+- Use `dataclass`/`TypedDict` for structured payloads where useful.
+- Naming:
+    - modules/files: `snake_case.py`
+    - functions/variables: `snake_case`
+    - classes: `PascalCase`
+    - constants: `UPPER_SNAKE_CASE`
 
-### Types
+### Error handling and logging
 
-- Type all public functions and key pipeline steps.
-- Prefer `pathlib.Path` over `str` for paths.
-- Use `dataclass` or `TypedDict` for structured data.
-- Avoid `# type: ignore` unless there is a strong justification.
-
-### Naming
-
-- Files/modules: `snake_case.py`.
-- Functions/variables: `snake_case`.
-- Classes: `PascalCase`.
-- Constants: `UPPER_SNAKE_CASE`.
-- Use IFC-consistent terms: `global_id`, `ifc_class`, `storey`, `space`, `element`.
-
-### Error Handling
-
-- Validate IFC inputs before heavy parsing.
-- Raise specific exceptions with actionable messages.
-- Catch exceptions only to add context; avoid blanket `except Exception`.
-- Include identifiers in errors when available (IFC path, element id, class).
-
-### Logging
-
+- Validate IFC inputs before heavy processing.
+- Raise specific, actionable exceptions.
+- Catch broad exceptions only to add context.
+- Include identifiers in error messages where possible.
 - Prefer `logging` over `print` for pipeline stages.
-- Log high-level stages: validate -> parse -> extract -> geometry -> SQL -> graph.
-- Avoid logging full IFC objects; log IDs and counts.
 
-### Data Contracts (Answers)
+## 9) Domain-Specific Invariants (MUST)
 
-- Never fabricate GUIDs; only return IDs that exist in parsed data.
-- For counts and aggregations, always use SQL results, not LLM guesses.
-- Prefer returning both:
-  - Human-readable summary
-  - Structured JSON (entity type, count, IDs, and properties)
+### Data contract
 
-### Graph Semantics
+- Never fabricate GUIDs/IDs.
+- For counts/aggregations, use SQL results only.
+- Prefer both:
+    - human-readable summary
+    - structured JSON payload (entity type/count/ids/properties)
 
-- `adjacent_to` edges should reflect spatial proximity, not label heuristics.
-- `contains` / `typed_by` edges should be derived from IFC relationships.
-- If geometry is missing, degrade gracefully and log the fallback.
+### Graph semantics
 
-### SQL Safety
+- `adjacent_to` should reflect spatial proximity, not label heuristics.
+- `contains` and `typed_by` should come from IFC relationships.
+- If geometry is missing, degrade gracefully and log fallback behavior.
 
-- Use parameterized queries only (`?` placeholders).
-- Do not interpolate user input directly into SQL.
+### SQL safety
 
-## Known Gaps (Do Not Ignore)
+- Always use parameterized queries (`?` placeholders).
+- Never interpolate untrusted user input into SQL.
 
-- Graph adjacency uses centroid distance, not true topology.
-- No Neo4j/Cypher backend yet; graph lives in NetworkX only.
+## 10) Known Gaps (Do Not Ignore)
 
-## Project Structure
+- Graph adjacency is centroid-distance based, not true topology.
+- No Neo4j/Cypher backend yet; graph remains in NetworkX.
 
-- `src/rag_tag/`: Main package with all source code
-  - `__init__.py`: Package initialization
-  - `__main__.py`: Entry point for `python -m rag_tag`
-  - `paths.py`: Centralized path discovery utilities
-- `run_agent.py`: Main CLI application
-- `trace.py`: JSONL tracing utilities (legacy, kept for reference)
-- `observability.py`: Logfire integration for PydanticAI
-- `ifc_graph_tool.py`: Graph query interface
-- `ifc_sql_tool.py`: SQL query interface
-- `tui.py`: Terminal UI formatting
-- `agent/`: Graph agent implementation
-  - `graph_agent.py`: PydanticAI-based graph agent
-  - `graph_tools.py`: Typed tools for graph queries
-  - `models.py`: Output schemas (GraphAnswer)
-- `llm/`: LLM integration
-  - `pydantic_ai.py`: Model resolver for PydanticAI
-  - `router/`: Query routing logic (rule-based and LLM-based)
-  - `parser/`: IFC parsing and conversion pipeline
-- `scripts/`: Evaluation and utility scripts
-- `output/`: Generated CSV, DB, and HTML files (created at runtime)
-- `IFC-Files/`: Source IFC models (not in repo)
+## 11) Response Contract for Agents
+
+During active work:
+
+- Provide concise progress updates at meaningful checkpoints.
+- Be explicit about assumptions and blockers.
+
+At completion:
+
+- Summarize what changed.
+- List files touched.
+- List validation commands run and outcomes.
+- Note unresolved risks or follow-ups.
+
+## 12) Project Structure (Reference)
+
+- `src/rag_tag/`
+    - `__init__.py`
+    - `__main__.py`
+    - `paths.py`
+    - `ifc_graph_tool.py`
+    - `ifc_sql_tool.py`
+    - `observability.py`
+    - `run_agent.py`
+    - `tui.py`
+    - `textual_app.py`
+    - `query_service.py`
+- `src/rag_tag/agent/`
+    - `graph_agent.py`
+    - `graph_tools.py`
+    - `models.py`
+- `src/rag_tag/llm/`
+    - `pydantic_ai.py`
+- `src/rag_tag/router/`
+    - `router.py`, `rules.py`, `llm.py`, `models.py`, `llm_models.py`
+- `src/rag_tag/parser/`
+    - `ifc_to_csv.py`, `csv_to_sql.py`, `csv_to_graph.py`, `ifc_geometry_parse.py`, `sql_schema.py`
+- `scripts/` (e.g., `eval_routing.py`)
+- `output/` runtime-generated artifacts
+- `IFC-Files/` source IFC models
+
+## 13) Future Rule Files
+
+If `.cursorrules`, `.cursor/rules/`, or `.github/copilot-instructions.md` are added later, treat them as higher-priority and keep this file aligned.
