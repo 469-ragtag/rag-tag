@@ -8,6 +8,7 @@ import ifcopenshell
 import ifcopenshell.util.element as element
 import pandas as pd
 
+from rag_tag.ifc_class_taxonomy import normalize_ifc_class
 from rag_tag.paths import find_ifc_dir, find_project_root
 
 logger = logging.getLogger(__name__)
@@ -33,7 +34,7 @@ def get_objects_data_by_class(model, class_type):
         obj_data = {
             "ExpressId": express_id,
             "GlobalId": obj.GlobalId if hasattr(obj, "GlobalId") else "",
-            "Class": obj.is_a(),
+            "Class": normalize_ifc_class(obj.is_a()),
             "PredefinedType": "",
             "Name": obj.Name if hasattr(obj, "Name") else "",
             "Description": obj.Description if hasattr(obj, "Description") else "",
