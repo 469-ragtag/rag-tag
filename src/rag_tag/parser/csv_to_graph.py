@@ -18,7 +18,9 @@ import plotly.io as pio
 from rag_tag.parser.ifc_geometry_parse import extract_geometry_data, get_ifc_model
 from rag_tag.paths import find_ifc_dir, find_project_root
 
+
 DEFAULT_GRAPH_DATASET = "Building-Architecture"
+
 LOG = logging.getLogger(__name__)
 
 try:
@@ -48,6 +50,7 @@ csv_file = csv_dir / "Building-Architecture.csv"
 
 model = get_ifc_model(ifc_file)
 geom_data = extract_geometry_data(model)
+
 
 
 def distance_between_points(
