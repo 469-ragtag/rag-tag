@@ -1,0 +1,78 @@
+name: Security
+
+on:
+    push:
+        branches: ["main"]
+    pull_request:
+        branches: ["main"]
+    schedule:
+        - cron: "0 8 * * 1"
+    workflow_dispatch:
+
+permissions:
+    contents: read
+
+concurrency:
+    group: security-${{ github.workflow }}-${{ github.ref }}
+    cancel-in-progress: true
+
+jobs:
+    codeql:
+        name: CodeQL (Python)
+        runs-on: ubuntu-latest
+        permissions:
+            actions: read
+            contents: read
+            security-events: write
+
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v4
+
+            - name: Initialize CodeQL
+              uses: github/codeql-action/init@v3
+              with:
+                  languages: python
+
+            - name: Perform CodeQL analysis
+              uses: github/codeql-action/analyze@v3
+
+    dependency-audit:
+        name: Dependency Audit
+        runs-on: ubuntu-latest
+
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v4
+
+            - name: Set up Python
+              uses: actions/setup-python@v5
+              with:
+                  python-version: "3.14"
+
+            - name: Set up uv
+              uses: astral-sh/setup-uv@v6
+
+            - name: Sync dependencies
+              run: uv sync --group dev --frozen
+
+            - name: Install pip-audit
+              run: uv tool install pip-audit
+
+            - name: Run dependency vulnerability audit
+              run: uv tool run pip-audit --strict
+
+    secrets-scan:
+        name: Secret Scan (Gitleaks)
+        runs-on: ubuntu-latest
+
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v4
+              with:
+                  fetch-depth: 0
+
+            - name: Run Gitleaks
+              uses: gitleaks/gitleaks-action@v2
+              env:
+                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
