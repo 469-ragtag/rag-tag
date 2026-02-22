@@ -1,0 +1,29 @@
+name: Code Quality
+
+# Run on pushes to main and any pull requests
+on:
+    push:
+        branches: ["main"]
+    pull_request:
+        branches: ["main"]
+
+jobs:
+    lint-and-format:
+        name: Lint and Format
+        runs-on: ubuntu-latest
+
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v4
+
+            # Runs `ruff format --check .`
+            - name: Check formatting with Ruff
+              uses: astral-sh/ruff-action@v3
+              with:
+                  args: "format --check"
+
+            # Runs `ruff check .`
+            - name: Lint with Ruff
+              uses: astral-sh/ruff-action@v3
+              with:
+                  args: "check"
