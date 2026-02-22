@@ -18,7 +18,6 @@ import plotly.io as pio
 from rag_tag.parser.ifc_geometry_parse import extract_geometry_data, get_ifc_model
 from rag_tag.paths import find_ifc_dir, find_project_root
 
-
 DEFAULT_GRAPH_DATASET = "Building-Architecture"
 
 LOG = logging.getLogger(__name__)
