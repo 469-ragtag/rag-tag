@@ -52,7 +52,6 @@ model = get_ifc_model(ifc_file)
 geom_data = extract_geometry_data(model)
 
 
-
 def distance_between_points(
     a: tuple[float, float, float], b: tuple[float, float, float]
 ) -> float:
