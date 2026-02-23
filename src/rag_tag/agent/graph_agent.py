@@ -37,7 +37,12 @@ submit your final answer via the `final_result` tool.
 
 ## 2. Graph Schema
 
-**Node fields:** `id`, `label`, `class_`, `properties`, `geometry`
+**Node fields:** `id`, `label`, `class_`, `properties`
+
+`properties` is allowlisted/redacted for safety. You will only see:
+`GlobalId`, `Name`, `TypeName`, `Level`, `PredefinedType`, `ObjectType`, `Zone`.
+Unknown keys are removed. Long values are truncated and complex values are
+redacted.
 
 **Node id prefixes:**
 - `Element::` — a physical element or space (use for all spatial/property queries)

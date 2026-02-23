@@ -21,7 +21,7 @@ import networkx as nx
 from pydantic_ai import RunContext
 from rapidfuzz import fuzz, process
 
-from rag_tag.ifc_graph_tool import query_ifc_graph
+from rag_tag.ifc_graph_tool import query_ifc_graph, sanitize_properties_for_llm
 
 # Minimum rapidfuzz WRatio score (0-100) to accept a fuzzy class normalisation.
 _CLASS_FUZZY_THRESHOLD = 72
@@ -94,7 +94,7 @@ def _fuzzy_find_nodes_impl(
                     "label": data.get("label"),
                     "class_": data.get("class_"),
                     "score": round(best_score, 1),
-                    "properties": props,
+                    "properties": sanitize_properties_for_llm(props),
                 }
             )
 
