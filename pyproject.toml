@@ -36,8 +36,8 @@ rag-tag = "rag_tag.run_agent:main"
 rag-tag-ifc-to-jsonl = "rag_tag.parser.ifc_to_jsonl:main"
 rag-tag-jsonl-to-sql = "rag_tag.parser.jsonl_to_sql:main"
 rag-tag-jsonl-to-graph = "rag_tag.parser.jsonl_to_graph:main"
-rag-tag-generate-ontology-map = "scripts.generate_ontology_map:main"
-rag-tag-refresh-ifc43-rdf = "scripts.refresh_bsdd_ifc43_rdf:main"
+rag-tag-generate-ontology-map = "rag_tag.cli.generate_ontology_map:main"
+rag-tag-refresh-ifc43-rdf = "rag_tag.cli.refresh_bsdd_ifc43_rdf:main"
 
 [dependency-groups]
 dev = [

@@ -520,17 +520,30 @@ def plot_interactive_graph(G: nx.DiGraph, out_html: Path) -> None:
     LOG.info("Visualization saved to %s", out_html)
 
 
-def build_graph(jsonl_paths: list[Path] | None = None) -> nx.DiGraph:
+def build_graph(
+    jsonl_paths: list[Path] | None = None,
+    dataset: str | None = None,
+) -> nx.DiGraph:
     # auto-detect jsonl files if no paths given — called with no args from query_service
     if jsonl_paths is None:
         script_dir = Path(__file__).resolve().parent
         project_root = find_project_root(script_dir) or script_dir.parent.parent.parent
         out_dir = project_root / "output"
-        jsonl_paths = sorted(out_dir.glob("*.jsonl"))
-        if not jsonl_paths:
-            raise FileNotFoundError(
-                f"No .jsonl files found in {out_dir}. Run: uv run rag-tag-ifc-to-jsonl"
-            )
+        if dataset is not None:
+            candidate = out_dir / f"{dataset}.jsonl"
+            if not candidate.is_file():
+                raise FileNotFoundError(
+                    f"JSONL file not found for dataset '{dataset}': {candidate}. "
+                    "Run: uv run rag-tag-ifc-to-jsonl"
+                )
+            jsonl_paths = [candidate]
+        else:
+            jsonl_paths = sorted(out_dir.glob("*.jsonl"))
+            if not jsonl_paths:
+                raise FileNotFoundError(
+                    f"No .jsonl files found in {out_dir}. "
+                    "Run: uv run rag-tag-ifc-to-jsonl"
+                )
 
     G = build_graph_from_jsonl(jsonl_paths)
     add_spatial_adjacency(G)

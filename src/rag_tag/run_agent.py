@@ -82,8 +82,7 @@ def main() -> int:
         type=_parse_dataset,
         default=None,
         help=(
-            "Dataset stem for graph files (<project>/output/<stem>.csv and "
-            "<project>/IFC-Files/<stem>.ifc). "
+            "Dataset stem for graph files (<project>/output/<stem>.jsonl). "
             "Overrides --db stem inference."
         ),
     )
@@ -122,7 +121,11 @@ def main() -> int:
     resolved_db_path = args.db.expanduser().resolve() if args.db is not None else None
     if resolved_db_path is None and len(db_paths) == 1:
         resolved_db_path = db_paths[0]
-    selected_dataset = _resolve_graph_dataset(args.graph_dataset, resolved_db_path)
+
+    # Resolve dataset once, shared by both TUI and CLI paths.
+    # Use resolved_db_path (not args.db) so auto-detected DBs contribute their
+    # stem when --graph-dataset is not explicitly supplied.
+    graph_dataset = _resolve_graph_dataset(args.graph_dataset, resolved_db_path)
 
     # Launch TUI if requested
     if args.tui:
@@ -133,7 +136,7 @@ def main() -> int:
             debug_llm_io=args.input,
             trace_enabled=args.trace,
             logfire_url=logfire_status.url if logfire_status.enabled else None,
-            graph_dataset=selected_dataset,
+            graph_dataset=graph_dataset,
         )
         return 0
 
@@ -165,7 +168,7 @@ def main() -> int:
                 agent,
                 decision=decision,
                 debug_llm_io=args.input,
-                dataset=selected_dataset,
+                graph_dataset=graph_dataset,
             )
 
             # Extract components

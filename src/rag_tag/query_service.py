@@ -29,9 +29,10 @@ def find_sqlite_dbs() -> list[Path]:
     return candidates
 
 
-def load_graph() -> nx.DiGraph:
-    from rag_tag.parser.jsonl_to_graph import build_graph
-    return build_graph()
+def load_graph(dataset: str | None = None) -> nx.DiGraph:
+    from rag_tag.parser.jsonl_to_graph import build_graph  # noqa: PLC0415
+
+    return build_graph(dataset=dataset)
 
 
 def execute_sql_query(
@@ -73,8 +74,7 @@ def execute_sql_query(
     if req.intent == "count":
         if req.level_like:
             summary = (
-                f"Found {combined_count} {label}"
-                f" matching level '{req.level_like}'."
+                f"Found {combined_count} {label} matching level '{req.level_like}'."
             )
         else:
             summary = f"Found {combined_count} {label}."
@@ -87,8 +87,7 @@ def execute_sql_query(
             )
         else:
             summary = (
-                f"Found {combined_total} {label},"
-                f" showing {min(combined_total, limit)}."
+                f"Found {combined_total} {label}, showing {min(combined_total, limit)}."
             )
 
     return {
@@ -150,6 +149,7 @@ def execute_query(
     *,
     decision: RouteDecision | None = None,
     debug_llm_io: bool = False,
+    graph_dataset: str | None = None,
 ) -> dict[str, Any]:
     """Execute a query through the full pipeline (routing + execution).
 
@@ -160,6 +160,8 @@ def execute_query(
         agent: Graph agent (or None, will be created if needed)
         decision: Optional precomputed routing decision
         debug_llm_io: Enable debug printing
+        graph_dataset: JSONL stem to load (e.g. "Building-Architecture").
+            When None, all .jsonl files in output/ are used.
 
     Returns:
         Result dict with answer, route, decision, data, or error.
@@ -174,7 +176,7 @@ def execute_query(
             return {"result": result, "graph": graph, "agent": agent}
 
         # Graph route
-        graph, agent = _ensure_graph_context(graph, agent, debug_llm_io)
+        graph, agent = _ensure_graph_context(graph, agent, debug_llm_io, graph_dataset)
         result = execute_graph_query(question, graph, agent, decision)
         return {"result": result, "graph": graph, "agent": agent}
 
@@ -187,10 +189,11 @@ def _ensure_graph_context(
     graph: nx.DiGraph | None,
     agent: GraphAgent | None,
     debug_llm_io: bool,
+    graph_dataset: str | None = None,
 ) -> tuple[nx.DiGraph, GraphAgent]:
     """Load graph and agent instances when missing."""
     if graph is None:
-        graph = load_graph()
+        graph = load_graph(graph_dataset)
     if agent is None:
         agent = GraphAgent(debug_llm_io=debug_llm_io)
     return graph, agent
