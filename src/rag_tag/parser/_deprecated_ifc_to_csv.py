@@ -332,11 +332,30 @@ def parse_ifc_to_csv(
         return export_to_csv(model, class_type, csv_path, registry=registry)
 
     class_types = [
-        "IfcWall", "IfcSlab", "IfcDoor", "IfcWindow", "IfcColumn", "IfcBeam",
-        "IfcRoof", "IfcStair", "IfcRamp", "IfcFurniture", "IfcBuildingElementProxy",
-        "IfcCovering", "IfcRailing", "IfcFlowSegment", "IfcFlowTerminal",
-        "IfcFlowFitting", "IfcDuctSegment", "IfcPipeSegment", "IfcPlate",
-        "IfcMember", "IfcFooting", "IfcPile", "IfcBuildingStorey", "IfcSpace",
+        "IfcWall",
+        "IfcSlab",
+        "IfcDoor",
+        "IfcWindow",
+        "IfcColumn",
+        "IfcBeam",
+        "IfcRoof",
+        "IfcStair",
+        "IfcRamp",
+        "IfcFurniture",
+        "IfcBuildingElementProxy",
+        "IfcCovering",
+        "IfcRailing",
+        "IfcFlowSegment",
+        "IfcFlowTerminal",
+        "IfcFlowFitting",
+        "IfcDuctSegment",
+        "IfcPipeSegment",
+        "IfcPlate",
+        "IfcMember",
+        "IfcFooting",
+        "IfcPile",
+        "IfcBuildingStorey",
+        "IfcSpace",
         "IfcZone",
     ]
 
@@ -447,13 +466,34 @@ def main():
             all_attributes: set[str] = set()
 
             class_types = [
-                "IfcWall", "IfcSlab", "IfcDoor", "IfcWindow", "IfcColumn", "IfcBeam",
-                "IfcRoof", "IfcStair", "IfcRamp", "IfcFurniture",
+                "IfcWall",
+                "IfcSlab",
+                "IfcDoor",
+                "IfcWindow",
+                "IfcColumn",
+                "IfcBeam",
+                "IfcRoof",
+                "IfcStair",
+                "IfcRamp",
+                "IfcFurniture",
                 "IfcBuildingElementProxy",
-                "IfcCovering", "IfcRailing", "IfcFlowSegment", "IfcFlowTerminal",
-                "IfcFlowFitting", "IfcDuctSegment", "IfcPipeSegment", "IfcPlate",
-                "IfcMember", "IfcFooting", "IfcPile", "IfcBuildingStorey", "IfcSpace",
-                "IfcZone", "IfcProject", "IfcSite", "IfcBuilding",
+                "IfcCovering",
+                "IfcRailing",
+                "IfcFlowSegment",
+                "IfcFlowTerminal",
+                "IfcFlowFitting",
+                "IfcDuctSegment",
+                "IfcPipeSegment",
+                "IfcPlate",
+                "IfcMember",
+                "IfcFooting",
+                "IfcPile",
+                "IfcBuildingStorey",
+                "IfcSpace",
+                "IfcZone",
+                "IfcProject",
+                "IfcSite",
+                "IfcBuilding",
             ]
 
             skipped: dict[str, str] = {}
@@ -493,8 +533,7 @@ def main():
                 # show a quick property coverage summary so we can see the improvement
                 pset_cols = [c for c in all_columns if "." in c]
                 filled = sum(
-                    1 for col in pset_cols
-                    for val in df[col] if val not in ("", None)
+                    1 for col in pset_cols for val in df[col] if val not in ("", None)
                 )
                 print(
                     f"  {p.name} -> {csv_name} "

@@ -14,7 +14,6 @@ import math
 from collections import defaultdict
 from itertools import product
 from pathlib import Path
-from typing import Any
 
 import networkx as nx
 import numpy as np
@@ -28,6 +27,7 @@ LOG = logging.getLogger(__name__)
 
 
 # --- geometry math (no IFC dependency, just numpy) ---
+
 
 def _distance_sq(a: np.ndarray, b: np.ndarray) -> float:
     diff = a - b
@@ -152,6 +152,7 @@ def compute_adjacency_threshold(positions: list) -> float:
 
 # --- helpers for reading geometry and properties out of a JSONL record ---
 
+
 def _geom_from_record(rec: dict) -> tuple[tuple | None, tuple | None]:
     geom_block = rec.get("Geometry") or {}
     centroid_raw = geom_block.get("Centroid")
@@ -194,6 +195,7 @@ def _flat_properties(rec: dict) -> dict:
 
 # --- graph construction ---
 
+
 def _add_containment_edge(G: nx.DiGraph, parent_id: str, child_id: str) -> None:
     if parent_id == child_id:
         return
@@ -233,7 +235,9 @@ def build_graph_from_jsonl(jsonl_paths: list[Path]) -> nx.DiGraph:
                 try:
                     rec: dict = json.loads(line)
                 except json.JSONDecodeError as exc:
-                    LOG.warning("%s line %d: JSON error: %s", jsonl_path.name, line_no, exc)
+                    LOG.warning(
+                        "%s line %d: JSON error: %s", jsonl_path.name, line_no, exc
+                    )
                     continue
 
                 gid = rec.get("GlobalId")
@@ -247,16 +251,22 @@ def build_graph_from_jsonl(jsonl_paths: list[Path]) -> nx.DiGraph:
                 if ifc_type == "IfcProject":
                     node_id = "IfcProject"
                     G.nodes["IfcProject"].update(
-                        label=name, class_=ifc_type, payload=rec,
+                        label=name,
+                        class_=ifc_type,
+                        payload=rec,
                         properties=_flat_properties(rec),
-                        geometry=centroid, bbox=bbox,
+                        geometry=centroid,
+                        bbox=bbox,
                     )
                 elif ifc_type == "IfcBuilding":
                     node_id = "IfcBuilding"
                     G.nodes["IfcBuilding"].update(
-                        label=name, class_=ifc_type, payload=rec,
+                        label=name,
+                        class_=ifc_type,
+                        payload=rec,
                         properties=_flat_properties(rec),
-                        geometry=centroid, bbox=bbox,
+                        geometry=centroid,
+                        bbox=bbox,
                     )
                 elif ifc_type == "IfcBuildingStorey":
                     node_id = f"Storey::{gid}"
@@ -287,7 +297,8 @@ def build_graph_from_jsonl(jsonl_paths: list[Path]) -> nx.DiGraph:
                         height=((bbox[1][2] - bbox[0][2]) if bbox else None),
                         footprint_bbox_2d=(
                             (bbox[0][0], bbox[0][1], bbox[1][0], bbox[1][1])
-                            if bbox else None
+                            if bbox
+                            else None
                         ),
                         payload=rec,
                     )
@@ -403,12 +414,18 @@ def add_topology_facts(G: nx.DiGraph) -> None:
             overlap_area = _bbox_xy_overlap_area(bbox_a, bbox_b)
             if overlap_area > 0.0:
                 G.add_edge(
-                    a, b, relation="overlaps_xy",
-                    overlap_area_xy=overlap_area, source="topology"
+                    a,
+                    b,
+                    relation="overlaps_xy",
+                    overlap_area_xy=overlap_area,
+                    source="topology",
                 )
                 G.add_edge(
-                    b, a, relation="overlaps_xy",
-                    overlap_area_xy=overlap_area, source="topology"
+                    b,
+                    a,
+                    relation="overlaps_xy",
+                    overlap_area_xy=overlap_area,
+                    source="topology",
                 )
 
                 # only check vertical order if footprints overlap —
@@ -417,12 +434,20 @@ def add_topology_facts(G: nx.DiGraph) -> None:
                 b_min_z, b_max_z = float(bbox_b[0][2]), float(bbox_b[1][2])
                 if a_min_z > b_max_z:
                     gap = a_min_z - b_max_z
-                    G.add_edge(a, b, relation="above", vertical_gap=gap, source="topology")
-                    G.add_edge(b, a, relation="below", vertical_gap=gap, source="topology")
+                    G.add_edge(
+                        a, b, relation="above", vertical_gap=gap, source="topology"
+                    )
+                    G.add_edge(
+                        b, a, relation="below", vertical_gap=gap, source="topology"
+                    )
                 elif b_min_z > a_max_z:
                     gap = b_min_z - a_max_z
-                    G.add_edge(b, a, relation="above", vertical_gap=gap, source="topology")
-                    G.add_edge(a, b, relation="below", vertical_gap=gap, source="topology")
+                    G.add_edge(
+                        b, a, relation="above", vertical_gap=gap, source="topology"
+                    )
+                    G.add_edge(
+                        a, b, relation="below", vertical_gap=gap, source="topology"
+                    )
 
 
 def plot_interactive_graph(G: nx.DiGraph, out_html: Path) -> None:
@@ -463,14 +488,18 @@ def plot_interactive_graph(G: nx.DiGraph, out_html: Path) -> None:
         edge_z += [pu[2], pv[2], None]
 
     edge_trace = go.Scatter3d(
-        x=edge_x, y=edge_y, z=edge_z,
+        x=edge_x,
+        y=edge_y,
+        z=edge_z,
         mode="lines",
         line={"width": 0.5, "color": "#888"},
         hoverinfo="none",
         name="edges",
     )
     node_trace = go.Scatter3d(
-        x=node_x, y=node_y, z=node_z,
+        x=node_x,
+        y=node_y,
+        z=node_z,
         mode="markers",
         marker={"size": 4, "opacity": 0.8},
         text=node_text,
@@ -500,8 +529,7 @@ def build_graph(jsonl_paths: list[Path] | None = None) -> nx.DiGraph:
         jsonl_paths = sorted(out_dir.glob("*.jsonl"))
         if not jsonl_paths:
             raise FileNotFoundError(
-                f"No .jsonl files found in {out_dir}. "
-                "Run: uv run rag-tag-ifc-to-jsonl"
+                f"No .jsonl files found in {out_dir}. Run: uv run rag-tag-ifc-to-jsonl"
             )
 
     G = build_graph_from_jsonl(jsonl_paths)
@@ -524,7 +552,9 @@ def main() -> None:
         "--out-dir",
         type=Path,
         default=None,
-        help="Output directory for HTML visualization (default: <project-root>/output/).",
+        help=(
+            "Output directory for HTML visualization (default: <project-root>/output/)."
+        ),
     )
     ap.add_argument(
         "--no-viz",

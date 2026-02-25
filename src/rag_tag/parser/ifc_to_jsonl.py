@@ -312,8 +312,7 @@ def main() -> None:
         ifc_dir = find_ifc_dir(script_dir)
         if ifc_dir is None:
             print(
-                "IFC directory not found. "
-                "Use --ifc-dir or create an IFC-Files/ folder."
+                "IFC directory not found. Use --ifc-dir or create an IFC-Files/ folder."
             )
             return
 

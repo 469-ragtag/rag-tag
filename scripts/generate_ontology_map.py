@@ -24,11 +24,7 @@ logger = logging.getLogger(__name__)
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _DEFAULT_OUT = (
-    _SCRIPT_DIR.parent
-    / "src"
-    / "rag_tag"
-    / "parser"
-    / "ifc_ontology_map.json"
+    _SCRIPT_DIR.parent / "src" / "rag_tag" / "parser" / "ifc_ontology_map.json"
 )
 
 
@@ -80,9 +76,7 @@ def main() -> None:
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(ontology_map, indent=2), encoding="utf-8")
-    logger.info(
-        "Ontology map written to %s (%d entries)", out_path, len(ontology_map)
-    )
+    logger.info("Ontology map written to %s (%d entries)", out_path, len(ontology_map))
     print(f"\nOntology map ready at: {out_path}")
 
 

@@ -88,9 +88,7 @@ def _collect_quantity_rows(
         for qty_name, value in qto_props.items():
             if qty_name == "id":
                 continue
-            rows.append(
-                (express_id, qto_name, qty_name, _to_float(value), is_official)
-            )
+            rows.append((express_id, qto_name, qty_name, _to_float(value), is_official))
     return rows
 
 

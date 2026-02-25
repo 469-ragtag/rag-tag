@@ -119,7 +119,10 @@ def main() -> int:
         # so the problem is visible rather than hidden behind a wrong DB.
         return 1
 
-    selected_dataset = _resolve_graph_dataset(args.graph_dataset, db_path)
+    resolved_db_path = args.db.expanduser().resolve() if args.db is not None else None
+    if resolved_db_path is None and len(db_paths) == 1:
+        resolved_db_path = db_paths[0]
+    selected_dataset = _resolve_graph_dataset(args.graph_dataset, resolved_db_path)
 
     # Launch TUI if requested
     if args.tui:

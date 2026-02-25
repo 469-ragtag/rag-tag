@@ -196,6 +196,7 @@ def main() -> None:
     # (the entry point will have it installed, but someone might run this directly)
     try:
         from rag_tag.paths import find_bsdd_rdf_path  # noqa: PLC0415
+
         default_out = find_bsdd_rdf_path()
     except ImportError:
         default_out = Path(DEFAULT_OUT)

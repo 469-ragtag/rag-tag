@@ -12,8 +12,6 @@ from rag_tag.ifc_sql_tool import SqlQueryError, query_ifc_sql
 from rag_tag.paths import find_project_root
 from rag_tag.router import RouteDecision, route_question
 
-DEFAULT_GRAPH_DATASET = "Building-Architecture"
-
 
 def find_sqlite_dbs() -> list[Path]:
     # return all .db files sorted by name so we query every loaded model,
@@ -31,24 +29,9 @@ def find_sqlite_dbs() -> list[Path]:
     return candidates
 
 
-<<<<<<< HEAD
-def load_graph(dataset: str | None = None) -> nx.DiGraph:
-    """Load NetworkX graph from CSV data.
-
-    Args:
-        dataset: Optional dataset stem (without extension).
-
-    Returns:
-        NetworkX DiGraph instance.
-    """
-    from rag_tag.parser.csv_to_graph import build_graph
-
-    return build_graph(dataset=dataset)
-=======
 def load_graph() -> nx.DiGraph:
     from rag_tag.parser.jsonl_to_graph import build_graph
     return build_graph()
->>>>>>> f8c7778f6548519e531b8d6d8c2dadcacd2beb62
 
 
 def execute_sql_query(
@@ -167,7 +150,6 @@ def execute_query(
     *,
     decision: RouteDecision | None = None,
     debug_llm_io: bool = False,
-    dataset: str | None = None,
 ) -> dict[str, Any]:
     """Execute a query through the full pipeline (routing + execution).
 
@@ -178,7 +160,6 @@ def execute_query(
         agent: Graph agent (or None, will be created if needed)
         decision: Optional precomputed routing decision
         debug_llm_io: Enable debug printing
-        dataset: Optional dataset stem for graph loading
 
     Returns:
         Result dict with answer, route, decision, data, or error.
@@ -193,13 +174,7 @@ def execute_query(
             return {"result": result, "graph": graph, "agent": agent}
 
         # Graph route
-        graph, agent = _ensure_graph_context(
-            graph,
-            agent,
-            debug_llm_io,
-            dataset=dataset,
-            db_path=db_path,
-        )
+        graph, agent = _ensure_graph_context(graph, agent, debug_llm_io)
         result = execute_graph_query(question, graph, agent, decision)
         return {"result": result, "graph": graph, "agent": agent}
 
@@ -212,25 +187,13 @@ def _ensure_graph_context(
     graph: nx.DiGraph | None,
     agent: GraphAgent | None,
     debug_llm_io: bool,
-    *,
-    dataset: str | None,
-    db_path: Path | None,
 ) -> tuple[nx.DiGraph, GraphAgent]:
     """Load graph and agent instances when missing."""
     if graph is None:
-        resolved_dataset = _resolve_graph_dataset(dataset, db_path)
-        graph = load_graph(dataset=resolved_dataset)
+        graph = load_graph()
     if agent is None:
         agent = GraphAgent(debug_llm_io=debug_llm_io)
     return graph, agent
-
-
-def _resolve_graph_dataset(dataset: str | None, db_path: Path | None) -> str:
-    if dataset:
-        return dataset
-    if db_path is not None:
-        return db_path.stem
-    return DEFAULT_GRAPH_DATASET
 
 
 def _routing_error(decision: RouteDecision | None, message: str) -> dict[str, Any]:

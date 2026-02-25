@@ -353,6 +353,7 @@ logger = logging.getLogger(__name__)
 # Result type for normalize_class()
 # ---------------------------------------------------------------------------
 
+
 class NormalizedClassResult(TypedDict):
     """
     What we know about an IFC class after looking it up in the hierarchy.
@@ -361,9 +362,10 @@ class NormalizedClassResult(TypedDict):
     IfcWall), we want to map it back to IfcWall so we know which Psets
     to expect and how to group it with other walls.
     """
-    raw: str        # exactly what obj.is_a() returned, e.g. "IfcWallStandardCase"
+
+    raw: str  # exactly what obj.is_a() returned, e.g. "IfcWallStandardCase"
     canonical: str  # nearest ancestor we have Psets for, e.g. "IfcWall"
-    base: str       # same as canonical for now — used for grouping in the CSV
+    base: str  # same as canonical for now — used for grouping in the CSV
     # full chain: ["IfcWall", "IfcBuildingElement", ..., "IfcRoot"]
     ancestors: list[str]
 
@@ -382,19 +384,18 @@ class NormalizedClassResult(TypedDict):
 # ---------------------------------------------------------------------------
 
 STANDARD_PSETS: dict[str, dict[str, list[str]]] = {
-
     "IfcWall": {
         "Pset_WallCommon": [
-            "Reference",           # internal reference code
-            "AcousticRating",      # sound insulation rating
-            "FireRating",          # e.g. REI 60
-            "Combustible",         # is the material combustible?
+            "Reference",  # internal reference code
+            "AcousticRating",  # sound insulation rating
+            "FireRating",  # e.g. REI 60
+            "Combustible",  # is the material combustible?
             "SurfaceSpreadOfFlame",
             "ThermalTransmittance",  # U-value
-            "IsExternal",          # outer wall or inner wall?
-            "ExtendToStructure",   # does it go all the way to the slab?
+            "IsExternal",  # outer wall or inner wall?
+            "ExtendToStructure",  # does it go all the way to the slab?
             "LoadBearing",
-            "Compartmentation",    # acts as a fire compartment boundary?
+            "Compartmentation",  # acts as a fire compartment boundary?
         ],
         "Qto_WallBaseQuantities": [
             "Length",
@@ -408,7 +409,6 @@ STANDARD_PSETS: dict[str, dict[str, list[str]]] = {
             "NetVolume",
         ],
     },
-
     "IfcSlab": {
         "Pset_SlabCommon": [
             "Reference",
@@ -430,7 +430,6 @@ STANDARD_PSETS: dict[str, dict[str, list[str]]] = {
             "NetVolume",
         ],
     },
-
     "IfcDoor": {
         "Pset_DoorCommon": [
             "Reference",
@@ -449,7 +448,6 @@ STANDARD_PSETS: dict[str, dict[str, list[str]]] = {
             "Area",
         ],
     },
-
     "IfcWindow": {
         "Pset_WindowCommon": [
             "Reference",
@@ -469,7 +467,6 @@ STANDARD_PSETS: dict[str, dict[str, list[str]]] = {
             "Area",
         ],
     },
-
     "IfcColumn": {
         "Pset_ColumnCommon": [
             "Reference",
@@ -486,7 +483,6 @@ STANDARD_PSETS: dict[str, dict[str, list[str]]] = {
             "NetSurfaceArea",
         ],
     },
-
     "IfcBeam": {
         "Pset_BeamCommon": [
             "Reference",
@@ -504,7 +500,6 @@ STANDARD_PSETS: dict[str, dict[str, list[str]]] = {
             "NetSurfaceArea",
         ],
     },
-
     "IfcRoof": {
         "Pset_RoofCommon": [
             "Reference",
@@ -520,7 +515,6 @@ STANDARD_PSETS: dict[str, dict[str, list[str]]] = {
             "NetVolume",
         ],
     },
-
     "IfcStair": {
         "Pset_StairCommon": [
             "Reference",
@@ -540,7 +534,6 @@ STANDARD_PSETS: dict[str, dict[str, list[str]]] = {
             "NetVolume",
         ],
     },
-
     "IfcRamp": {
         "Pset_RampCommon": [
             "Reference",
@@ -556,7 +549,6 @@ STANDARD_PSETS: dict[str, dict[str, list[str]]] = {
             "NetVolume",
         ],
     },
-
     "IfcFurniture": {
         # No standard Qto for furniture — dimensions come from the Pset
         "Pset_FurnitureTypeCommon": [
@@ -567,7 +559,6 @@ STANDARD_PSETS: dict[str, dict[str, list[str]]] = {
             "Style",
         ],
     },
-
     "IfcBuildingElementProxy": {
         # Catch-all for things that don't fit a proper IFC class yet
         "Pset_BuildingElementProxyCommon": [
@@ -577,7 +568,6 @@ STANDARD_PSETS: dict[str, dict[str, list[str]]] = {
             "IsExternal",
         ],
     },
-
     "IfcCovering": {
         "Pset_CoveringCommon": [
             "Reference",
@@ -594,14 +584,12 @@ STANDARD_PSETS: dict[str, dict[str, list[str]]] = {
             "Width",
         ],
     },
-
     "IfcRailing": {
         "Pset_RailingCommon": [
             "Reference",
             "IsExternal",
         ],
     },
-
     # MEP (mechanical / electrical / plumbing) elements
     # These tend to have sparse standard Psets compared to structural elements
     "IfcFlowSegment": {
@@ -613,7 +601,6 @@ STANDARD_PSETS: dict[str, dict[str, list[str]]] = {
     "IfcFlowFitting": {
         "Pset_FlowFittingCommon": ["Reference"],
     },
-
     "IfcDuctSegment": {
         "Pset_DuctSegmentCommon": [
             "Reference",
@@ -627,7 +614,6 @@ STANDARD_PSETS: dict[str, dict[str, list[str]]] = {
             "GrossWeight",
         ],
     },
-
     "IfcPipeSegment": {
         "Pset_PipeSegmentCommon": [
             "Reference",
@@ -639,7 +625,6 @@ STANDARD_PSETS: dict[str, dict[str, list[str]]] = {
             "GrossWeight",
         ],
     },
-
     "IfcMember": {
         "Pset_MemberCommon": [
             "Reference",
@@ -656,7 +641,6 @@ STANDARD_PSETS: dict[str, dict[str, list[str]]] = {
             "NetSurfaceArea",
         ],
     },
-
     "IfcPlate": {
         "Pset_PlateCommon": [
             "Reference",
@@ -671,7 +655,6 @@ STANDARD_PSETS: dict[str, dict[str, list[str]]] = {
             "NetVolume",
         ],
     },
-
     "IfcFooting": {
         "Pset_FootingCommon": [
             "Reference",
@@ -679,7 +662,6 @@ STANDARD_PSETS: dict[str, dict[str, list[str]]] = {
             "IsExternal",
         ],
     },
-
     "IfcPile": {
         "Pset_PileCommon": [
             "Reference",
@@ -688,12 +670,11 @@ STANDARD_PSETS: dict[str, dict[str, list[str]]] = {
             "IsExternal",
         ],
     },
-
     # Spatial / organisational elements
     "IfcBuildingStorey": {
         "Pset_BuildingStoreyCommon": [
             "Reference",
-            "EntranceLevel",   # is this the entrance floor?
+            "EntranceLevel",  # is this the entrance floor?
             "AboveGround",
             "SprinklerProtection",
             "SprinklerProtectionType",
@@ -704,7 +685,6 @@ STANDARD_PSETS: dict[str, dict[str, list[str]]] = {
             "GrossPerimeter",
         ],
     },
-
     "IfcSpace": {
         "Pset_SpaceCommon": [
             "Reference",
@@ -724,7 +704,6 @@ STANDARD_PSETS: dict[str, dict[str, list[str]]] = {
             "GrossWallArea",
         ],
     },
-
     "IfcZone": {
         "Pset_ZoneCommon": [
             "Reference",
@@ -732,7 +711,6 @@ STANDARD_PSETS: dict[str, dict[str, list[str]]] = {
             "NetPlannedArea",
         ],
     },
-
     "IfcBuilding": {
         "Pset_BuildingCommon": [
             "Reference",
@@ -748,7 +726,6 @@ STANDARD_PSETS: dict[str, dict[str, list[str]]] = {
             "GrossVolume",
         ],
     },
-
     "IfcSite": {
         "Pset_SiteCommon": [
             "Reference",
@@ -757,7 +734,6 @@ STANDARD_PSETS: dict[str, dict[str, list[str]]] = {
             "BuildingHeightLimit",
         ],
     },
-
     "IfcProject": {
         "Pset_ProjectCommon": [
             "Reference",
@@ -769,6 +745,7 @@ STANDARD_PSETS: dict[str, dict[str, list[str]]] = {
 # ---------------------------------------------------------------------------
 # Small helper — IFC schema version strings aren't always consistent
 # ---------------------------------------------------------------------------
+
 
 def _normalize_schema_name(name: str) -> str:
     """
@@ -789,6 +766,7 @@ def _normalize_schema_name(name: str) -> str:
 # ---------------------------------------------------------------------------
 # The registry class
 # ---------------------------------------------------------------------------
+
 
 class IFC43SchemaRegistry:
     """
