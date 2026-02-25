@@ -39,12 +39,23 @@ def _resolve_db_paths(db_path: Path | None) -> tuple[list[Path], str | None]:
     return [], f"SQLite database not found: {candidate}"
 
 
-def _resolve_graph_dataset(graph_dataset: str | None, db_path: Path | None) -> str:
+def _resolve_graph_dataset(
+    graph_dataset: str | None, db_path: Path | None
+) -> str | None:
+    """Return the dataset stem to load for graph queries.
+
+    Priority (highest to lowest):
+    1. Explicit ``--graph-dataset`` flag  → return as-is.
+    2. Single ``--db`` / auto-detected DB → use the DB file stem so the graph
+       file matches the loaded SQL database.
+    3. No constraint at all              → return None so ``build_graph``
+       loads **all** .jsonl files in output/ (the safe, inclusive default).
+    """
     if graph_dataset:
         return graph_dataset
     if db_path is not None:
         return db_path.stem
-    return "Building-Architecture"
+    return None
 
 
 def main() -> int:
@@ -73,8 +84,8 @@ def main() -> int:
         default=None,
         help=(
             "Path to SQLite database for SQL routing "
-            "(defaults to newest .db in output/ or db/; "
-            "graph dataset defaults to this DB stem)."
+            "(defaults to all .db files in output/ or db/ sorted by name; "
+            "when exactly one DB is found its stem is used as the graph dataset)."
         ),
     )
     ap.add_argument(
@@ -83,7 +94,9 @@ def main() -> int:
         default=None,
         help=(
             "Dataset stem for graph files (<project>/output/<stem>.jsonl). "
-            "Overrides --db stem inference."
+            "Overrides --db stem inference. "
+            "When omitted and no single DB is selected, all .jsonl files "
+            "in output/ are loaded."
         ),
     )
     ap.add_argument(

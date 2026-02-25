@@ -6,8 +6,8 @@ The problem this solves
 When we parse an IFC file, we can only see the property sets (Psets) that are
 *actually attached* to each element.  If an architect forgot to add
 Pset_WallCommon to a wall, we get no fire rating, no thermal transmittance,
-nothing.  Different models end up with totally different CSV columns, which
-makes comparison really difficult.
+nothing.  Different models end up with inconsistent property coverage, which
+makes comparison and query generation difficult.
 
 The IFC 4.3 standard says "every IfcWall SHOULD have Pset_WallCommon" —
 but the standard can't enforce that.  So we do it here.
@@ -17,8 +17,8 @@ This module gives us a schema registry that knows:
   - the class hierarchy (IfcWallStandardCase → IfcWall → IfcBuildingElement…)
     so we can normalise subclasses back to their canonical parent
 
-Then ifc_to_csv.py uses this registry to always include those property
-columns in the output CSV, even if the IFC model left them empty.
+The JSONL ingestion pipeline (`ifc_to_jsonl.py`) uses this registry to
+normalise IFC classes and classify properties against known IFC definitions.
 
 Where the schema data comes from
 ---------------------------------
@@ -36,7 +36,7 @@ To download a fresh copy of the snapshot run:
         --out output/metadata/bsdd/ifc43.ttl
 
 The snapshot lives in output/metadata/bsdd/ifc43.ttl by default.
-You can override this with the --bsdd-rdf-path flag or BSDD_IFC43_RDF_PATH env var.
+You can override this path through `rag-tag-generate-ontology-map --rdf ...`.
 
 If the snapshot isn't there, no problem — we just use the embedded dict and
 ifcopenshell's built-in schema.  Nothing crashes.
@@ -69,7 +69,7 @@ class NormalizedClassResult(TypedDict):
 
     raw: str  # exactly what obj.is_a() returned, e.g. "IfcWallStandardCase"
     canonical: str  # nearest ancestor we have Psets for, e.g. "IfcWall"
-    base: str  # same as canonical for now — used for grouping in the CSV
+    base: str  # same as canonical for now — kept for compatibility
     # full chain: ["IfcWall", "IfcBuildingElement", ..., "IfcRoot"]
     ancestors: list[str]
 
@@ -677,8 +677,8 @@ class IFC43SchemaRegistry:
         The result is a set of strings like:
             {"Pset_WallCommon.FireRating", "Pset_WallCommon.IsExternal", ...}
 
-        These are used in ifc_to_csv.py to always include these columns
-        in the output, even if the model doesn't have the values set.
+        These are used by ontology-map generation and JSONL extraction to
+        determine which properties are standard IFC fields for each class.
         """
         result: set[str] = set()
 
@@ -697,8 +697,8 @@ class IFC43SchemaRegistry:
         Check if a Pset+property combination is part of the IFC standard.
 
         Useful for separating "known standard properties" from custom/vendor
-        properties that show up in some IFC files.  Unknown Psets are still
-        extracted by ifc_to_csv.py — we just don't add empty columns for them.
+        properties that show up in IFC files. Unknown Psets are still
+        extracted by the JSONL pipeline and classified as custom.
 
         Example:
             is_known_property("Pset_WallCommon", "FireRating") → True

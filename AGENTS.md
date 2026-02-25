@@ -19,11 +19,11 @@ If conflict remains unclear, ask the user explicitly before editing.
 - Goal: Natural-language querying over IFC models using a hybrid retrieval pipeline
     - Deterministic counts/aggregations via SQL (no hallucinations)
     - Spatial/topological questions via graph traversal
-- Core pipeline: IFC -> CSV -> SQLite + NetworkX graph + LLM tool interface
+- Core pipeline: IFC -> JSONL -> SQLite + NetworkX graph + LLM tool interface
 
 Current state:
 
-- IFC parsing/export works via `src/rag_tag/parser/ifc_to_csv.py`
+- IFC parsing/export works via `src/rag_tag/parser/ifc_to_jsonl.py`
 - Geometry extraction computes centroids and bounding boxes
 - Graph is NetworkX with distance-based adjacency
 - SQL schema exists and is used for counts/lists
@@ -114,9 +114,11 @@ Use these when applicable:
 
 ### Main scripts
 
-- IFC -> CSV: `uv run rag-tag-ifc-to-csv`
-- CSV -> SQLite: `uv run rag-tag-csv-to-sql`
-- CSV -> Graph: `uv run rag-tag-csv-to-graph`
+- IFC -> JSONL: `uv run rag-tag-ifc-to-jsonl`
+- JSONL -> SQLite: `uv run rag-tag-jsonl-to-sql`
+- JSONL -> Graph: `uv run rag-tag-jsonl-to-graph`
+- Refresh bSDD RDF snapshot: `uv run rag-tag-refresh-ifc43-rdf`
+- Generate ontology map: `uv run rag-tag-generate-ontology-map`
 - Run app: `uv run rag-tag`
 
 Examples:
@@ -251,7 +253,8 @@ At completion:
 - `src/rag_tag/router/`
     - `router.py`, `rules.py`, `llm.py`, `models.py`, `llm_models.py`
 - `src/rag_tag/parser/`
-    - `ifc_to_csv.py`, `csv_to_sql.py`, `csv_to_graph.py`, `ifc_geometry_parse.py`, `sql_schema.py`
+    - `ifc_to_jsonl.py`, `jsonl_to_sql.py`, `jsonl_to_graph.py`, `parse_bsdd_to_map.py`, `ifc_geometry_parse.py`, `ifc43_schema_registry.py`, `sql_schema.py`
+    - Deprecated modules retained for reference: `_deprecated_ifc_to_csv.py`, `_deprecated_csv_to_sql.py`, `_deprecated_csv_to_graph.py`
 - `scripts/` (e.g., `eval_routing.py`)
 - `output/` runtime-generated artifacts
 - `IFC-Files/` source IFC models

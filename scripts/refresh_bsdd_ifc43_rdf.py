@@ -110,8 +110,9 @@ def download(url: str, out_path: Path) -> None:
     print(f"\nSnapshot ready at: {out_path}")
     print(f"SHA256: {sha256}")
     print(
-        "\nTo use it, run the parser with:\n"
-        f"  uv run rag-tag-ifc-to-csv --bsdd-rdf-path {out_path}"
+        "\nTo use it in the JSONL pipeline, run:\n"
+        f"  uv run rag-tag-generate-ontology-map --rdf {out_path}\n"
+        "  uv run rag-tag-ifc-to-jsonl"
     )
 
 

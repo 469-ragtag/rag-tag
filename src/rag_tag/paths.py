@@ -30,8 +30,8 @@ def find_bsdd_rdf_path(start_dir: Path | None = None) -> Path:
     """
     Returns the default path where we store the downloaded bSDD RDF snapshot.
 
-    We put it in output/metadata/bsdd/ifc43.ttl — next to the CSVs and
-    databases we generate, but in its own folder so it doesn't get mixed up.
+    We put it in output/metadata/bsdd/ifc43.ttl — alongside generated
+    JSONL/SQLite artifacts, but in its own folder so it stays isolated.
 
     The file won't exist until you run the refresh script for the first time.
     That's okay — the schema registry handles a missing file without crashing.
