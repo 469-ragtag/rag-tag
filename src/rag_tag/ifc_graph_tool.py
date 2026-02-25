@@ -196,14 +196,28 @@ def query_ifc_graph(
             "label": data.get("label"),
             "class_": data.get("class_"),
             "properties": data.get("properties", {}),
+            "payload": data.get("payload"),
         }
 
     def _apply_property_filters(node_id: str, filters: Dict[str, Any]) -> bool:
         if not filters:
             return True
-        props = G.nodes[node_id].get("properties", {})
+        data = G.nodes[node_id]
+        props = data.get("properties", {})
+        pset_block = (data.get("payload") or {}).get("PropertySets") or {}
         for key, expected in filters.items():
-            if props.get(key) != expected:
+            if props.get(key) == expected:
+                continue
+            # Search nested PropertySets (Official + Custom)
+            found = False
+            for section in ("Official", "Custom"):
+                for pset_props in (pset_block.get(section) or {}).values():
+                    if isinstance(pset_props, dict) and pset_props.get(key) == expected:
+                        found = True
+                        break
+                if found:
+                    break
+            if not found:
                 return False
         return True
 

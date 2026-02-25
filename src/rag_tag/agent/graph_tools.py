@@ -76,10 +76,14 @@ def _fuzzy_find_nodes_impl(
                 continue
 
         props: dict[str, Any] = data.get("properties", {}) or {}
+        payload: dict[str, Any] = data.get("payload") or {}
         candidates = [
             str(data.get("label", "")),
             str(props.get("ObjectType", "")),
             str(props.get("Description", "")),
+            str(payload.get("Name", "")),
+            str(payload.get("IfcType", "")),
+            str(payload.get("ClassRaw", "")),
         ]
 
         best_score = max(
@@ -310,6 +314,18 @@ def register_graph_tools(agent: Any) -> None:
                     key_samples[key] = []
                 if sample_values and len(key_samples[key]) < 3:
                     key_samples[key].append(value)
+            # Also enumerate keys from nested PropertySets in payload
+            pset_block = (data.get("payload") or {}).get("PropertySets") or {}
+            for section in ("Official", "Custom"):
+                for pset_name, pset_props in (pset_block.get(section) or {}).items():
+                    if not isinstance(pset_props, dict):
+                        continue
+                    for pk, pv in pset_props.items():
+                        full_key = f"{pset_name}.{pk}"
+                        if full_key not in key_samples:
+                            key_samples[full_key] = []
+                        if sample_values and len(key_samples[full_key]) < 3:
+                            key_samples[full_key].append(pv)
 
         result: dict[str, Any] = {
             "status": "ok",
