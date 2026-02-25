@@ -120,6 +120,9 @@ Use `spatial_query` as a distance-based fallback.
 - Material: `traverse(start=<element_id>, relation="has_material", depth=1)`
 - Type: `traverse(start=<element_id>, relation="typed_by", depth=1)`
 - Unknown property keys: `list_property_keys(class_="<IfcClass>", sample_values=true)`
+- Specific properties: default node properties are redacted. To read
+  unredacted properties (e.g., FireRating or quantities), call
+  `get_element_properties(element_id)`.
 
 ---
 
@@ -139,6 +142,7 @@ Use `spatial_query` as a distance-based fallback.
 | `find_elements_above(element_id, max_gap?)` | Elements above |
 | `find_elements_below(element_id, max_gap?)` | Elements below |
 | `list_property_keys(class_?, sample_values?)` | Discover available property keys |
+| `get_element_properties(element_id)` | Read one element with full raw properties |
 
 **Tool result envelope:**
 ```json

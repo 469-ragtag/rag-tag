@@ -319,3 +319,13 @@ def register_graph_tools(agent: Any) -> None:
         if sample_values:
             result["data"]["samples"] = key_samples
         return result
+
+    @agent.tool
+    def get_element_properties(
+        ctx: RunContext[nx.DiGraph],
+        element_id: str,
+    ) -> dict[str, Any]:
+        """Fetch ALL raw, unredacted properties for a specific element."""
+        return query_ifc_graph(
+            ctx.deps, "get_element_properties", {"element_id": element_id}
+        )

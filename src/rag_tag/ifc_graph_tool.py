@@ -738,4 +738,19 @@ def query_ifc_graph(
             }
         )
 
+    if action == "get_element_properties":
+        element_id = params.get("element_id")
+        if not element_id:
+            return _err("Missing param: element_id", "missing_param")
+
+        resolved, err = _resolve_element_id(element_id)
+        if err or not resolved:
+            return _err(f"Element not found: {element_id}", "not_found")
+
+        return _ok(
+            build_node_payload(
+                resolved, G.nodes[resolved], payload_mode=INTERNAL_PAYLOAD_MODE
+            )
+        )
+
     return _err(f"Unknown action: {action}", "unknown_action")
