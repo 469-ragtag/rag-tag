@@ -714,8 +714,9 @@ class IFC43SchemaRegistry:
 # Module-level cache so we only parse the schema once per process
 # ---------------------------------------------------------------------------
 
-# keyed by str(snapshot_path) so different paths get different instances
-_registry_cache: dict[str | None, IFC43SchemaRegistry] = {}
+# keyed by (snapshot_path, schema_name) so different schema versions each get
+# their own registry — important when processing IFC2X3 vs IFC4X3 files.
+_registry_cache: dict[str, IFC43SchemaRegistry] = {}
 
 
 def get_registry(
@@ -727,9 +728,15 @@ def get_registry(
 
     Parsing the ifcopenshell schema and (optionally) the RDF file takes a
     moment, so we cache the result and reuse it for every class we process
-    in the same run.  Subsequent calls with the same path are instant.
+    in the same run.  Subsequent calls with the same arguments are instant.
+
+    The cache key includes both the snapshot path and the schema name so
+    that different IFC schema versions (IFC2X3 vs IFC4X3_ADD2, etc.) each
+    get a correctly-initialised registry rather than sharing one instance.
     """
-    key = str(snapshot_path) if snapshot_path is not None else None
+    path_key = str(snapshot_path) if snapshot_path is not None else ""
+    schema_key = schema_name or ""
+    key = f"{path_key}::{schema_key}"
     if key not in _registry_cache:
         _registry_cache[key] = IFC43SchemaRegistry(snapshot_path, schema_name)
     return _registry_cache[key]
