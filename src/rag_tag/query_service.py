@@ -43,8 +43,12 @@ def execute_sql_query(
         return _sql_error(decision, "Router did not produce a SQL request.")
     if not db_paths:
         return _sql_error(
-            decision, "No SQLite database found. Run parser/csv_to_sql.py."
+            decision, "No SQLite database found. Run rag-tag-jsonl-to-sql."
         )
+
+    req = decision.sql_request
+    # Canonical effective limit for this request; used as the global cap across DBs.
+    effective_limit = req.limit or 50
 
     # Query every database and merge counts/items across all models.
     combined_count = 0
@@ -68,8 +72,13 @@ def execute_sql_query(
     if not last_payload:
         return _sql_error(decision, "All database queries failed.")
 
+    # Enforce global list limit: merged items across all DBs must not exceed the
+    # requested limit.  Each per-DB query already applies the same LIMIT clause,
+    # so the only way to exceed it is when results come from multiple databases.
+    if req.intent == "list":
+        combined_items = combined_items[:effective_limit]
+
     # Rebuild summary string with the combined count.
-    req = decision.sql_request
     label = req.ifc_class or "elements"
     if req.intent == "count":
         if req.level_like:
@@ -78,17 +87,18 @@ def execute_sql_query(
             )
         else:
             summary = f"Found {combined_count} {label}."
+        result_count = combined_count
     else:
-        limit = req.limit or 50
+        # Use actual item count post-cap so summary matches displayed rows.
+        shown = len(combined_items)
         if req.level_like:
             summary = (
                 f"Found {combined_total} {label} matching level"
-                f" '{req.level_like}', showing {min(combined_total, limit)}."
+                f" '{req.level_like}', showing {shown}."
             )
         else:
-            summary = (
-                f"Found {combined_total} {label}, showing {min(combined_total, limit)}."
-            )
+            summary = f"Found {combined_total} {label}, showing {shown}."
+        result_count = shown
 
     return {
         "route": "sql",
@@ -98,9 +108,10 @@ def execute_sql_query(
         "data": {
             "intent": last_payload.get("intent"),
             "filters": last_payload.get("filters"),
-            "count": combined_count,
+            "count": result_count,
             "total_count": combined_total,
-            "limit": last_payload.get("limit"),
+            # Return the canonical effective limit, not a per-DB artifact.
+            "limit": effective_limit,
             "items": combined_items,
         },
         "sql": last_payload.get("sql"),
