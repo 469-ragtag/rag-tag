@@ -72,10 +72,10 @@ def build_node_payload(
         "class_": node_data.get("class_"),
         "properties": properties,
     }
-    
+
     if mode == INTERNAL_PAYLOAD_MODE:
         result["payload"] = node_data.get("payload")
-            
+
     return result
 
 
