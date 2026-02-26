@@ -66,12 +66,17 @@ def build_node_payload(
     else:
         properties = sanitize_properties_for_llm(raw_props)
 
-    return {
+    result = {
         "id": node_id,
         "label": node_data.get("label"),
         "class_": node_data.get("class_"),
         "properties": properties,
     }
+    
+    if mode == INTERNAL_PAYLOAD_MODE:
+        result["payload"] = node_data.get("payload")
+            
+    return result
 
 
 def _ok(data: dict) -> dict[str, Any]:
