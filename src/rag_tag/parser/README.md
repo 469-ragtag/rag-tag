@@ -1,97 +1,84 @@
 # parser/
 
-Modules that transform IFC building models into queryable data stores.
+Parser modules that transform IFC models into queryable JSONL, SQLite, and
+NetworkX graph artifacts.
 
 ## Pipeline
 
 ```
-IFC files  ──►  ifc_to_csv.py  ──►  CSV  ──┬──►  csv_to_graph.py  ──►  Graph (HTML)
-                                            └──►  csv_to_sql.py    ──►  SQLite (.db)
+IFC files  -->  ifc_to_jsonl.py  -->  JSONL  -->  jsonl_to_sql.py    --> SQLite (.db)
+                                         \
+                                          \-->  jsonl_to_graph.py  --> Graph (+ optional HTML)
 ```
+
+## Modules
 
 | Module | Input | Output | Purpose |
 |---|---|---|---|
-| `ifc_to_csv.py` | `.ifc` files | `.csv` | Extract elements + properties into flat CSV |
-| `ifc_geometry_parse.py` | `.ifc` files | dict | Extract centroids and bounding boxes |
-| `csv_to_graph.py` | `.csv` + geometry | `.html` | Build hierarchy graph + 3D visualisation |
-| `csv_to_sql.py` | `.csv` | `.db` | Normalised SQLite for aggregation queries |
+| `ifc_to_jsonl.py` | `.ifc` | `.jsonl` | Extract element identity, hierarchy, geometry, psets, and quantities |
+| `jsonl_to_sql.py` | `.jsonl` | `.db` | Build normalized SQLite tables for deterministic SQL |
+| `jsonl_to_graph.py` | `.jsonl` | `networkx` (+ HTML viz) | Build hierarchy + spatial/topology graph with payload on nodes |
+| `parse_bsdd_to_map.py` | optional `.ttl` RDF | `ifc_ontology_map.json` | Build offline ontology map (`BaseClasses`, `ValidPsets`) |
+| `ifc43_schema_registry.py` | ifcopenshell schema + optional RDF | in-memory registry | Class normalization and known IFC pset definitions |
+| `ifc_geometry_parse.py` | IFC geometry | centroid/bbox helpers | Geometry extraction utilities for parser/graph |
+| `sql_schema.py` | none | schema DDL | Canonical SQLite schema and indexes |
 
-## Running
-
-All commands use `uv`:
-
-```bash
-# IFC → CSV
-uv run python parser/ifc_to_csv.py
-
-# CSV → SQLite
-uv run python parser/csv_to_sql.py
-
-# CSV → 3D Graph
-uv run python parser/csv_to_graph.py
-```
-
-Optional flags for `csv_to_sql.py`:
+## Recommended run order
 
 ```bash
-uv run python parser/csv_to_sql.py --csv-dir ./output --out-dir ./db
+# 1) Optional: refresh local bSDD RDF snapshot
+uv run rag-tag-refresh-ifc43-rdf
+
+# 2) Generate/update ontology map used by JSONL ingestion
+uv run rag-tag-generate-ontology-map
+
+# 3) IFC -> JSONL
+uv run rag-tag-ifc-to-jsonl
+
+# 4) JSONL -> SQLite
+uv run rag-tag-jsonl-to-sql
+
+# 5) JSONL -> Graph (+ optional visualization)
+uv run rag-tag-jsonl-to-graph
 ```
 
-## SQL Schema
+Single-file conversion example:
 
-`csv_to_sql.py` creates a flat, non-hierarchical SQLite database with three tables:
-
-```
-┌─────────────┐       ┌──────────────┐       ┌──────────────┐
-│  elements   │◄──FK──│  properties  │       │  quantities  │
-│             │◄──FK──│              │       │              │
-│ express_id  │       │ element_id   │       │ element_id ──┼──FK──► elements
-│ global_id   │       │ pset_name    │       │ qto_name     │
-│ ifc_class   │       │ property_name│       │ quantity_name│
-│ name        │       │ value (TEXT) │       │ value (REAL) │
-│ level       │       └──────────────┘       └──────────────┘
-│ type_name   │
-│ ...         │
-└─────────────┘
+```bash
+uv run rag-tag-ifc-to-jsonl --ifc-file IFC-Files/Building-Architecture.ifc --out-dir output
 ```
 
-### Design decisions
+## JSONL record shape (high level)
 
-- **No hierarchy tables.** Project → Site → Building → Storey relationships
-  are handled by the graph-RAG side.  SQL is for deterministic aggregations only.
-- **`level` is plain text**, not a foreign key.  Keeps queries simple
-  (`WHERE level = '00 groundfloor'`) and avoids coupling to graph structure.
-- **Properties and quantities are normalised** from the wide-format CSV columns
-  (`Pset_SlabCommon.FireRating` → row in `properties`).  This makes them
-  filterable and joinable without knowing column names up front.
+Each line is one element record. Key blocks:
 
-### Future considerations
+- Top-level identity/class fields: `GlobalId`, `ExpressId`, `IfcType`, `ClassRaw`, `Name`
+- `Hierarchy`: `ParentId`, `ParentType`, `Level`, `Path`
+- `Geometry`: `Centroid`, `BoundingBox` (`min`/`max`)
+- `PropertySets`: split into `Official` and `Custom`
+- `Quantities`: quantity sets extracted from IFC
 
-- Add hierarchy tables (`ifc_project`, `ifc_building_storey`, etc.) if
-  the SQL side needs structural queries.
-- Add `source_file` column to `elements` for multi-model support.
+Notes:
 
-### Example queries
+- Geometry stores only derived centroid/bbox, never raw mesh arrays.
+- For unsupported schema families or missing ontology data, extraction degrades
+  gracefully: properties default to `Custom` and base-class expansion is empty.
 
-```sql
--- Count walls
-SELECT COUNT(*) FROM elements WHERE ifc_class = 'IfcWall';
+## SQLite schema notes
 
--- Total slab volume
-SELECT SUM(q.value) FROM quantities q
-  JOIN elements e ON q.element_id = e.express_id
- WHERE e.ifc_class = 'IfcSlab' AND q.quantity_name = 'NetVolume';
+`jsonl_to_sql.py` writes normalized tables:
 
--- Elements on the ground floor
-SELECT ifc_class, name FROM elements WHERE level = '00 groundfloor';
+- `elements`
+- `properties` (includes `is_official` 0/1)
+- `quantities` (includes `is_official` 0/1)
 
--- Fire ratings
-SELECT e.name, p.value FROM properties p
-  JOIN elements e ON p.element_id = e.express_id
- WHERE p.property_name = 'FireRating';
-```
+Design intent:
 
-## Security
+- Keep SQL flat and deterministic for LLM-generated count/list queries.
+- Keep hierarchy/spatial reasoning in graph tools.
+- Use parameterized SQL (`?` placeholders) only.
 
-All SQL in `csv_to_sql.py` uses parameterised queries (`?` placeholders).
-No user data is ever interpolated into SQL strings.
+## Migration note
+
+The legacy CSV parser modules have been removed. The active parser stack is
+JSONL-only (`ifc_to_jsonl.py`, `jsonl_to_sql.py`, `jsonl_to_graph.py`).

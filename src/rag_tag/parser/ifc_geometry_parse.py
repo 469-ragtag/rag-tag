@@ -99,6 +99,48 @@ def get_element_bounding_box(
         return None
 
 
+def build_geom_settings() -> ifcopenshell.geom.settings:
+    """
+    Build the standard geometry settings object.
+
+    Create this once per session and pass it to every per-element call —
+    the settings object is thread-safe and cheap to share.  Recreating it
+    inside a loop is wasteful (small but avoidable allocation).
+    """
+    return _build_geom_settings()
+
+
+def get_element_geometry(
+    element,
+    settings: ifcopenshell.geom.settings,
+) -> dict:
+    """
+    Extract centroid and axis-aligned bounding box in a single shape pass.
+
+    Only derived summary values are retained; raw mesh vertices and faces are
+    never stored so callers cannot accidentally serialise them to JSONL.
+
+    Returns::
+
+        {"centroid": np.ndarray | None, "bbox": (min_xyz, max_xyz) | None}
+
+    ``centroid`` is shape ``(3,)`` and ``bbox`` is a 2-tuple of shape-``(3,)``
+    arrays.  Both keys are present even on failure (set to ``None``).
+    """
+    try:
+        shape = ifcopenshell.geom.create_shape(settings, element)
+        verts = np.asarray(shape.geometry.verts, dtype=float).reshape(-1, 3)
+        if verts.size == 0:
+            return {"centroid": None, "bbox": None}
+        centroid = verts.mean(axis=0)
+        min_xyz = verts.min(axis=0)
+        max_xyz = verts.max(axis=0)
+        return {"centroid": centroid, "bbox": (min_xyz, max_xyz)}
+    except Exception as exc:
+        LOG.debug("Geometry extraction failed for %s: %s", element.is_a(), exc)
+        return {"centroid": None, "bbox": None}
+
+
 def get_ifc_model(ifc_path: Path):
     """
     Opens an IFC file and returns the model object.

@@ -196,15 +196,110 @@ def query_ifc_graph(
             "label": data.get("label"),
             "class_": data.get("class_"),
             "properties": data.get("properties", {}),
+            "payload": data.get("payload"),
         }
 
     def _apply_property_filters(node_id: str, filters: Dict[str, Any]) -> bool:
         if not filters:
             return True
-        props = G.nodes[node_id].get("properties", {})
+        data = G.nodes[node_id]
+        props = data.get("properties") or {}
+        if not isinstance(props, dict):
+            props = {}
+
+        payload = data.get("payload") or {}
+        if not isinstance(payload, dict):
+            payload = {}
+
+        pset_block = payload.get("PropertySets") or {}
+        if not isinstance(pset_block, dict):
+            pset_block = {}
+
+        def _iter_psets() -> Iterable[tuple[str, dict[str, Any]]]:
+            """Yield (pset_name, pset_dict) from Official/Custom psets and Quantities.
+
+            Quantities (e.g. Qto_WallBaseQuantities) are stored at
+            ``payload["Quantities"]`` — a sibling of ``PropertySets``, not
+            nested inside it.  Including them here means dotted filters such
+            as ``Qto_WallBaseQuantities.Length`` work identically to pset
+            filters.
+            """
+            for section in ("Official", "Custom"):
+                section_block = pset_block.get(section) or {}
+                if not isinstance(section_block, dict):
+                    continue
+                for raw_name, pset_props in section_block.items():
+                    if not isinstance(pset_props, dict):
+                        continue
+                    yield str(raw_name), pset_props
+
+            # Also expose Quantities blocks so that dotted keys like
+            # "Qto_WallBaseQuantities.Length" are matched by _match_dotted.
+            quantities_block = payload.get("Quantities") or {}
+            if isinstance(quantities_block, dict):
+                for qto_name, qto_data in quantities_block.items():
+                    if isinstance(qto_data, dict):
+                        yield str(qto_name), qto_data
+
+        def _nested_lookup(
+            mapping: dict[str, Any], dotted_path: str
+        ) -> tuple[bool, Any]:
+            """Return (exists, value) for a dotted key path within nested dicts."""
+            current: Any = mapping
+            for part in dotted_path.split("."):
+                if not isinstance(current, dict) or part not in current:
+                    return False, None
+                current = current[part]
+            return True, current
+
+        def _match_dotted(pset_name: str, prop_name: str, expected: Any) -> bool:
+            """Match a specific pset path like Pset.Property or Pset.A.B."""
+            for current_pset, pset_props in _iter_psets():
+                if current_pset != pset_name:
+                    continue
+                exists, value = _nested_lookup(pset_props, prop_name)
+                if exists and value == expected:
+                    return True
+            return False
+
+        def _match_flat_in_psets(key: str, expected: Any) -> bool:
+            """Search all psets for a flat key; key must exist in pset for a match."""
+            for _pset_name, pset_props in _iter_psets():
+                if key in pset_props and pset_props[key] == expected:
+                    return True
+            return False
+
         for key, expected in filters.items():
-            if props.get(key) != expected:
+            # Dotted key "PsetName.PropertyName": target specific named pset.
+            # (Uses first dot only; deeper nesting not supported.)
+            if "." in key:
+                pset_name, _, prop_name = key.partition(".")
+                if not _match_dotted(pset_name, prop_name, expected):
+                    return False
+                continue
+
+            # Flat key: check direct properties first.  Require key existence so
+            # that a missing key never accidentally matches an expected None.
+            if key in props:
+                prop_val = props[key]
+                # List-valued property (e.g. Materials): support membership
+                # testing so {"Materials": "gypsum"} matches ["gypsum", ...].
+                if isinstance(prop_val, list):
+                    if isinstance(expected, str) and expected in prop_val:
+                        continue
+                    if isinstance(expected, list) and all(
+                        v in prop_val for v in expected
+                    ):
+                        continue
+                elif prop_val == expected:
+                    continue
+                # Key exists in flat props but value mismatches; still fall
+                # through to nested psets (same property name may appear there).
+
+            # Search nested PropertySets (key must exist in pset to match).
+            if not _match_flat_in_psets(key, expected):
                 return False
+
         return True
 
     if action == "get_elements_in_storey":

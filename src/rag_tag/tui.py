@@ -37,7 +37,7 @@ def print_welcome(db_path: str | None) -> None:
     if db_path:
         print(f"  db: {_DIM}{db_path}{_RESET}")
     else:
-        print(f"  db: {_DIM}(none — run parser/csv_to_sql.py){_RESET}")
+        print(f"  db: {_DIM}(none — run rag-tag-jsonl-to-sql){_RESET}")
     print(f"  Type a question, or {_BOLD}exit{_RESET} to quit.\n")
 
 
