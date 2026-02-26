@@ -6,7 +6,7 @@ import logging
 import re
 
 import networkx as nx
-from pydantic_ai import Agent, UnexpectedModelBehavior
+from pydantic_ai import Agent, ModelRetry, RunContext, UnexpectedModelBehavior
 from pydantic_ai.exceptions import ModelHTTPError
 
 from rag_tag.llm.pydantic_ai import get_agent_model
@@ -190,6 +190,19 @@ Use only `data` for reasoning. On error, try an alternative tool path.
 # Agent
 # ---------------------------------------------------------------------------
 
+# Precise schema reminder embedded in ModelRetry messages so the model
+# receives actionable correction guidance within the same run_sync call.
+_SCHEMA_CORRECTION_HINT = (
+    "final_result MUST be called with a single JSON object — "
+    "NO list/array wrapper, NO tool-call envelope "
+    "(tool_call_id / tool_name / parameters are NOT output fields).\n"
+    "Required schema:\n"
+    "  answer   string       required — plain natural-language text\n"
+    "  data     object|null  optional\n"
+    "  warning  string|null  optional\n"
+    'Example: {"answer": "There are 5 walls.", "data": null, "warning": null}'
+)
+
 
 class GraphAgent:
     """Graph agent using PydanticAI with tool calling."""
@@ -217,6 +230,28 @@ class GraphAgent:
         )
 
         register_graph_tools(self._agent)
+
+        @self._agent.output_validator
+        def _validate_answer_shape(
+            ctx: RunContext[nx.DiGraph], output: GraphAnswer
+        ) -> GraphAnswer:
+            """Raise ModelRetry with precise schema guidance for empty answers.
+
+            By the time this validator runs, ``GraphAnswer._normalize_tool_wrapper``
+            has already unwrapped any list/envelope malformed shapes.  This
+            validator catches the residual case where the model produced a
+            technically-valid ``GraphAnswer`` but left ``answer`` empty (which
+            Pydantic itself allows for ``str`` fields).  Raising ``ModelRetry``
+            here keeps the correction entirely within the current ``run_sync``
+            call — no external second call is ever made for output-shape repair.
+            """
+            if not (output.answer and output.answer.strip()):
+                raise ModelRetry(
+                    f"{_SCHEMA_CORRECTION_HINT}\n"
+                    "Validation error: 'answer' field is empty or absent. "
+                    "Provide a non-empty plain-text answer string."
+                )
+            return output
 
     def run(
         self,
@@ -281,36 +316,16 @@ class GraphAgent:
 
             except UnexpectedModelBehavior as exc:
                 # The model failed to produce a valid structured output even
-                # after all output_retries.  Attempt one targeted repair pass
-                # with the validation error embedded in the prompt, then fall
-                # back to a safe answer if that also fails.
+                # after all output_retries (including internal shape-correction
+                # attempts via the output_validator).  Return a safe fallback
+                # immediately — no extra run_sync call is made here.
                 raw = getattr(exc, "body", None) or str(exc)
                 raw_snippet = str(raw)[:400] if raw else ""
-                _logger.warning(
-                    "Output validation failed; attempting 1 repair retry: %s",
+                _logger.error(
+                    "Output validation failed after all retries; "
+                    "returning fallback answer: %s",
                     exc,
                 )
-                repair_prompt = _build_repair_prompt(question, str(exc))
-                try:
-                    repair_result = self._agent.run_sync(repair_prompt, deps=graph)
-                    repair_output = repair_result.output
-                    repair_answer = _sanitize_model_text(repair_output.answer) or ""
-                    repair_warning = _sanitize_model_text(repair_output.warning)
-                    repair_response: dict[str, object] = {"answer": repair_answer}
-                    if repair_output.data:
-                        repair_response["data"] = repair_output.data
-                    if repair_warning:
-                        repair_response["warning"] = repair_warning
-                    repair_response["answer"] = _polish_answer_with_data(
-                        str(repair_response.get("answer", "")),
-                        repair_response.get("data"),
-                    )
-                    return repair_response
-                except Exception as recovery_exc:
-                    _logger.error(
-                        "Repair retry also failed; returning safe fallback: %s",
-                        recovery_exc,
-                    )
                 return {
                     "answer": (
                         "I was unable to produce a well-structured answer for "
@@ -388,35 +403,6 @@ def _sanitize_model_text(value: object | None) -> str | None:
     text = re.sub(r"</?co:[^>]+>", "", text)
     text = re.sub(r"\s+", " ", text).strip()
     return text or None
-
-
-def _build_repair_prompt(question: str, error_snippet: str) -> str:
-    """Build a targeted repair prompt for output-shape validation failures.
-
-    Embeds the validation error so the model can make a specific correction
-    rather than guessing what went wrong.
-
-    Args:
-        question: The original user question to re-answer.
-        error_snippet: The validation error string (will be truncated to 300 chars).
-
-    Returns:
-        Augmented question with an explicit schema-repair instruction.
-    """
-    trimmed_error = error_snippet[:300]
-    return (
-        f"{question}\n\n"
-        "CORRECTION REQUIRED: Your previous response failed output schema "
-        f"validation with this error: {trimmed_error!r}\n\n"
-        "Your final_result call MUST pass a single JSON object — "
-        "not a list or array — with exactly these keys:\n"
-        "  - answer  (string, required)\n"
-        "  - data    (object or null, optional)\n"
-        "  - warning (string or null, optional)\n\n"
-        "Do NOT wrap the object in an array. "
-        "Do NOT include extra keys or tool-call wrappers in the payload. "
-        "Call final_result with a plain JSON object as its sole argument."
-    )
 
 
 def _extract_primary_list(data: dict[str, object]) -> list[str]:

@@ -216,7 +216,14 @@ def query_ifc_graph(
             pset_block = {}
 
         def _iter_psets() -> Iterable[tuple[str, dict[str, Any]]]:
-            """Yield (pset_name, pset_dict) pairs from Official/Custom blocks."""
+            """Yield (pset_name, pset_dict) from Official/Custom psets and Quantities.
+
+            Quantities (e.g. Qto_WallBaseQuantities) are stored at
+            ``payload["Quantities"]`` — a sibling of ``PropertySets``, not
+            nested inside it.  Including them here means dotted filters such
+            as ``Qto_WallBaseQuantities.Length`` work identically to pset
+            filters.
+            """
             for section in ("Official", "Custom"):
                 section_block = pset_block.get(section) or {}
                 if not isinstance(section_block, dict):
@@ -225,6 +232,14 @@ def query_ifc_graph(
                     if not isinstance(pset_props, dict):
                         continue
                     yield str(raw_name), pset_props
+
+            # Also expose Quantities blocks so that dotted keys like
+            # "Qto_WallBaseQuantities.Length" are matched by _match_dotted.
+            quantities_block = payload.get("Quantities") or {}
+            if isinstance(quantities_block, dict):
+                for qto_name, qto_data in quantities_block.items():
+                    if isinstance(qto_data, dict):
+                        yield str(qto_name), qto_data
 
         def _nested_lookup(
             mapping: dict[str, Any], dotted_path: str

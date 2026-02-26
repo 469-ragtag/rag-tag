@@ -99,6 +99,7 @@ def _fuzzy_find_nodes_impl(
                     "class_": data.get("class_"),
                     "score": round(best_score, 1),
                     "properties": props,
+                    "payload": payload,
                 }
             )
 
@@ -372,6 +373,17 @@ def register_graph_tools(agent: Any) -> None:
                     if not isinstance(pset_props, dict):
                         continue
                     _collect_pset_leaf_keys(str(pset_name), pset_props)
+
+            # Also enumerate dotted keys from the Quantities block in payload.
+            # Quantities (e.g. Qto_WallBaseQuantities) are stored at
+            # payload["Quantities"], not inside PropertySets.
+            quantities_block = payload.get("Quantities") or {}
+            if not isinstance(quantities_block, dict):
+                continue
+            for qto_name, qto_data in quantities_block.items():
+                if not isinstance(qto_data, dict):
+                    continue
+                _collect_pset_leaf_keys(str(qto_name), qto_data)
 
         result: dict[str, Any] = {
             "status": "ok",
