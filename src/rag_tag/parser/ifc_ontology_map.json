@@ -1,0 +1,686 @@
+{
+  "IfcWall": {
+    "BaseClasses": [
+      "IfcBuildingElement",
+      "IfcElement",
+      "IfcProduct",
+      "IfcObject",
+      "IfcObjectDefinition",
+      "IfcRoot"
+    ],
+    "ValidPsets": [
+      "Pset_WallCommon",
+      "Qto_WallBaseQuantities"
+    ]
+  },
+  "IfcSlab": {
+    "BaseClasses": [
+      "IfcBuildingElement",
+      "IfcElement",
+      "IfcProduct",
+      "IfcObject",
+      "IfcObjectDefinition",
+      "IfcRoot"
+    ],
+    "ValidPsets": [
+      "Pset_SlabCommon",
+      "Qto_SlabBaseQuantities"
+    ]
+  },
+  "IfcDoor": {
+    "BaseClasses": [
+      "IfcBuildingElement",
+      "IfcElement",
+      "IfcProduct",
+      "IfcObject",
+      "IfcObjectDefinition",
+      "IfcRoot"
+    ],
+    "ValidPsets": [
+      "Pset_DoorCommon",
+      "Qto_DoorBaseQuantities"
+    ]
+  },
+  "IfcWindow": {
+    "BaseClasses": [
+      "IfcBuildingElement",
+      "IfcElement",
+      "IfcProduct",
+      "IfcObject",
+      "IfcObjectDefinition",
+      "IfcRoot"
+    ],
+    "ValidPsets": [
+      "Pset_WindowCommon",
+      "Qto_WindowBaseQuantities"
+    ]
+  },
+  "IfcColumn": {
+    "BaseClasses": [
+      "IfcBuildingElement",
+      "IfcElement",
+      "IfcProduct",
+      "IfcObject",
+      "IfcObjectDefinition",
+      "IfcRoot"
+    ],
+    "ValidPsets": [
+      "Pset_ColumnCommon",
+      "Qto_ColumnBaseQuantities"
+    ]
+  },
+  "IfcBeam": {
+    "BaseClasses": [
+      "IfcBuildingElement",
+      "IfcElement",
+      "IfcProduct",
+      "IfcObject",
+      "IfcObjectDefinition",
+      "IfcRoot"
+    ],
+    "ValidPsets": [
+      "Pset_BeamCommon",
+      "Qto_BeamBaseQuantities"
+    ]
+  },
+  "IfcRoof": {
+    "BaseClasses": [
+      "IfcBuildingElement",
+      "IfcElement",
+      "IfcProduct",
+      "IfcObject",
+      "IfcObjectDefinition",
+      "IfcRoot"
+    ],
+    "ValidPsets": [
+      "Pset_RoofCommon",
+      "Qto_RoofBaseQuantities"
+    ]
+  },
+  "IfcStair": {
+    "BaseClasses": [
+      "IfcBuildingElement",
+      "IfcElement",
+      "IfcProduct",
+      "IfcObject",
+      "IfcObjectDefinition",
+      "IfcRoot"
+    ],
+    "ValidPsets": [
+      "Pset_StairCommon",
+      "Qto_StairBaseQuantities"
+    ]
+  },
+  "IfcRamp": {
+    "BaseClasses": [
+      "IfcBuildingElement",
+      "IfcElement",
+      "IfcProduct",
+      "IfcObject",
+      "IfcObjectDefinition",
+      "IfcRoot"
+    ],
+    "ValidPsets": [
+      "Pset_RampCommon",
+      "Qto_RampBaseQuantities"
+    ]
+  },
+  "IfcFurniture": {
+    "BaseClasses": [
+      "IfcFurnishingElement",
+      "IfcElement",
+      "IfcProduct",
+      "IfcObject",
+      "IfcObjectDefinition",
+      "IfcRoot"
+    ],
+    "ValidPsets": [
+      "Pset_FurnitureTypeCommon"
+    ]
+  },
+  "IfcBuildingElementProxy": {
+    "BaseClasses": [
+      "IfcBuildingElement",
+      "IfcElement",
+      "IfcProduct",
+      "IfcObject",
+      "IfcObjectDefinition",
+      "IfcRoot"
+    ],
+    "ValidPsets": [
+      "Pset_BuildingElementProxyCommon"
+    ]
+  },
+  "IfcCovering": {
+    "BaseClasses": [
+      "IfcBuildingElement",
+      "IfcElement",
+      "IfcProduct",
+      "IfcObject",
+      "IfcObjectDefinition",
+      "IfcRoot"
+    ],
+    "ValidPsets": [
+      "Pset_CoveringCommon",
+      "Qto_CoveringBaseQuantities"
+    ]
+  },
+  "IfcRailing": {
+    "BaseClasses": [
+      "IfcBuildingElement",
+      "IfcElement",
+      "IfcProduct",
+      "IfcObject",
+      "IfcObjectDefinition",
+      "IfcRoot"
+    ],
+    "ValidPsets": [
+      "Pset_RailingCommon"
+    ]
+  },
+  "IfcFlowSegment": {
+    "BaseClasses": [
+      "IfcDistributionFlowElement",
+      "IfcDistributionElement",
+      "IfcElement",
+      "IfcProduct",
+      "IfcObject",
+      "IfcObjectDefinition",
+      "IfcRoot"
+    ],
+    "ValidPsets": [
+      "Pset_FlowSegmentCommon"
+    ]
+  },
+  "IfcFlowTerminal": {
+    "BaseClasses": [
+      "IfcDistributionFlowElement",
+      "IfcDistributionElement",
+      "IfcElement",
+      "IfcProduct",
+      "IfcObject",
+      "IfcObjectDefinition",
+      "IfcRoot"
+    ],
+    "ValidPsets": [
+      "Pset_FlowTerminalCommon"
+    ]
+  },
+  "IfcFlowFitting": {
+    "BaseClasses": [
+      "IfcDistributionFlowElement",
+      "IfcDistributionElement",
+      "IfcElement",
+      "IfcProduct",
+      "IfcObject",
+      "IfcObjectDefinition",
+      "IfcRoot"
+    ],
+    "ValidPsets": [
+      "Pset_FlowFittingCommon"
+    ]
+  },
+  "IfcDuctSegment": {
+    "BaseClasses": [
+      "IfcFlowSegment",
+      "IfcDistributionFlowElement",
+      "IfcDistributionElement",
+      "IfcElement",
+      "IfcProduct",
+      "IfcObject",
+      "IfcObjectDefinition",
+      "IfcRoot"
+    ],
+    "ValidPsets": [
+      "Pset_DuctSegmentCommon",
+      "Qto_DuctSegmentBaseQuantities"
+    ]
+  },
+  "IfcPipeSegment": {
+    "BaseClasses": [
+      "IfcFlowSegment",
+      "IfcDistributionFlowElement",
+      "IfcDistributionElement",
+      "IfcElement",
+      "IfcProduct",
+      "IfcObject",
+      "IfcObjectDefinition",
+      "IfcRoot"
+    ],
+    "ValidPsets": [
+      "Pset_PipeSegmentCommon",
+      "Qto_PipeSegmentBaseQuantities"
+    ]
+  },
+  "IfcMember": {
+    "BaseClasses": [
+      "IfcBuildingElement",
+      "IfcElement",
+      "IfcProduct",
+      "IfcObject",
+      "IfcObjectDefinition",
+      "IfcRoot"
+    ],
+    "ValidPsets": [
+      "Pset_MemberCommon",
+      "Qto_MemberBaseQuantities"
+    ]
+  },
+  "IfcPlate": {
+    "BaseClasses": [
+      "IfcBuildingElement",
+      "IfcElement",
+      "IfcProduct",
+      "IfcObject",
+      "IfcObjectDefinition",
+      "IfcRoot"
+    ],
+    "ValidPsets": [
+      "Pset_PlateCommon",
+      "Qto_PlateBaseQuantities"
+    ]
+  },
+  "IfcFooting": {
+    "BaseClasses": [
+      "IfcBuildingElement",
+      "IfcElement",
+      "IfcProduct",
+      "IfcObject",
+      "IfcObjectDefinition",
+      "IfcRoot"
+    ],
+    "ValidPsets": [
+      "Pset_FootingCommon"
+    ]
+  },
+  "IfcPile": {
+    "BaseClasses": [
+      "IfcBuildingElement",
+      "IfcElement",
+      "IfcProduct",
+      "IfcObject",
+      "IfcObjectDefinition",
+      "IfcRoot"
+    ],
+    "ValidPsets": [
+      "Pset_PileCommon"
+    ]
+  },
+  "IfcBuildingStorey": {
+    "BaseClasses": [
+      "IfcSpatialStructureElement",
+      "IfcSpatialElement",
+      "IfcProduct",
+      "IfcObject",
+      "IfcObjectDefinition",
+      "IfcRoot"
+    ],
+    "ValidPsets": [
+      "Pset_BuildingStoreyCommon",
+      "Qto_BuildingStoreyBaseQuantities"
+    ]
+  },
+  "IfcSpace": {
+    "BaseClasses": [
+      "IfcSpatialStructureElement",
+      "IfcSpatialElement",
+      "IfcProduct",
+      "IfcObject",
+      "IfcObjectDefinition",
+      "IfcRoot"
+    ],
+    "ValidPsets": [
+      "Pset_SpaceCommon",
+      "Qto_SpaceBaseQuantities"
+    ]
+  },
+  "IfcZone": {
+    "BaseClasses": [
+      "IfcSystem",
+      "IfcGroup",
+      "IfcObject",
+      "IfcObjectDefinition",
+      "IfcRoot"
+    ],
+    "ValidPsets": [
+      "Pset_ZoneCommon"
+    ]
+  },
+  "IfcBuilding": {
+    "BaseClasses": [
+      "IfcSpatialStructureElement",
+      "IfcSpatialElement",
+      "IfcProduct",
+      "IfcObject",
+      "IfcObjectDefinition",
+      "IfcRoot"
+    ],
+    "ValidPsets": [
+      "Pset_BuildingCommon",
+      "Qto_BuildingBaseQuantities"
+    ]
+  },
+  "IfcSite": {
+    "BaseClasses": [
+      "IfcSpatialStructureElement",
+      "IfcSpatialElement",
+      "IfcProduct",
+      "IfcObject",
+      "IfcObjectDefinition",
+      "IfcRoot"
+    ],
+    "ValidPsets": [
+      "Pset_SiteCommon"
+    ]
+  },
+  "IfcProject": {
+    "BaseClasses": [
+      "IfcContext",
+      "IfcObjectDefinition",
+      "IfcRoot"
+    ],
+    "ValidPsets": [
+      "Pset_ProjectCommon"
+    ]
+  },
+  "Pset_WallCommon": {
+    "Reference": "IfcLabel",
+    "AcousticRating": "IfcLabel",
+    "FireRating": "IfcLabel",
+    "Combustible": "IfcLabel",
+    "SurfaceSpreadOfFlame": "IfcLabel",
+    "ThermalTransmittance": "IfcLabel",
+    "IsExternal": "IfcLabel",
+    "ExtendToStructure": "IfcLabel",
+    "LoadBearing": "IfcLabel",
+    "Compartmentation": "IfcLabel"
+  },
+  "Qto_WallBaseQuantities": {
+    "Length": "IfcLabel",
+    "Width": "IfcLabel",
+    "Height": "IfcLabel",
+    "GrossFootprintArea": "IfcLabel",
+    "NetFootprintArea": "IfcLabel",
+    "GrossSideArea": "IfcLabel",
+    "NetSideArea": "IfcLabel",
+    "GrossVolume": "IfcLabel",
+    "NetVolume": "IfcLabel"
+  },
+  "Pset_SlabCommon": {
+    "Reference": "IfcLabel",
+    "AcousticRating": "IfcLabel",
+    "FireRating": "IfcLabel",
+    "Combustible": "IfcLabel",
+    "SurfaceSpreadOfFlame": "IfcLabel",
+    "ThermalTransmittance": "IfcLabel",
+    "IsExternal": "IfcLabel",
+    "LoadBearing": "IfcLabel",
+    "PitchAngle": "IfcLabel"
+  },
+  "Qto_SlabBaseQuantities": {
+    "Depth": "IfcLabel",
+    "Perimeter": "IfcLabel",
+    "GrossArea": "IfcLabel",
+    "NetArea": "IfcLabel",
+    "GrossVolume": "IfcLabel",
+    "NetVolume": "IfcLabel"
+  },
+  "Pset_DoorCommon": {
+    "Reference": "IfcLabel",
+    "FireRating": "IfcLabel",
+    "AcousticRating": "IfcLabel",
+    "SecurityRating": "IfcLabel",
+    "IsExternal": "IfcLabel",
+    "HandicapAccessible": "IfcLabel",
+    "ThermalTransmittance": "IfcLabel",
+    "WaterTightnessRating": "IfcLabel"
+  },
+  "Qto_DoorBaseQuantities": {
+    "Width": "IfcLabel",
+    "Height": "IfcLabel",
+    "Perimeter": "IfcLabel",
+    "Area": "IfcLabel"
+  },
+  "Pset_WindowCommon": {
+    "Reference": "IfcLabel",
+    "FireRating": "IfcLabel",
+    "AcousticRating": "IfcLabel",
+    "ThermalTransmittance": "IfcLabel",
+    "IsExternal": "IfcLabel",
+    "SecurityRating": "IfcLabel",
+    "SolarHeatGainCoefficient": "IfcLabel",
+    "MeanSolarTransmittance": "IfcLabel",
+    "GlazingAreaFraction": "IfcLabel"
+  },
+  "Qto_WindowBaseQuantities": {
+    "Width": "IfcLabel",
+    "Height": "IfcLabel",
+    "Perimeter": "IfcLabel",
+    "Area": "IfcLabel"
+  },
+  "Pset_ColumnCommon": {
+    "Reference": "IfcLabel",
+    "LoadBearing": "IfcLabel",
+    "FireRating": "IfcLabel",
+    "IsExternal": "IfcLabel"
+  },
+  "Qto_ColumnBaseQuantities": {
+    "Length": "IfcLabel",
+    "CrossSectionArea": "IfcLabel",
+    "GrossVolume": "IfcLabel",
+    "NetVolume": "IfcLabel",
+    "GrossSurfaceArea": "IfcLabel",
+    "NetSurfaceArea": "IfcLabel"
+  },
+  "Pset_BeamCommon": {
+    "Reference": "IfcLabel",
+    "LoadBearing": "IfcLabel",
+    "FireRating": "IfcLabel",
+    "IsExternal": "IfcLabel",
+    "Span": "IfcLabel"
+  },
+  "Qto_BeamBaseQuantities": {
+    "Length": "IfcLabel",
+    "CrossSectionArea": "IfcLabel",
+    "GrossVolume": "IfcLabel",
+    "NetVolume": "IfcLabel",
+    "GrossSurfaceArea": "IfcLabel",
+    "NetSurfaceArea": "IfcLabel"
+  },
+  "Pset_RoofCommon": {
+    "Reference": "IfcLabel",
+    "FireRating": "IfcLabel",
+    "IsExternal": "IfcLabel",
+    "ThermalTransmittance": "IfcLabel",
+    "AcousticRating": "IfcLabel"
+  },
+  "Qto_RoofBaseQuantities": {
+    "GrossArea": "IfcLabel",
+    "NetArea": "IfcLabel",
+    "GrossVolume": "IfcLabel",
+    "NetVolume": "IfcLabel"
+  },
+  "Pset_StairCommon": {
+    "Reference": "IfcLabel",
+    "FireRating": "IfcLabel",
+    "IsExternal": "IfcLabel",
+    "HandicapAccessible": "IfcLabel",
+    "NumberOfRiser": "IfcLabel",
+    "NumberOfTreads": "IfcLabel",
+    "RiserHeight": "IfcLabel",
+    "TreadLength": "IfcLabel"
+  },
+  "Qto_StairBaseQuantities": {
+    "Length": "IfcLabel",
+    "GrossArea": "IfcLabel",
+    "NetArea": "IfcLabel",
+    "GrossVolume": "IfcLabel",
+    "NetVolume": "IfcLabel"
+  },
+  "Pset_RampCommon": {
+    "Reference": "IfcLabel",
+    "FireRating": "IfcLabel",
+    "IsExternal": "IfcLabel",
+    "HandicapAccessible": "IfcLabel"
+  },
+  "Qto_RampBaseQuantities": {
+    "Length": "IfcLabel",
+    "GrossArea": "IfcLabel",
+    "NetArea": "IfcLabel",
+    "GrossVolume": "IfcLabel",
+    "NetVolume": "IfcLabel"
+  },
+  "Pset_FurnitureTypeCommon": {
+    "Reference": "IfcLabel",
+    "NominalLength": "IfcLabel",
+    "NominalWidth": "IfcLabel",
+    "NominalHeight": "IfcLabel",
+    "Style": "IfcLabel"
+  },
+  "Pset_BuildingElementProxyCommon": {
+    "Reference": "IfcLabel",
+    "LoadBearing": "IfcLabel",
+    "FireRating": "IfcLabel",
+    "IsExternal": "IfcLabel"
+  },
+  "Pset_CoveringCommon": {
+    "Reference": "IfcLabel",
+    "AcousticRating": "IfcLabel",
+    "FireRating": "IfcLabel",
+    "FlammabilityRating": "IfcLabel",
+    "SurfaceSpreadOfFlame": "IfcLabel",
+    "ThermalTransmittance": "IfcLabel",
+    "IsExternal": "IfcLabel"
+  },
+  "Qto_CoveringBaseQuantities": {
+    "GrossArea": "IfcLabel",
+    "NetArea": "IfcLabel",
+    "Width": "IfcLabel"
+  },
+  "Pset_RailingCommon": {
+    "Reference": "IfcLabel",
+    "IsExternal": "IfcLabel"
+  },
+  "Pset_FlowSegmentCommon": {
+    "Reference": "IfcLabel"
+  },
+  "Pset_FlowTerminalCommon": {
+    "Reference": "IfcLabel"
+  },
+  "Pset_FlowFittingCommon": {
+    "Reference": "IfcLabel"
+  },
+  "Pset_DuctSegmentCommon": {
+    "Reference": "IfcLabel",
+    "Shape": "IfcLabel",
+    "NominalDiameter": "IfcLabel",
+    "NominalWidth": "IfcLabel",
+    "NominalHeight": "IfcLabel"
+  },
+  "Qto_DuctSegmentBaseQuantities": {
+    "Length": "IfcLabel",
+    "GrossWeight": "IfcLabel"
+  },
+  "Pset_PipeSegmentCommon": {
+    "Reference": "IfcLabel",
+    "Shape": "IfcLabel",
+    "NominalDiameter": "IfcLabel"
+  },
+  "Qto_PipeSegmentBaseQuantities": {
+    "Length": "IfcLabel",
+    "GrossWeight": "IfcLabel"
+  },
+  "Pset_MemberCommon": {
+    "Reference": "IfcLabel",
+    "LoadBearing": "IfcLabel",
+    "FireRating": "IfcLabel",
+    "IsExternal": "IfcLabel",
+    "Span": "IfcLabel"
+  },
+  "Qto_MemberBaseQuantities": {
+    "Length": "IfcLabel",
+    "GrossVolume": "IfcLabel",
+    "NetVolume": "IfcLabel",
+    "GrossSurfaceArea": "IfcLabel",
+    "NetSurfaceArea": "IfcLabel"
+  },
+  "Pset_PlateCommon": {
+    "Reference": "IfcLabel",
+    "AcousticRating": "IfcLabel",
+    "FireRating": "IfcLabel",
+    "IsExternal": "IfcLabel"
+  },
+  "Qto_PlateBaseQuantities": {
+    "GrossArea": "IfcLabel",
+    "NetArea": "IfcLabel",
+    "GrossVolume": "IfcLabel",
+    "NetVolume": "IfcLabel"
+  },
+  "Pset_FootingCommon": {
+    "Reference": "IfcLabel",
+    "LoadBearing": "IfcLabel",
+    "IsExternal": "IfcLabel"
+  },
+  "Pset_PileCommon": {
+    "Reference": "IfcLabel",
+    "LoadBearing": "IfcLabel",
+    "FireRating": "IfcLabel",
+    "IsExternal": "IfcLabel"
+  },
+  "Pset_BuildingStoreyCommon": {
+    "Reference": "IfcLabel",
+    "EntranceLevel": "IfcLabel",
+    "AboveGround": "IfcLabel",
+    "SprinklerProtection": "IfcLabel",
+    "SprinklerProtectionType": "IfcLabel"
+  },
+  "Qto_BuildingStoreyBaseQuantities": {
+    "GrossFloorArea": "IfcLabel",
+    "NetFloorArea": "IfcLabel",
+    "GrossPerimeter": "IfcLabel"
+  },
+  "Pset_SpaceCommon": {
+    "Reference": "IfcLabel",
+    "IsExternal": "IfcLabel",
+    "GrossPlannedArea": "IfcLabel",
+    "NetPlannedArea": "IfcLabel",
+    "PubliclyAccessible": "IfcLabel",
+    "HandicapAccessible": "IfcLabel"
+  },
+  "Qto_SpaceBaseQuantities": {
+    "Height": "IfcLabel",
+    "NetFloorArea": "IfcLabel",
+    "GrossFloorArea": "IfcLabel",
+    "NetCeilingArea": "IfcLabel",
+    "GrossCeilingArea": "IfcLabel",
+    "NetWallArea": "IfcLabel",
+    "GrossWallArea": "IfcLabel"
+  },
+  "Pset_ZoneCommon": {
+    "Reference": "IfcLabel",
+    "Category": "IfcLabel",
+    "NetPlannedArea": "IfcLabel"
+  },
+  "Pset_BuildingCommon": {
+    "Reference": "IfcLabel",
+    "NumberOfStoreys": "IfcLabel",
+    "OccupancyType": "IfcLabel",
+    "IsLandmarked": "IfcLabel",
+    "MainFireUse": "IfcLabel",
+    "AncillaryFireUse": "IfcLabel"
+  },
+  "Qto_BuildingBaseQuantities": {
+    "GrossFloorArea": "IfcLabel",
+    "NetFloorArea": "IfcLabel",
+    "GrossVolume": "IfcLabel"
+  },
+  "Pset_SiteCommon": {
+    "Reference": "IfcLabel",
+    "BuildableArea": "IfcLabel",
+    "TotalArea": "IfcLabel",
+    "BuildingHeightLimit": "IfcLabel"
+  },
+  "Pset_ProjectCommon": {
+    "Reference": "IfcLabel"
+  }
+}

@@ -76,11 +76,21 @@ def _fuzzy_find_nodes_impl(
                 continue
 
         props: dict[str, Any] = data.get("properties", {}) or {}
+        payload: dict[str, Any] = data.get("payload") or {}
         candidates = [
             str(data.get("label", "")),
             str(props.get("ObjectType", "")),
             str(props.get("Description", "")),
+            str(payload.get("Name", "")),
+            str(payload.get("IfcType", "")),
+            str(payload.get("ClassRaw", "")),
         ]
+
+        # Include individual material names so queries like
+        # "made of gypsum fiber-board" can surface the right element.
+        for mat_name in props.get("Materials") or payload.get("Materials") or []:
+            if mat_name:
+                candidates.append(str(mat_name))
 
         best_score = max(
             (fuzz.WRatio(query, c) for c in candidates if c and c != "None"),
@@ -146,6 +156,16 @@ def register_graph_tools(agent: Any) -> None:
         Multi-word class_ input is treated as a descriptive query and routed to
         fuzzy_find_nodes. class_ is fuzzy-normalised against classes present in
         the graph before querying.
+
+        ``property_filters`` supports two key formats:
+        - Flat key (e.g. ``{"Name": "Wall A"}``): matched against the node's
+          direct ``properties`` dict first, then searched across all psets.
+        - Dotted key (e.g. ``{"Pset_WallCommon.FireRating": "EI 90"}``): targets
+          a specific named PropertySet.  Use ``list_property_keys`` to discover
+          valid keys.
+
+        A missing key never matches an expected value of ``None``; filters only
+        pass when the key is explicitly present with the expected value.
         """
         G: nx.DiGraph = ctx.deps
 
@@ -296,20 +316,79 @@ def register_graph_tools(agent: Any) -> None:
         class_: str | None = None,
         sample_values: bool = False,
     ) -> dict[str, Any]:
-        """List property keys in the graph, optionally scoped to one IFC class."""
+        """List property keys available in the graph, optionally scoped to one class.
+
+        Returns two kinds of keys:
+        - Flat keys (e.g. ``GlobalId``, ``Name``) sourced from the node's
+          ``properties`` dict.
+        - Dotted keys (e.g. ``Pset_WallCommon.FireRating``) sourced from nested
+          ``PropertySets.Official`` / ``PropertySets.Custom`` blocks in the node
+          payload.
+
+        Both key formats are accepted by ``find_nodes`` ``property_filters``.
+        Use this tool first to discover valid filter keys before calling
+        ``find_nodes`` with property constraints.
+        """
         G: nx.DiGraph = ctx.deps
         key_samples: dict[str, list[Any]] = {}
+
+        def _record_key(key: str, value: Any) -> None:
+            if key not in key_samples:
+                key_samples[key] = []
+            if sample_values and len(key_samples[key]) < 3:
+                key_samples[key].append(value)
+
+        def _collect_pset_leaf_keys(
+            pset_name: str,
+            node: dict[str, Any],
+            path_prefix: str = "",
+        ) -> None:
+            for raw_key, raw_value in node.items():
+                key_part = str(raw_key)
+                path = f"{path_prefix}.{key_part}" if path_prefix else key_part
+                if isinstance(raw_value, dict):
+                    _collect_pset_leaf_keys(pset_name, raw_value, path)
+                else:
+                    _record_key(f"{pset_name}.{path}", raw_value)
 
         for _, data in G.nodes(data=True):
             if class_ is not None:
                 if str(data.get("class_", "")).lower() != class_.lower():
                     continue
-            props: dict[str, Any] = data.get("properties", {}) or {}
+            props = data.get("properties") or {}
+            if not isinstance(props, dict):
+                props = {}
             for key, value in props.items():
-                if key not in key_samples:
-                    key_samples[key] = []
-                if sample_values and len(key_samples[key]) < 3:
-                    key_samples[key].append(value)
+                _record_key(str(key), value)
+
+            # Also enumerate dotted keys from nested PropertySets in payload.
+            payload = data.get("payload") or {}
+            if not isinstance(payload, dict):
+                continue
+
+            pset_block = payload.get("PropertySets") or {}
+            if not isinstance(pset_block, dict):
+                continue
+
+            for section in ("Official", "Custom"):
+                section_block = pset_block.get(section) or {}
+                if not isinstance(section_block, dict):
+                    continue
+                for pset_name, pset_props in section_block.items():
+                    if not isinstance(pset_props, dict):
+                        continue
+                    _collect_pset_leaf_keys(str(pset_name), pset_props)
+
+            # Also enumerate dotted keys from the Quantities block in payload.
+            # Quantities (e.g. Qto_WallBaseQuantities) are stored at
+            # payload["Quantities"], not inside PropertySets.
+            quantities_block = payload.get("Quantities") or {}
+            if not isinstance(quantities_block, dict):
+                continue
+            for qto_name, qto_data in quantities_block.items():
+                if not isinstance(qto_data, dict):
+                    continue
+                _collect_pset_leaf_keys(str(qto_name), qto_data)
 
         result: dict[str, Any] = {
             "status": "ok",
