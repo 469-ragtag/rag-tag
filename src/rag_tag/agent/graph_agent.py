@@ -2,15 +2,24 @@
 
 from __future__ import annotations
 
+import logging
 import re
 
 import networkx as nx
 from pydantic_ai import Agent, UnexpectedModelBehavior
+from pydantic_ai.exceptions import ModelHTTPError
 
 from rag_tag.llm.pydantic_ai import get_agent_model
 
 from .graph_tools import register_graph_tools
 from .models import GraphAnswer
+
+_logger = logging.getLogger(__name__)
+
+# Maximum number of *additional* retry attempts when the provider returns
+# INVALID_TOOL_GENERATION (HTTP 422).  The first attempt is attempt 0, so the
+# total number of calls is _MAX_INVALID_TOOL_RETRIES + 1.
+_MAX_INVALID_TOOL_RETRIES = 2
 
 # ---------------------------------------------------------------------------
 # System prompt
@@ -172,6 +181,8 @@ Use only `data` for reasoning. On error, try an alternative tool path.
 - `data`: optional structured payload (element IDs, counts, sample records).
 - `warning`: use only for uncertainty, fallback notices, or partial results.
   Must not contradict `answer`.
+- `final_result` args MUST be a single JSON object matching `GraphAnswer` —
+  never a list or array wrapper.
 """.strip()
 
 
@@ -230,40 +241,126 @@ class GraphAgent:
             Result dict with 'answer' / 'data' / 'warning' keys, or an
             'error' key if the agent run fails entirely.
         """
-        try:
-            result = self._agent.run_sync(question, deps=graph)
-            output = result.output
-            answer = _sanitize_model_text(output.answer) or ""
-            warning = _sanitize_model_text(output.warning)
+        last_invalid_tool_exc: ModelHTTPError | None = None
 
-            response: dict[str, object] = {"answer": answer}
-            if output.data:
-                response["data"] = output.data
-            if warning:
-                response["warning"] = warning
-            response["answer"] = _polish_answer_with_data(
-                str(response.get("answer", "")),
-                response.get("data"),
-            )
-            return response
+        for attempt in range(_MAX_INVALID_TOOL_RETRIES + 1):
+            try:
+                result = self._agent.run_sync(question, deps=graph)
+                output = result.output
+                answer = _sanitize_model_text(output.answer) or ""
+                warning = _sanitize_model_text(output.warning)
 
-        except UnexpectedModelBehavior as exc:
-            # The model failed to produce a valid structured output even after
-            # all output_retries. Surface a safe fallback so the CLI always
-            # has something to display.
-            raw = getattr(exc, "body", None) or str(exc)
-            raw_snippet = str(raw)[:400] if raw else ""
-            return {
-                "answer": (
-                    "I was unable to produce a well-structured answer for this "
-                    "question. Please try rephrasing or ask a simpler question."
-                ),
-                "warning": (f"Output validation failed after all retries: {exc}"),
-                "data": {"raw_response_snippet": raw_snippet} if raw_snippet else None,
-            }
+                response: dict[str, object] = {"answer": answer}
+                if output.data:
+                    response["data"] = output.data
+                if warning:
+                    response["warning"] = warning
+                response["answer"] = _polish_answer_with_data(
+                    str(response.get("answer", "")),
+                    response.get("data"),
+                )
+                return response
 
-        except Exception as exc:
-            return {"error": f"Agent execution failed: {exc}"}
+            except ModelHTTPError as exc:
+                if _is_invalid_tool_generation(exc):
+                    # Cohere's INVALID_TOOL_GENERATION is non-deterministic:
+                    # the model occasionally produces a malformed tool-call
+                    # argument that fails its own schema validation.  Retrying
+                    # the same call typically succeeds on a subsequent attempt.
+                    last_invalid_tool_exc = exc
+                    _logger.warning(
+                        "INVALID_TOOL_GENERATION from provider (attempt %d/%d): %s",
+                        attempt + 1,
+                        _MAX_INVALID_TOOL_RETRIES + 1,
+                        exc,
+                    )
+                    continue  # retry
+
+                # Non-INVALID_TOOL_GENERATION HTTP error — surface immediately.
+                return {"error": f"Agent execution failed: {exc}"}
+
+            except UnexpectedModelBehavior as exc:
+                # The model failed to produce a valid structured output even
+                # after all output_retries.  Attempt one targeted repair pass
+                # with the validation error embedded in the prompt, then fall
+                # back to a safe answer if that also fails.
+                raw = getattr(exc, "body", None) or str(exc)
+                raw_snippet = str(raw)[:400] if raw else ""
+                _logger.warning(
+                    "Output validation failed; attempting 1 repair retry: %s",
+                    exc,
+                )
+                repair_prompt = _build_repair_prompt(question, str(exc))
+                try:
+                    repair_result = self._agent.run_sync(repair_prompt, deps=graph)
+                    repair_output = repair_result.output
+                    repair_answer = _sanitize_model_text(repair_output.answer) or ""
+                    repair_warning = _sanitize_model_text(repair_output.warning)
+                    repair_response: dict[str, object] = {"answer": repair_answer}
+                    if repair_output.data:
+                        repair_response["data"] = repair_output.data
+                    if repair_warning:
+                        repair_response["warning"] = repair_warning
+                    repair_response["answer"] = _polish_answer_with_data(
+                        str(repair_response.get("answer", "")),
+                        repair_response.get("data"),
+                    )
+                    return repair_response
+                except Exception as recovery_exc:
+                    _logger.error(
+                        "Repair retry also failed; returning safe fallback: %s",
+                        recovery_exc,
+                    )
+                return {
+                    "answer": (
+                        "I was unable to produce a well-structured answer for "
+                        "this question. Please try rephrasing or ask a simpler "
+                        "question."
+                    ),
+                    "warning": (f"Output validation failed after all retries: {exc}"),
+                    "data": (
+                        {"raw_response_snippet": raw_snippet} if raw_snippet else None
+                    ),
+                }
+
+            except Exception as exc:
+                return {"error": f"Agent execution failed: {exc}"}
+
+        # All INVALID_TOOL_GENERATION retry attempts exhausted.
+        _logger.error(
+            "All %d INVALID_TOOL_GENERATION attempt(s) failed for question: %r",
+            _MAX_INVALID_TOOL_RETRIES + 1,
+            question,
+        )
+        return {
+            "answer": (
+                "The graph agent could not complete this query due to a repeated "
+                "tool-generation error from the model provider. "
+                "Please try rephrasing your question or ask a simpler query."
+            ),
+            "warning": (
+                f"Provider returned INVALID_TOOL_GENERATION on all "
+                f"{_MAX_INVALID_TOOL_RETRIES + 1} attempt(s). "
+                f"Last error: {last_invalid_tool_exc}"
+            ),
+        }
+
+
+def _is_invalid_tool_generation(exc: ModelHTTPError) -> bool:
+    """Return True when *exc* is a Cohere INVALID_TOOL_GENERATION (HTTP 422).
+
+    Cohere surfaces this as a 422 response whose body contains an
+    ``error_type`` field equal to ``"INVALID_TOOL_GENERATION"``.  The body
+    may be a dict (already parsed by pydantic-ai) or a raw string.
+    """
+    if exc.status_code != 422:
+        return False
+    body = exc.body
+    if isinstance(body, dict):
+        return str(body.get("error_type", "")).upper() == "INVALID_TOOL_GENERATION"
+    if isinstance(body, str):
+        return "INVALID_TOOL_GENERATION" in body.upper()
+    return False
 
 
 def _polish_answer_with_data(answer: str, data: object | None) -> str:
@@ -291,6 +388,35 @@ def _sanitize_model_text(value: object | None) -> str | None:
     text = re.sub(r"</?co:[^>]+>", "", text)
     text = re.sub(r"\s+", " ", text).strip()
     return text or None
+
+
+def _build_repair_prompt(question: str, error_snippet: str) -> str:
+    """Build a targeted repair prompt for output-shape validation failures.
+
+    Embeds the validation error so the model can make a specific correction
+    rather than guessing what went wrong.
+
+    Args:
+        question: The original user question to re-answer.
+        error_snippet: The validation error string (will be truncated to 300 chars).
+
+    Returns:
+        Augmented question with an explicit schema-repair instruction.
+    """
+    trimmed_error = error_snippet[:300]
+    return (
+        f"{question}\n\n"
+        "CORRECTION REQUIRED: Your previous response failed output schema "
+        f"validation with this error: {trimmed_error!r}\n\n"
+        "Your final_result call MUST pass a single JSON object — "
+        "not a list or array — with exactly these keys:\n"
+        "  - answer  (string, required)\n"
+        "  - data    (object or null, optional)\n"
+        "  - warning (string or null, optional)\n\n"
+        "Do NOT wrap the object in an array. "
+        "Do NOT include extra keys or tool-call wrappers in the payload. "
+        "Call final_result with a plain JSON object as its sole argument."
+    )
 
 
 def _extract_primary_list(data: dict[str, object]) -> list[str]:
