@@ -190,6 +190,8 @@ def _flat_properties(rec: dict) -> dict:
         "Level": (rec.get("Hierarchy") or {}).get("Level"),
         "TypeName": rec.get("TypeName"),
         "PredefinedType": rec.get("PredefinedType"),
+        # Materials is a list[str]; preserved as-is for membership filtering.
+        "Materials": rec.get("Materials") or [],
     }
 
 

@@ -287,6 +287,26 @@ def extract_element(
     except Exception:
         pass
 
+    # Material extraction — uses get_materials which handles all material set
+    # types (IfcMaterial, IfcMaterialLayerSet, IfcMaterialConstituentSet, etc.).
+    # Deduplicates while preserving order; degrades gracefully on any failure.
+    materials: list[str] = []
+    try:
+        raw_mats = ifc_element.get_materials(element)
+        seen_mats: set[str] = set()
+        for mat in raw_mats:
+            try:
+                mat_name = getattr(mat, "Name", None)
+                if mat_name:
+                    mat_str = str(mat_name).strip()
+                    if mat_str and mat_str not in seen_mats:
+                        seen_mats.add(mat_str)
+                        materials.append(mat_str)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
     return {
         "GlobalId": str(global_id) if global_id else None,
         "ExpressId": express_id,
@@ -301,6 +321,7 @@ def extract_element(
         "TypeName": type_name,
         "Hierarchy": hierarchy,
         "Geometry": geometry,
+        "Materials": materials,
         "PropertySets": {
             "Official": official_psets,
             "Custom": custom_psets,

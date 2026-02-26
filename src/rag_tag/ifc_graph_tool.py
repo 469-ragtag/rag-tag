@@ -281,7 +281,17 @@ def query_ifc_graph(
             # Flat key: check direct properties first.  Require key existence so
             # that a missing key never accidentally matches an expected None.
             if key in props:
-                if props[key] == expected:
+                prop_val = props[key]
+                # List-valued property (e.g. Materials): support membership
+                # testing so {"Materials": "gypsum"} matches ["gypsum", ...].
+                if isinstance(prop_val, list):
+                    if isinstance(expected, str) and expected in prop_val:
+                        continue
+                    if isinstance(expected, list) and all(
+                        v in prop_val for v in expected
+                    ):
+                        continue
+                elif prop_val == expected:
                     continue
                 # Key exists in flat props but value mismatches; still fall
                 # through to nested psets (same property name may appear there).

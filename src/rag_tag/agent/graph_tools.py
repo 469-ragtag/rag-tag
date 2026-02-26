@@ -86,6 +86,12 @@ def _fuzzy_find_nodes_impl(
             str(payload.get("ClassRaw", "")),
         ]
 
+        # Include individual material names so queries like
+        # "made of gypsum fiber-board" can surface the right element.
+        for mat_name in props.get("Materials") or payload.get("Materials") or []:
+            if mat_name:
+                candidates.append(str(mat_name))
+
         best_score = max(
             (fuzz.WRatio(query, c) for c in candidates if c and c != "None"),
             default=0.0,
