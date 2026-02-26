@@ -36,20 +36,20 @@ uv run rag-tag-generate-ontology-map
 
 ## Quick start
 
-1) Install dependencies
+1. Install dependencies
 
 ```bash
 uv sync --group dev
 ```
 
-2) Optional: configure model keys (`.env` or shell env)
+2. Optional: configure model keys (`.env` or shell env)
 
 ```bash
 GEMINI_API_KEY=...
 COHERE_API_KEY=...
 ```
 
-3) Build artifacts
+3. Build artifacts
 
 ```bash
 uv run rag-tag-generate-ontology-map
@@ -58,7 +58,7 @@ uv run rag-tag-jsonl-to-sql
 uv run rag-tag-jsonl-to-graph
 ```
 
-4) Run interactive agent
+4. Run interactive agent
 
 ```bash
 uv run rag-tag
@@ -118,11 +118,11 @@ src/rag_tag/
 
 - SQLite schema stays flat for reliable LLM SQL generation.
 - Graph nodes include both:
-  - `properties` (flat compatibility view)
-  - `payload` (full nested JSONL record)
+    - `properties` (flat compatibility view)
+    - `payload` (full nested JSONL record)
 - Graph filtering supports:
-  - flat keys (e.g., `FireRating`)
-  - dotted keys (e.g., `Pset_WallCommon.FireRating`)
+    - flat keys (e.g., `FireRating`)
+    - dotted keys (e.g., `Pset_WallCommon.FireRating`)
 
 ## Linting and checks
 
@@ -133,8 +133,3 @@ uv run ruff check .
 
 There is no full pytest suite yet; targeted verification scripts under
 `scripts/` are used during migration hardening.
-
-## Deprecated CSV pipeline
-
-CSV parser modules are retained only as deprecated references and are not part
-of active CLI entry points.

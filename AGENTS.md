@@ -254,7 +254,6 @@ At completion:
     - `router.py`, `rules.py`, `llm.py`, `models.py`, `llm_models.py`
 - `src/rag_tag/parser/`
     - `ifc_to_jsonl.py`, `jsonl_to_sql.py`, `jsonl_to_graph.py`, `parse_bsdd_to_map.py`, `ifc_geometry_parse.py`, `ifc43_schema_registry.py`, `sql_schema.py`
-    - Deprecated modules retained for reference: `_deprecated_ifc_to_csv.py`, `_deprecated_csv_to_sql.py`, `_deprecated_csv_to_graph.py`
 - `scripts/` (e.g., `eval_routing.py`)
 - `output/` runtime-generated artifacts
 - `IFC-Files/` source IFC models

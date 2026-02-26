@@ -78,13 +78,7 @@ Design intent:
 - Keep hierarchy/spatial reasoning in graph tools.
 - Use parameterized SQL (`?` placeholders) only.
 
-## Deprecated CSV pipeline
+## Migration note
 
-Legacy CSV modules are retained for reference only:
-
-- `_deprecated_ifc_to_csv.py`
-- `_deprecated_csv_to_sql.py`
-- `_deprecated_csv_to_graph.py`
-
-They are not the active pipeline and are not exposed via current CLI script
-entry points.
+The legacy CSV parser modules have been removed. The active parser stack is
+JSONL-only (`ifc_to_jsonl.py`, `jsonl_to_sql.py`, `jsonl_to_graph.py`).
