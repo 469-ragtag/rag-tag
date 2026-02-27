@@ -9,10 +9,13 @@ Provides instrumentation for PydanticAI agents and tools, tracking:
 
 from __future__ import annotations
 
+import logging
 import os
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
+
+_logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -67,8 +70,8 @@ def setup_logfire(
     Args:
         enabled: If True, configure and enable Logfire instrumentation.
                  If False, Logfire is not configured (no-op).
-        console: If False, suppress all Logfire console output (warnings and
-                 print messages).  Set to False in TUI mode so that log lines
+        console: If False, suppress Logfire warning output to stderr.
+                 Set to False in TUI mode so that log lines
                  do not corrupt the Textual display.
 
     Returns:
@@ -140,9 +143,9 @@ def setup_logfire(
     if token:
         url = "https://logfire.pydantic.dev"
         if console:
-            print("Logfire instrumentation enabled for PydanticAI")
+            _logger.debug("Logfire instrumentation enabled for PydanticAI")
         return LogfireStatus(enabled=True, cloud_sync=True, url=url)
     else:
         if console:
-            print("Logfire instrumentation enabled (local only, no cloud sync)")
+            _logger.debug("Logfire instrumentation enabled (local only, no cloud sync)")
         return LogfireStatus(enabled=True, cloud_sync=False, url="")
