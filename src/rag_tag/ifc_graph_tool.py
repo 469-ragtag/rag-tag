@@ -6,6 +6,78 @@ from typing import Any, Dict, Iterable
 
 import networkx as nx
 
+LLM_PAYLOAD_MODE = "llm"
+INTERNAL_PAYLOAD_MODE = "internal"
+
+LLM_PROPERTY_ALLOWLIST: tuple[str, ...] = (
+    "GlobalId",
+    "Name",
+    "TypeName",
+    "Level",
+    "PredefinedType",
+    "ObjectType",
+    "Zone",
+)
+MAX_LLM_STRING_CHARS = 160
+REDACTED_COMPLEX_VALUE = "[REDACTED_COMPLEX]"
+TRUNCATED_SUFFIX = "...[truncated]"
+
+
+def _resolve_payload_mode(payload_mode: str) -> str:
+    """Return a supported payload mode, defaulting safely to llm."""
+    if payload_mode == INTERNAL_PAYLOAD_MODE:
+        return INTERNAL_PAYLOAD_MODE
+    return LLM_PAYLOAD_MODE
+
+
+def sanitize_llm_property_value(value: Any) -> Any:
+    """Reduce property value exposure to scalar-safe content."""
+    if value is None:
+        return None
+    if isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, str):
+        if len(value) <= MAX_LLM_STRING_CHARS:
+            return value
+        return f"{value[:MAX_LLM_STRING_CHARS]}{TRUNCATED_SUFFIX}"
+    return REDACTED_COMPLEX_VALUE
+
+
+def sanitize_properties_for_llm(properties: dict[str, Any] | None) -> dict[str, Any]:
+    """Filter properties to an allowlisted, redacted view for LLM tools."""
+    if not isinstance(properties, dict):
+        return {}
+    safe: dict[str, Any] = {}
+    for key in LLM_PROPERTY_ALLOWLIST:
+        if key not in properties:
+            continue
+        safe[key] = sanitize_llm_property_value(properties.get(key))
+    return safe
+
+
+def build_node_payload(
+    node_id: str, node_data: dict[str, Any], *, payload_mode: str = LLM_PAYLOAD_MODE
+) -> dict[str, Any]:
+    """Build node payload with mode-aware property exposure."""
+    mode = _resolve_payload_mode(payload_mode)
+    raw_props = node_data.get("properties")
+    if mode == INTERNAL_PAYLOAD_MODE:
+        properties = raw_props if isinstance(raw_props, dict) else {}
+    else:
+        properties = sanitize_properties_for_llm(raw_props)
+
+    result = {
+        "id": node_id,
+        "label": node_data.get("label"),
+        "class_": node_data.get("class_"),
+        "properties": properties,
+    }
+
+    if mode == INTERNAL_PAYLOAD_MODE:
+        result["payload"] = node_data.get("payload")
+
+    return result
+
 
 def _ok(data: dict) -> dict[str, Any]:
     """Wrap successful tool result in envelope."""
@@ -21,9 +93,14 @@ def _err(message: str, code: str, details: dict | None = None) -> dict[str, Any]
 
 
 def query_ifc_graph(
-    G: nx.DiGraph, action: str, params: Dict[str, Any]
+    G: nx.DiGraph,
+    action: str,
+    params: Dict[str, Any],
+    *,
+    payload_mode: str = LLM_PAYLOAD_MODE,
 ) -> Dict[str, Any]:
     """Controlled interface between the LLM and NetworkX graph."""
+    resolved_payload_mode = _resolve_payload_mode(payload_mode)
 
     def _normalize_class(value: str) -> str:
         v = value.strip()
@@ -189,16 +266,6 @@ def query_ifc_graph(
             seen.add(key)
             yield nbr, edge
 
-    def _node_payload(node_id: str) -> Dict[str, Any]:
-        data = G.nodes[node_id]
-        return {
-            "id": node_id,
-            "label": data.get("label"),
-            "class_": data.get("class_"),
-            "properties": data.get("properties", {}),
-            "payload": data.get("payload"),
-        }
-
     def _apply_property_filters(node_id: str, filters: Dict[str, Any]) -> bool:
         if not filters:
             return True
@@ -358,12 +425,7 @@ def query_ifc_graph(
         for n, d in G.nodes(data=True):
             if str(d.get("class_", "")).lower() == target.lower():
                 matches.append(
-                    {
-                        "id": n,
-                        "label": d.get("label"),
-                        "class_": d.get("class_"),
-                        "properties": d.get("properties", {}),
-                    }
+                    build_node_payload(n, d, payload_mode=resolved_payload_mode)
                 )
         return _ok({"class": target, "elements": matches})
 
@@ -521,7 +583,7 @@ def query_ifc_graph(
                     continue
             if not _apply_property_filters(n, property_filters):
                 continue
-            matches.append(_node_payload(n))
+            matches.append(build_node_payload(n, d, payload_mode=resolved_payload_mode))
         return _ok({"class": class_filter, "elements": matches})
 
     if action == "traverse":
@@ -567,7 +629,11 @@ def query_ifc_graph(
                             "from": node,
                             "to": nbr,
                             "relation": edge.get("relation"),
-                            "node": _node_payload(nbr),
+                            "node": build_node_payload(
+                                nbr,
+                                G.nodes[nbr],
+                                payload_mode=resolved_payload_mode,
+                            ),
                         }
                     )
                 # Backward-compatibility for legacy graphs that only encoded
@@ -586,7 +652,11 @@ def query_ifc_graph(
                                 "from": node,
                                 "to": pred,
                                 "relation": edge.get("relation"),
-                                "node": _node_payload(pred),
+                                "node": build_node_payload(
+                                    pred,
+                                    G.nodes[pred],
+                                    payload_mode=resolved_payload_mode,
+                                ),
                             }
                         )
             frontier = next_frontier
@@ -765,6 +835,21 @@ def query_ifc_graph(
                 "max_gap": max_gap_value,
                 "results": results,
             }
+        )
+
+    if action == "get_element_properties":
+        element_id = params.get("element_id")
+        if not element_id:
+            return _err("Missing param: element_id", "missing_param")
+
+        resolved, err = _resolve_element_id(element_id)
+        if err or not resolved:
+            return _err(f"Element not found: {element_id}", "not_found")
+
+        return _ok(
+            build_node_payload(
+                resolved, G.nodes[resolved], payload_mode=INTERNAL_PAYLOAD_MODE
+            )
         )
 
     return _err(f"Unknown action: {action}", "unknown_action")

@@ -21,7 +21,7 @@ import networkx as nx
 from pydantic_ai import RunContext
 from rapidfuzz import fuzz, process
 
-from rag_tag.ifc_graph_tool import query_ifc_graph
+from rag_tag.ifc_graph_tool import query_ifc_graph, sanitize_properties_for_llm
 
 # Minimum rapidfuzz WRatio score (0-100) to accept a fuzzy class normalisation.
 _CLASS_FUZZY_THRESHOLD = 72
@@ -104,8 +104,7 @@ def _fuzzy_find_nodes_impl(
                     "label": data.get("label"),
                     "class_": data.get("class_"),
                     "score": round(best_score, 1),
-                    "properties": props,
-                    "payload": payload,
+                    "properties": sanitize_properties_for_llm(props),
                 }
             )
 
@@ -194,12 +193,15 @@ def register_graph_tools(agent: Any) -> None:
             and len((result.get("data") or {}).get("elements", [])) == 0
             and class_
         ):
-            fuzzy = _fuzzy_find_nodes_impl(G, class_, top_k=20)
-            if (fuzzy.get("data") or {}).get("matches"):
-                fuzzy["data"]["_fallback"] = (
-                    "exact class match empty; fuzzy name results shown"
-                )
-            return fuzzy
+            if property_filters:
+                return {
+                    "status": "error",
+                    "error": (
+                        f"Exact match for properties {property_filters} failed. "
+                        "The value might be formatted differently in the raw "
+                        "data. Try using 'fuzzy_find_nodes' instead."
+                    ),
+                }
 
         return result
 
@@ -399,3 +401,13 @@ def register_graph_tools(agent: Any) -> None:
         if sample_values:
             result["data"]["samples"] = key_samples
         return result
+
+    @agent.tool
+    def get_element_properties(
+        ctx: RunContext[nx.DiGraph],
+        element_id: str,
+    ) -> dict[str, Any]:
+        """Fetch ALL raw, unredacted properties for a specific element."""
+        return query_ifc_graph(
+            ctx.deps, "get_element_properties", {"element_id": element_id}
+        )
