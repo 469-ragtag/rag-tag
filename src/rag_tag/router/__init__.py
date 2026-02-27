@@ -1,3 +1,5 @@
+"""Routing interfaces and shared route models."""
+
 from .llm_models import LlmIntent, LlmRoute, LlmRouteResponse
 from .models import RouteDecision, SqlIntent, SqlRequest, SqlRoute
 from .router import route_question

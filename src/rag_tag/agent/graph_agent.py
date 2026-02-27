@@ -21,10 +21,6 @@ _logger = logging.getLogger(__name__)
 # total number of calls is _MAX_INVALID_TOOL_RETRIES + 1.
 _MAX_INVALID_TOOL_RETRIES = 2
 
-# ---------------------------------------------------------------------------
-# System prompt
-# ---------------------------------------------------------------------------
-
 SYSTEM_PROMPT = """
 You are a graph-reasoning agent for an IFC (Industry Foundation Classes)
 knowledge graph. You answer natural-language questions by calling tools, then
@@ -194,10 +190,6 @@ Must not contradict answer.
 - final_result args MUST be a single JSON object matching GraphAnswer — 
 never a list or array wrapper.
 """.strip()
-
-# ---------------------------------------------------------------------------
-# Agent
-# ---------------------------------------------------------------------------
 
 # Precise schema reminder embedded in ModelRetry messages so the model
 # receives actionable correction guidance within the same run_sync call.
@@ -415,6 +407,7 @@ def _sanitize_model_text(value: object | None) -> str | None:
 
 
 def _extract_primary_list(data: dict[str, object]) -> list[str]:
+    """Return the first non-empty list-like field as displayable strings."""
     keys = (
         "overlapping_elements",
         "elements",

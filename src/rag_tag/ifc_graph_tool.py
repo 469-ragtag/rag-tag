@@ -1,3 +1,8 @@
+"""Query helpers for IFC data stored in a NetworkX graph.
+
+Tool responses use a stable ``{status, data, error}`` envelope.
+"""
+
 from __future__ import annotations
 
 import re
@@ -99,10 +104,11 @@ def query_ifc_graph(
     *,
     payload_mode: str = LLM_PAYLOAD_MODE,
 ) -> Dict[str, Any]:
-    """Controlled interface between the LLM and NetworkX graph."""
+    """Execute a graph action and return the standard tool envelope."""
     resolved_payload_mode = _resolve_payload_mode(payload_mode)
 
     def _normalize_class(value: str) -> str:
+        """Normalize class text to the canonical ``Ifc*`` prefix."""
         v = value.strip()
         if not v:
             return v
@@ -111,6 +117,7 @@ def query_ifc_graph(
         return v
 
     def _find_nodes_by_label(label: str, class_filter: str | None = None) -> list[str]:
+        """Return node ids whose label matches exactly (case-insensitive)."""
         target = label.strip().lower()
         if not target:
             return []
@@ -126,11 +133,13 @@ def query_ifc_graph(
         return matches
 
     def _normalize_text(value: str) -> str:
+        """Lowercase and collapse punctuation for fuzzy label matching."""
         return re.sub(r"[^a-z0-9]+", " ", value.lower()).strip()
 
     def _resolve_element_id(
         element_id: str,
     ) -> tuple[str | None, Dict[str, Any] | None]:
+        """Resolve flexible element identifiers to ``Element::<GlobalId>`` ids."""
         if element_id in G:
             if str(element_id).startswith("Element::"):
                 return element_id, None
@@ -152,28 +161,39 @@ def query_ifc_graph(
             return None, {"error": "Ambiguous element_id", "candidates": matches}
         return None, {"error": f"Element not found: {element_id}"}
 
+    def _map_element_resolution_error(err: Dict[str, Any]) -> Dict[str, Any]:
+        """Map element-resolution errors into stable envelope error codes."""
+        error_msg = err.get("error", "Unknown error")
+        if "Ambiguous" in str(error_msg):
+            return _err(
+                str(error_msg),
+                "ambiguous",
+                {"candidates": err.get("candidates", [])},
+            )
+        if "Invalid element_id" in str(error_msg):
+            return _err(str(error_msg), "invalid")
+        return _err(str(error_msg), "not_found")
+
     def _resolve_storey_node(
         storey_query: str,
     ) -> tuple[str | None, Dict[str, Any] | None]:
+        """Resolve storey text to a unique ``IfcBuildingStorey`` node id."""
         query = storey_query.strip()
         if not query:
             return None, {"error": "Missing param: storey"}
 
-        # Direct id match supports new Storey::<GlobalId> identity.
         direct = f"Storey::{query}"
         if direct in G and (
             str(G.nodes[direct].get("class_", "")).lower() == "ifcbuildingstorey"
         ):
             return direct, None
 
-        # Exact label match (legacy/user-friendly).
         exact = _find_nodes_by_label(query, class_filter="IfcBuildingStorey")
         if len(exact) == 1:
             return exact[0], None
         if len(exact) > 1:
             return None, {"error": "Ambiguous storey", "candidates": exact}
 
-        # Normalized label fallback (spaces/punctuation/case).
         qn = _normalize_text(query)
         norm_matches: list[str] = []
         for n, d in G.nodes(data=True):
@@ -189,7 +209,7 @@ def query_ifc_graph(
         return None, {"error": f"Storey not found: {storey_query}"}
 
     def _storey_elements(start: str) -> Iterable[str]:
-        """Traverse only containment edges to avoid leakage via spatial links."""
+        """Yield descendants reachable through containment edges only."""
         visited = {start}
         q = deque([start])
         while q:
@@ -267,6 +287,7 @@ def query_ifc_graph(
             yield nbr, edge
 
     def _apply_property_filters(node_id: str, filters: Dict[str, Any]) -> bool:
+        """Return whether a node matches flat and dotted property filters."""
         if not filters:
             return True
         data = G.nodes[node_id]
@@ -283,14 +304,7 @@ def query_ifc_graph(
             pset_block = {}
 
         def _iter_psets() -> Iterable[tuple[str, dict[str, Any]]]:
-            """Yield (pset_name, pset_dict) from Official/Custom psets and Quantities.
-
-            Quantities (e.g. Qto_WallBaseQuantities) are stored at
-            ``payload["Quantities"]`` — a sibling of ``PropertySets``, not
-            nested inside it.  Including them here means dotted filters such
-            as ``Qto_WallBaseQuantities.Length`` work identically to pset
-            filters.
-            """
+            """Yield psets from Official/Custom blocks plus Quantities."""
             for section in ("Official", "Custom"):
                 section_block = pset_block.get(section) or {}
                 if not isinstance(section_block, dict):
@@ -300,8 +314,7 @@ def query_ifc_graph(
                         continue
                     yield str(raw_name), pset_props
 
-            # Also expose Quantities blocks so that dotted keys like
-            # "Qto_WallBaseQuantities.Length" are matched by _match_dotted.
+            # NOTE: Quantities live beside PropertySets in the payload schema.
             quantities_block = payload.get("Quantities") or {}
             if isinstance(quantities_block, dict):
                 for qto_name, qto_data in quantities_block.items():
@@ -320,7 +333,7 @@ def query_ifc_graph(
             return True, current
 
         def _match_dotted(pset_name: str, prop_name: str, expected: Any) -> bool:
-            """Match a specific pset path like Pset.Property or Pset.A.B."""
+            """Match a named pset path like ``Pset.Property``."""
             for current_pset, pset_props in _iter_psets():
                 if current_pset != pset_name:
                     continue
@@ -330,27 +343,22 @@ def query_ifc_graph(
             return False
 
         def _match_flat_in_psets(key: str, expected: Any) -> bool:
-            """Search all psets for a flat key; key must exist in pset for a match."""
+            """Match a flat property key across all available psets."""
             for _pset_name, pset_props in _iter_psets():
                 if key in pset_props and pset_props[key] == expected:
                     return True
             return False
 
         for key, expected in filters.items():
-            # Dotted key "PsetName.PropertyName": target specific named pset.
-            # (Uses first dot only; deeper nesting not supported.)
             if "." in key:
                 pset_name, _, prop_name = key.partition(".")
                 if not _match_dotted(pset_name, prop_name, expected):
                     return False
                 continue
 
-            # Flat key: check direct properties first.  Require key existence so
-            # that a missing key never accidentally matches an expected None.
+            # NOTE: Require key presence so missing keys never match expected ``None``.
             if key in props:
                 prop_val = props[key]
-                # List-valued property (e.g. Materials): support membership
-                # testing so {"Materials": "gypsum"} matches ["gypsum", ...].
                 if isinstance(prop_val, list):
                     if isinstance(expected, str) and expected in prop_val:
                         continue
@@ -360,10 +368,7 @@ def query_ifc_graph(
                         continue
                 elif prop_val == expected:
                     continue
-                # Key exists in flat props but value mismatches; still fall
-                # through to nested psets (same property name may appear there).
 
-            # Search nested PropertySets (key must exist in pset to match).
             if not _match_flat_in_psets(key, expected):
                 return False
 
@@ -437,16 +442,7 @@ def query_ifc_graph(
             return _err("Invalid param: element_id must be a string", "invalid")
         resolved, err = _resolve_element_id(element_id)
         if err:
-            error_msg = err.get("error", "Unknown error")
-            if "Ambiguous" in str(error_msg):
-                return _err(
-                    str(error_msg),
-                    "ambiguous",
-                    {"candidates": err.get("candidates", [])},
-                )
-            if "Invalid element_id" in str(error_msg):
-                return _err(str(error_msg), "invalid")
-            return _err(str(error_msg), "not_found")
+            return _map_element_resolution_error(err)
         if resolved is None:
             return _err(f"Element not found: {element_id}", "not_found")
 
@@ -493,16 +489,7 @@ def query_ifc_graph(
 
         resolved, err = _resolve_element_id(element_id)
         if err:
-            error_msg = err.get("error", "Unknown error")
-            if "Ambiguous" in str(error_msg):
-                return _err(
-                    str(error_msg),
-                    "ambiguous",
-                    {"candidates": err.get("candidates", [])},
-                )
-            if "Invalid element_id" in str(error_msg):
-                return _err(str(error_msg), "invalid")
-            return _err(str(error_msg), "not_found")
+            return _map_element_resolution_error(err)
         if resolved is None:
             return _err(f"Element not found: {element_id}", "not_found")
 
@@ -539,16 +526,7 @@ def query_ifc_graph(
 
         resolved, err = _resolve_element_id(element_id)
         if err:
-            error_msg = err.get("error", "Unknown error")
-            if "Ambiguous" in str(error_msg):
-                return _err(
-                    str(error_msg),
-                    "ambiguous",
-                    {"candidates": err.get("candidates", [])},
-                )
-            if "Invalid element_id" in str(error_msg):
-                return _err(str(error_msg), "invalid")
-            return _err(str(error_msg), "not_found")
+            return _map_element_resolution_error(err)
         if resolved is None:
             return _err(f"Element not found: {element_id}", "not_found")
 
@@ -683,16 +661,7 @@ def query_ifc_graph(
             return _err("Invalid param: near must be a string or number", "invalid")
         resolved, err = _resolve_element_id(str(near))
         if err:
-            error_msg = err.get("error", "Unknown error")
-            if "Ambiguous" in str(error_msg):
-                return _err(
-                    str(error_msg),
-                    "ambiguous",
-                    {"candidates": err.get("candidates", [])},
-                )
-            if "Invalid element_id" in str(error_msg):
-                return _err(str(error_msg), "invalid")
-            return _err(str(error_msg), "not_found")
+            return _map_element_resolution_error(err)
         if resolved is None:
             return _err(f"Element not found: {near}", "not_found")
         if max_distance is None:
@@ -743,16 +712,7 @@ def query_ifc_graph(
 
         resolved, err = _resolve_element_id(element_id)
         if err:
-            error_msg = err.get("error", "Unknown error")
-            if "Ambiguous" in str(error_msg):
-                return _err(
-                    str(error_msg),
-                    "ambiguous",
-                    {"candidates": err.get("candidates", [])},
-                )
-            if "Invalid element_id" in str(error_msg):
-                return _err(str(error_msg), "invalid")
-            return _err(str(error_msg), "not_found")
+            return _map_element_resolution_error(err)
         if resolved is None:
             return _err(f"Element not found: {element_id}", "not_found")
 
@@ -798,16 +758,7 @@ def query_ifc_graph(
 
         resolved, err = _resolve_element_id(element_id)
         if err:
-            error_msg = err.get("error", "Unknown error")
-            if "Ambiguous" in str(error_msg):
-                return _err(
-                    str(error_msg),
-                    "ambiguous",
-                    {"candidates": err.get("candidates", [])},
-                )
-            if "Invalid element_id" in str(error_msg):
-                return _err(str(error_msg), "invalid")
-            return _err(str(error_msg), "not_found")
+            return _map_element_resolution_error(err)
         if resolved is None:
             return _err(f"Element not found: {element_id}", "not_found")
 

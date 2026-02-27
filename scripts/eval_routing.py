@@ -1,3 +1,8 @@
+"""Evaluate router decisions on sample questions.
+
+Optionally executes SQL-routed queries against a provided SQLite database.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -73,6 +78,7 @@ QUESTIONS: list[dict[str, Any]] = [
 
 
 def main() -> int:
+    """Run routing evaluation and optionally execute SQL-routed queries."""
     ap = argparse.ArgumentParser(
         description="Evaluate router decisions and SQL outputs for sample queries."
     )
@@ -131,6 +137,7 @@ def main() -> int:
 
 
 def _print_sql_result(decision: RouteDecision, db_path: Path | None) -> None:
+    """Print SQL execution summary for one routed decision."""
     if decision.sql_request is None:
         print("SQL route without SQL request.")
         return

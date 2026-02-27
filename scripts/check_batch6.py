@@ -18,9 +18,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-# ---------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
 FAIL = "\033[31mFAIL\033[0m"
 PASS = "\033[32mPASS\033[0m"
 _failures: list[str] = []
@@ -34,9 +32,6 @@ def check(condition: bool, name: str) -> None:
         _failures.append(name)
 
 
-# ===========================================================================
-# Part A: Dataset selection consistency
-# ===========================================================================
 print("\n=== Part A: _resolve_graph_dataset priority / fallback ===")
 
 from rag_tag.run_agent import _resolve_graph_dataset  # noqa: E402
@@ -185,9 +180,6 @@ check(
 
 _qs._ensure_graph_context = _orig_ensure  # type: ignore[attr-defined]
 
-# ===========================================================================
-# Part B: jsonl_to_graph — payload storage + hierarchy edge construction
-# ===========================================================================
 print("\n=== Part B: jsonl_to_graph payload + hierarchy ===")
 
 from rag_tag.parser.jsonl_to_graph import build_graph_from_jsonl  # noqa: E402
@@ -393,9 +385,6 @@ check(
     f"B-6  graph has exactly 5 nodes (got {node_count})",
 )
 
-# ===========================================================================
-# Summary
-# ===========================================================================
 print()
 if _failures:
     print(f"\033[31m{len(_failures)} check(s) FAILED:\033[0m")

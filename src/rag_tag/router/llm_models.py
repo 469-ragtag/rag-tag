@@ -1,3 +1,8 @@
+"""Structured output models for the LLM router.
+
+Validators normalize permissive model text into routing-safe fields.
+"""
+
 from __future__ import annotations
 
 from typing import Literal
@@ -9,6 +14,8 @@ LlmIntent = Literal["count", "list", "none"]
 
 
 class LlmRouteResponse(BaseModel):
+    """Validated structured response shape for router LLM output."""
+
     route: LlmRoute
     intent: LlmIntent = "none"
     ifc_class: str | None = None

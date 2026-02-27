@@ -1,3 +1,8 @@
+"""Geometry extraction helpers built on top of ifcopenshell.
+
+Provides centroid, bounding-box, and optional mesh data for IFC elements.
+"""
+
 from __future__ import annotations
 
 import inspect
@@ -22,6 +27,7 @@ class InvalidIfcError(ValueError):
 
 
 def _build_geom_settings() -> ifcopenshell.geom.settings:
+    """Return standard ifcopenshell geometry settings for this project."""
     settings = ifcopenshell.geom.settings()
     # Ensure coordinates are in model/world coordinates.
     settings.set(settings.USE_WORLD_COORDS, True)
@@ -64,10 +70,7 @@ def _extract_shape_mesh(
 def get_element_centroid(
     element, settings: ifcopenshell.geom.settings
 ) -> np.ndarray | None:
-    """
-    Returns the centroid of an IFC element's geometry as (x, y, z).
-    If geometry cannot be extracted, returns (0.0, 0.0, 0.0).
-    """
+    """Return an element centroid array ``(x, y, z)`` or ``None``."""
     try:
         shape = ifcopenshell.geom.create_shape(settings, element)
         verts = np.array(shape.geometry.verts, dtype=float).reshape(-1, 3)
@@ -82,10 +85,7 @@ def get_element_centroid(
 def get_element_bounding_box(
     element, settings: ifcopenshell.geom.settings
 ) -> tuple[np.ndarray, np.ndarray] | None:
-    """
-    Returns the axis-aligned bounding box of an IFC element as (min_xyz, max_xyz).
-    If geometry cannot be extracted, returns ((0,0,0), (0,0,0)).
-    """
+    """Return ``(min_xyz, max_xyz)`` axis-aligned bounds or ``None``."""
     try:
         shape = ifcopenshell.geom.create_shape(settings, element)
         verts = np.array(shape.geometry.verts, dtype=float).reshape(-1, 3)
@@ -100,13 +100,7 @@ def get_element_bounding_box(
 
 
 def build_geom_settings() -> ifcopenshell.geom.settings:
-    """
-    Build the standard geometry settings object.
-
-    Create this once per session and pass it to every per-element call —
-    the settings object is thread-safe and cheap to share.  Recreating it
-    inside a loop is wasteful (small but avoidable allocation).
-    """
+    """Build reusable geometry settings for per-element extraction calls."""
     return _build_geom_settings()
 
 
@@ -114,19 +108,7 @@ def get_element_geometry(
     element,
     settings: ifcopenshell.geom.settings,
 ) -> dict:
-    """
-    Extract centroid and axis-aligned bounding box in a single shape pass.
-
-    Only derived summary values are retained; raw mesh vertices and faces are
-    never stored so callers cannot accidentally serialise them to JSONL.
-
-    Returns::
-
-        {"centroid": np.ndarray | None, "bbox": (min_xyz, max_xyz) | None}
-
-    ``centroid`` is shape ``(3,)`` and ``bbox`` is a 2-tuple of shape-``(3,)``
-    arrays.  Both keys are present even on failure (set to ``None``).
-    """
+    """Extract centroid and bounding box in a single shape pass."""
     try:
         shape = ifcopenshell.geom.create_shape(settings, element)
         verts = np.asarray(shape.geometry.verts, dtype=float).reshape(-1, 3)
@@ -142,9 +124,7 @@ def get_element_geometry(
 
 
 def get_ifc_model(ifc_path: Path):
-    """
-    Opens an IFC file and returns the model object.
-    """
+    """Open an IFC file after optional validation checks."""
     if ifc_validate is not None:
         try:
             errors = _run_ifc_validation(ifc_path)
@@ -161,6 +141,7 @@ def get_ifc_model(ifc_path: Path):
 
 
 def _run_ifc_validation(ifc_path: Path) -> list:
+    """Run ``ifcopenshell.validate`` across signature variants."""
     validate_func = ifc_validate.validate  # type: ignore[union-attr]
 
     try:
@@ -181,16 +162,14 @@ def _run_ifc_validation(ifc_path: Path) -> list:
 
 
 def _coerce_validation_errors(result: object) -> list:
+    """Normalize validator outputs to a concrete list of issues."""
     if result is None:
         return []
     return list(result)
 
 
 def get_all_elements(model, class_types: list[str] = None):
-    """
-    Returns all elements of given class types.
-    If class_types is None, returns all building elements.
-    """
+    """Return model elements for requested classes or default class set."""
     if class_types is None:
         class_types = [
             "IfcWall",
@@ -233,10 +212,7 @@ def get_all_elements(model, class_types: list[str] = None):
 
 
 def extract_geometry_data(model, class_types: list[str] = None):
-    """
-    Returns a list of dicts containing element GlobalId, Class, and centroid
-    coordinates.
-    """
+    """Return per-element geometry records with centroid, bbox, and mesh data."""
     elements = get_all_elements(model, class_types)
     data = []
 

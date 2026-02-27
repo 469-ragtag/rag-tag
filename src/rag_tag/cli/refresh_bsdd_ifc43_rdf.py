@@ -1,34 +1,7 @@
-"""
-refresh_bsdd_ifc43_rdf.py
+"""Download and pin a local bSDD/IFC 4.3 RDF snapshot.
 
-Downloads a fresh copy of the bSDD / IFC-OWL RDF snapshot and saves it
-to a local path so the schema registry can use it offline.
-
-Why we need this
-----------------
-The schema registry (ifc43_schema_registry.py) has a built-in property
-dictionary, but it can also read a proper OWL/RDF file to get the full
-class hierarchy directly from the IFC standard.  That file lives online
-so we need to pull it down once and pin it locally.
-
-We also write a small sidecar JSON file next to the snapshot that records:
-  - the URL we downloaded from
-  - the timestamp of the download
-  - the SHA256 hash of the file
-
-This means we can always tell exactly which version of the schema we're
-running against, and roll back to an older snapshot if something breaks.
-
-Usage
------
-# using the entry point (after `uv pip install -e .`)
-uv run rag-tag-refresh-ifc43-rdf --url <url> --out output/metadata/bsdd/ifc43.ttl
-
-# or run the script directly
-uv run python scripts/refresh_bsdd_ifc43_rdf.py --url <url>
-
-Default URL is the IFC 4.3 OWL Turtle file from buildingSMART's GitHub.
-Default output path is output/metadata/bsdd/ifc43.ttl (project root).
+The command saves the Turtle file and writes a sidecar JSON file with
+download source, timestamp, and SHA256 for reproducibility.
 """
 
 from __future__ import annotations
@@ -47,8 +20,7 @@ from rag_tag.paths import find_bsdd_rdf_path
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
 
-# The canonical source for the IFC 4.3 OWL ontology (Turtle format).
-# This is buildingSMART's official GitHub repo for the IFC 4.3 development.
+# Canonical IFC 4.3 OWL Turtle source from buildingSMART's repository.
 DEFAULT_URL = (
     "https://raw.githubusercontent.com/buildingSMART/"
     "IFC4.3.x-development/master/docs/ifcOwlDocs/IFC4X3.ttl"
@@ -65,20 +37,12 @@ def compute_sha256(file_path: Path) -> str:
 
 
 def download(url: str, out_path: Path) -> None:
-    """
-    Download the RDF snapshot from url and save it to out_path.
-    Also writes a sidecar .json file with metadata about the download.
-
-    The sidecar file sits right next to the .ttl file with the same stem:
-        ifc43.ttl      ← the actual schema data
-        ifc43.json     ← metadata: url, timestamp, sha256, format
-    """
+    """Download the RDF snapshot and write a sidecar metadata JSON file."""
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     logger.info("Downloading from:\n  %s", url)
     logger.info("Saving to:\n  %s", out_path)
 
-    # stream the download — the OWL file can be a few MB
     try:
         with urllib.request.urlopen(url) as response:  # noqa: S310
             content = response.read()
@@ -89,11 +53,9 @@ def download(url: str, out_path: Path) -> None:
     out_path.write_bytes(content)
     logger.info("Downloaded %d bytes", len(content))
 
-    # compute SHA256 so we can verify the file later
     sha256 = compute_sha256(out_path)
     logger.info("SHA256: %s", sha256)
 
-    # write the sidecar metadata JSON
     sidecar_path = out_path.with_suffix(".json")
     metadata = {
         "url": url,
@@ -115,6 +77,7 @@ def download(url: str, out_path: Path) -> None:
 
 
 def main() -> None:
+    """Parse CLI args and refresh the local RDF snapshot."""
     default_out = find_bsdd_rdf_path()
 
     ap = argparse.ArgumentParser(

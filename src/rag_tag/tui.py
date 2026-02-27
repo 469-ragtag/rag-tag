@@ -28,9 +28,6 @@ if not _supports_color():
     _BOLD = _DIM = _CYAN = _GREEN = _YELLOW = _RED = _RESET = ""
 
 
-# ── Public API ──────────────────────────────────────────────────────────
-
-
 def print_welcome(db_path: str | None) -> None:
     """Print the startup banner."""
     print(f"{_BOLD}IFC Query Agent{_RESET}")
@@ -69,10 +66,8 @@ def print_answer(result: dict[str, Any], *, verbose: bool = False) -> None:
             _print_details(result)
 
 
-# ── SQL answer ──────────────────────────────────────────────────────────
-
-
 def _print_sql_answer(result: dict[str, Any], *, verbose: bool) -> None:
+    """Print answer and optional list-table details for SQL route results."""
     summary = result.get("answer") or ""
     data = result.get("data") or {}
     intent = data.get("intent", "")
@@ -136,10 +131,8 @@ def _print_item_table(data: dict[str, Any]) -> None:
         print(f"\n   {_DIM}({total - shown} more not shown){_RESET}")
 
 
-# ── Graph answer ────────────────────────────────────────────────────────
-
-
 def _print_graph_answer(result: dict[str, Any], *, verbose: bool) -> None:
+    """Print answer, warning, and sample rows for graph route results."""
     answer = result.get("answer") or "No answer produced."
     print(f"\n{_BOLD}{_GREEN}A:{_RESET} {answer}")
     warning = result.get("warning")
@@ -155,9 +148,6 @@ def _print_graph_answer(result: dict[str, Any], *, verbose: bool) -> None:
 
     if verbose:
         _print_details(result)
-
-
-# ── Helpers ─────────────────────────────────────────────────────────────
 
 
 def _print_error(error: str) -> None:

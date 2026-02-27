@@ -1,3 +1,8 @@
+"""Execute constrained SQL queries against the IFC SQLite database.
+
+All user-derived values are bound as parameters rather than interpolated.
+"""
+
 from __future__ import annotations
 
 import sqlite3
@@ -14,6 +19,7 @@ class SqlQueryError(RuntimeError):
 
 
 def query_ifc_sql(db_path: Path, request: SqlRequest) -> dict[str, Any]:
+    """Execute a routed SQL request using bound parameters only."""
     if not db_path.exists():
         raise SqlQueryError(f"SQLite database not found: {db_path}")
 
@@ -22,6 +28,7 @@ def query_ifc_sql(db_path: Path, request: SqlRequest) -> dict[str, Any]:
     resolved_ifc_classes = expand_ifc_class_filter(request.ifc_class)
 
     if resolved_ifc_classes:
+        # NOTE: Build ``IN`` placeholders dynamically but keep values parameterized.
         placeholders = ", ".join("?" for _ in resolved_ifc_classes)
         where_clauses.append(f"ifc_class IN ({placeholders})")
         params.extend(resolved_ifc_classes)
@@ -95,6 +102,7 @@ def query_ifc_sql(db_path: Path, request: SqlRequest) -> dict[str, Any]:
 def _filters_payload(
     request: SqlRequest, resolved_ifc_classes: tuple[str, ...]
 ) -> dict[str, Any]:
+    """Serialize request filters and resolved IFC class expansion."""
     payload = asdict(request)
     payload.pop("limit", None)
     if resolved_ifc_classes:
@@ -103,6 +111,7 @@ def _filters_payload(
 
 
 def _count_summary(request: SqlRequest, count: int) -> str:
+    """Build user-facing summary text for count responses."""
     label = request.ifc_class or "elements"
     if request.level_like:
         return f"Found {count} {label} matching level '{request.level_like}'."
@@ -110,6 +119,7 @@ def _count_summary(request: SqlRequest, count: int) -> str:
 
 
 def _list_summary(request: SqlRequest, total: int, limit: int) -> str:
+    """Build user-facing summary text for list responses."""
     label = request.ifc_class or "elements"
     if request.level_like:
         return (

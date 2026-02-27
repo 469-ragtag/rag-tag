@@ -11,9 +11,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-# ---------------------------------------------------------------------------
-# Minimal stubs so we can import ifc_graph_tool without every heavy dep.
-# ---------------------------------------------------------------------------
+# Minimal setup so we can import ifc_graph_tool without heavy extras.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import networkx as nx  # networkx is a direct dep, no stub needed
@@ -21,9 +19,7 @@ import networkx as nx  # networkx is a direct dep, no stub needed
 from rag_tag.agent.graph_tools import register_graph_tools  # noqa: E402
 from rag_tag.ifc_graph_tool import query_ifc_graph  # noqa: E402
 
-# ---------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
 FAIL = "\033[31mFAIL\033[0m"
 PASS = "\033[32mPASS\033[0m"
 _failures: list[str] = []
@@ -48,9 +44,7 @@ class _ToolCollector:
         return fn
 
 
-# ---------------------------------------------------------------------------
-# Build a minimal test graph
-# ---------------------------------------------------------------------------
+# Build a minimal test graph.
 G: nx.DiGraph = nx.DiGraph()
 
 # Wall1: has Pset_WallCommon with FireRating="EI 90" and flat GlobalId.
@@ -156,9 +150,6 @@ G.add_node(
 )
 
 
-# ---------------------------------------------------------------------------
-# Test 1 — None false-positive: missing key must NOT match expected=None
-# ---------------------------------------------------------------------------
 print("\n[Test 1] None false-positive: missing key must not match expected=None")
 
 result = query_ifc_graph(
@@ -188,9 +179,6 @@ check(
 )
 
 
-# ---------------------------------------------------------------------------
-# Test 2 — Dotted key: "Pset_WallCommon.FireRating" matches correctly
-# ---------------------------------------------------------------------------
 print('\n[Test 2] Dotted key filter: "Pset_WallCommon.FireRating" = "EI 90"')
 
 result2 = query_ifc_graph(
@@ -211,9 +199,6 @@ check(
 )
 
 
-# ---------------------------------------------------------------------------
-# Test 3 — Dotted key in Custom pset
-# ---------------------------------------------------------------------------
 print('\n[Test 3] Dotted key in Custom pset: "Pset_DoorCustom.SecurityClass" = "A"')
 
 result3 = query_ifc_graph(
@@ -228,9 +213,6 @@ check("Element::Door1" in matched3, "Door1 matches Custom pset dotted key")
 check(len(matched3) == 1, f"Exactly 1 match (got {len(matched3)})")
 
 
-# ---------------------------------------------------------------------------
-# Test 3b — Dotted key with nested path under one pset
-# ---------------------------------------------------------------------------
 print('\n[Test 3b] Nested dotted key: "Pset_WallNested.Group.Code" = "N-1"')
 
 result3b = query_ifc_graph(
@@ -245,9 +227,6 @@ check("Element::WallNested" in matched3b, "WallNested matches nested dotted key"
 check(len(matched3b) == 1, f"Exactly 1 nested dotted match (got {len(matched3b)})")
 
 
-# ---------------------------------------------------------------------------
-# Test 4 — Flat key backward compatibility: direct props
-# ---------------------------------------------------------------------------
 print("\n[Test 4] Flat key backward compat: GlobalId in direct properties")
 
 result4 = query_ifc_graph(
@@ -262,9 +241,6 @@ check("Element::Wall1" in matched4, "Wall1 matched by flat GlobalId filter")
 check(len(matched4) == 1, f"Exactly 1 match (got {len(matched4)})")
 
 
-# ---------------------------------------------------------------------------
-# Test 5 — Flat key fallback: key in nested pset, not in direct props
-# ---------------------------------------------------------------------------
 print("\n[Test 5] Flat key fallback: ThermalTransmittance in nested pset")
 
 result5 = query_ifc_graph(
@@ -286,9 +262,6 @@ check(
 check("Element::LegacyWall" not in matched5, "LegacyWall (no pset) excluded")
 
 
-# ---------------------------------------------------------------------------
-# Test 6 — _node_payload shape: payload field present in find_nodes results
-# ---------------------------------------------------------------------------
 print("\n[Test 6] _node_payload: payload field present in find_nodes results")
 
 result6 = query_ifc_graph(G, "find_nodes", {"class": "IfcWall"})
@@ -309,9 +282,6 @@ if legacy is not None:
     check("payload" in legacy, "LegacyWall result has 'payload' key (may be None)")
 
 
-# ---------------------------------------------------------------------------
-# Test 7 — list_property_keys tool: robust nested/dotted enumeration
-# ---------------------------------------------------------------------------
 print("\n[Test 7] list_property_keys tool: robust nested/dotted enumeration")
 
 collector = _ToolCollector()
@@ -349,9 +319,6 @@ check(
 )
 
 
-# ---------------------------------------------------------------------------
-# Test 8 — Dotted key non-existent pset: no match (not a false pass)
-# ---------------------------------------------------------------------------
 print("\n[Test 8] Dotted key for non-existent pset returns zero matches")
 
 result8 = query_ifc_graph(
@@ -364,9 +331,6 @@ matched8 = result8["data"]["elements"]
 check(len(matched8) == 0, f"No nodes match non-existent pset (got {len(matched8)})")
 
 
-# ---------------------------------------------------------------------------
-# Summary
-# ---------------------------------------------------------------------------
 print()
 if _failures:
     print(f"\033[31m{len(_failures)} check(s) FAILED:\033[0m")

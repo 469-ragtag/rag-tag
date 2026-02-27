@@ -1,45 +1,6 @@
-"""
-ifc43_schema_registry.py
+"""Registry for IFC class normalization and expected standard properties.
 
-The problem this solves
------------------------
-When we parse an IFC file, we can only see the property sets (Psets) that are
-*actually attached* to each element.  If an architect forgot to add
-Pset_WallCommon to a wall, we get no fire rating, no thermal transmittance,
-nothing.  Different models end up with inconsistent property coverage, which
-makes comparison and query generation difficult.
-
-The IFC 4.3 standard says "every IfcWall SHOULD have Pset_WallCommon" —
-but the standard can't enforce that.  So we do it here.
-
-This module gives us a schema registry that knows:
-  - which properties *should* exist for every IFC class (from the spec)
-  - the class hierarchy (IfcWallStandardCase → IfcWall → IfcBuildingElement…)
-    so we can normalise subclasses back to their canonical parent
-
-The JSONL ingestion pipeline (`ifc_to_jsonl.py`) uses this registry to
-normalise IFC classes and classify properties against known IFC definitions.
-
-Where the schema data comes from
----------------------------------
-Primary source: the STANDARD_PSETS dict below — hand-curated from the IFC 4.3
-ADD2 spec (https://ifc43-docs.buildingsmart.org/).  This is always available.
-
-Optional augmentation: a local bSDD / IFC-OWL Turtle (.ttl) snapshot.
-bSDD is buildingSMART's data dictionary — it's basically the authoritative
-online version of the schema.  If we have a downloaded copy of it, we can
-cross-check and augment the hierarchy.
-
-To download a fresh copy of the snapshot run:
-    uv run rag-tag-refresh-ifc43-rdf \\
-        --url <snapshot-url> \\
-        --out output/metadata/bsdd/ifc43.ttl
-
-The snapshot lives in output/metadata/bsdd/ifc43.ttl by default.
-You can override this path through `rag-tag-generate-ontology-map --rdf ...`.
-
-If the snapshot isn't there, no problem — we just use the embedded dict and
-ifcopenshell's built-in schema.  Nothing crashes.
+Uses embedded IFC4.3 mappings with optional ancestry augmentation from RDF.
 """
 
 from __future__ import annotations
@@ -53,40 +14,17 @@ import ifcopenshell
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Result type for normalize_class()
-# ---------------------------------------------------------------------------
-
-
 class NormalizedClassResult(TypedDict):
-    """
-    What we know about an IFC class after looking it up in the hierarchy.
+    """Normalized class metadata returned by ``normalize_class``."""
 
-    For example, if the IFC file has IfcWallStandardCase (a subclass of
-    IfcWall), we want to map it back to IfcWall so we know which Psets
-    to expect and how to group it with other walls.
-    """
-
-    raw: str  # exactly what obj.is_a() returned, e.g. "IfcWallStandardCase"
-    canonical: str  # nearest ancestor we have Psets for, e.g. "IfcWall"
-    base: str  # same as canonical for now — kept for compatibility
-    # full chain: ["IfcWall", "IfcBuildingElement", ..., "IfcRoot"]
+    raw: str  # Raw class from ``obj.is_a()``.
+    canonical: str  # Nearest ancestor with known standard psets.
+    base: str  # Compatibility alias for canonical.
+    # Ancestors ordered from nearest parent toward IfcRoot.
     ancestors: list[str]
 
 
-# ---------------------------------------------------------------------------
-# Standard property set definitions
-#
-# Format: { IFC class → { pset/qto name → [property names] } }
-#
-# Every entry here is defined in the IFC 4.3 ADD2 specification.
-# We list the properties that *should* be on each element type according
-# to the standard — even if the model doesn't actually have them set.
-#
-# Pset_* = property sets (text / boolean / enum values)
-# Qto_*  = quantity sets (numeric measurements)
-# ---------------------------------------------------------------------------
-
+# IFC4.3 ADD2 reference property and quantity sets by canonical class.
 STANDARD_PSETS: dict[str, dict[str, list[str]]] = {
     "IfcWall": {
         "Pset_WallCommon": [
@@ -446,17 +384,8 @@ STANDARD_PSETS: dict[str, dict[str, list[str]]] = {
 }
 
 
-# ---------------------------------------------------------------------------
-# Small helper — IFC schema version strings aren't always consistent
-# ---------------------------------------------------------------------------
-
-
 def _normalize_schema_name(name: str) -> str:
-    """
-    Make sure the schema name is in the format ifcopenshell expects.
-    IFC files can say "IFC4", "IFC4x3", "IFC4X3_ADD2" etc.
-    We just want the major version so we can call schema_by_name().
-    """
+    """Normalize schema labels for ``ifcopenshell.schema_by_name``."""
     n = name.upper().replace(" ", "")
     if n.startswith("IFC4X3"):
         return "IFC4X3"
@@ -467,29 +396,8 @@ def _normalize_schema_name(name: str) -> str:
     return name
 
 
-# ---------------------------------------------------------------------------
-# The registry class
-# ---------------------------------------------------------------------------
-
-
 class IFC43SchemaRegistry:
-    """
-    Knows the IFC class hierarchy and which Psets/properties belong to each class.
-
-    On creation it:
-      1. Builds the class hierarchy from ifcopenshell's built-in schema
-         (always works, no internet needed)
-      2. Optionally loads a local bSDD Turtle file to augment the hierarchy
-         with extra rdfs:subClassOf relationships (requires rdflib)
-
-    Usage:
-        registry = IFC43SchemaRegistry()
-        result = registry.normalize_class("IfcWallStandardCase")
-        # result["canonical"] → "IfcWall"
-
-        props = registry.expected_properties_for_class("IfcWall")
-        # props → {"Pset_WallCommon.FireRating", "Pset_WallCommon.IsExternal", ...}
-    """
+    """Resolve IFC class ancestry and standard property expectations."""
 
     def __init__(
         self,
@@ -498,19 +406,16 @@ class IFC43SchemaRegistry:
     ) -> None:
         self._schema_name = _normalize_schema_name(schema_name or "IFC4")
 
-        # class name → list of ancestor names, ordered from nearest to IfcRoot
-        # e.g. "IfcWall" → ["IfcBuildingElement", "IfcElement", ..., "IfcRoot"]
+        # class name -> ancestors from nearest parent to IfcRoot
         self._hierarchy: dict[str, list[str]] = {}
 
-        # working copy of STANDARD_PSETS — we keep it separate so RDF augmentation
-        # can add to it without touching the module-level dict
+        # Keep instance-local copy so optional augmentation never mutates globals.
         self._psets: dict[str, dict[str, list[str]]] = {
             cls: dict(psets) for cls, psets in STANDARD_PSETS.items()
         }
 
         self._build_hierarchy()
 
-        # if a bSDD RDF snapshot was provided and the file actually exists, load it
         if snapshot_path and snapshot_path.exists():
             self._load_from_rdf(snapshot_path)
         elif snapshot_path:
@@ -521,14 +426,7 @@ class IFC43SchemaRegistry:
             )
 
     def _build_hierarchy(self) -> None:
-        """
-        Walk the IFC schema using ifcopenshell and record the full ancestor
-        chain for every class.
-
-        ifcopenshell ships with the IFC schema built in, so we can ask it
-        "what is the supertype of IfcWall?" without any network call.
-        We walk up the chain until we hit None (which is IfcRoot's supertype).
-        """
+        """Build ancestor chains from the local ifcopenshell schema."""
         try:
             schema = ifcopenshell.schema_by_name(self._schema_name)
         except Exception as exc:
@@ -541,7 +439,7 @@ class IFC43SchemaRegistry:
             return
 
         def _get_ancestor_chain(entity) -> list[str]:
-            """Walk up the supertype chain and collect all ancestor names."""
+            """Return ancestors from direct parent upward."""
             ancestors: list[str] = []
             try:
                 current = entity.supertype()
@@ -549,27 +447,25 @@ class IFC43SchemaRegistry:
                     ancestors.append(current.name())
                     current = current.supertype()
             except Exception:
-                pass  # some abstract types don't have supertypes
+                pass
             return ancestors
 
-        # First make sure every class we care about (from STANDARD_PSETS) is in there
+        # Seed canonical classes first.
         for class_name in STANDARD_PSETS:
             try:
                 entity = schema.declaration_by_name(class_name)
                 self._hierarchy[class_name] = _get_ancestor_chain(entity)
             except Exception:
-                # class might not exist in this schema version — that's fine
                 self._hierarchy.setdefault(class_name, [])
 
-        # Then try to get all other IFC declarations too (subclasses like
-        # IfcWallStandardCase). Not all ifcopenshell builds expose this.
+        # Then add any additional declarations exposed by this ifcopenshell build.
         try:
             for decl in schema.declarations():
                 name = decl.name()
                 if name.startswith("Ifc") and name not in self._hierarchy:
                     self._hierarchy[name] = _get_ancestor_chain(decl)
         except (AttributeError, TypeError):
-            pass  # older ifcopenshell builds don't have this — no problem
+            pass
 
         logger.debug(
             "Built IFC hierarchy from schema '%s': %d classes indexed",
@@ -578,16 +474,7 @@ class IFC43SchemaRegistry:
         )
 
     def _load_from_rdf(self, path: Path) -> None:
-        """
-        Augment the hierarchy using a local bSDD / IFC-OWL Turtle file.
-
-        The IFC OWL ontology uses rdfs:subClassOf to encode the class hierarchy.
-        We parse those triples and add any parent relationships we don't already
-        have from ifcopenshell.
-
-        This is optional — if rdflib isn't installed or the file is bad,
-        we just log a warning and carry on.
-        """
+        """Augment hierarchy with ``rdfs:subClassOf`` edges from RDF."""
         try:
             import rdflib
             import rdflib.namespace
@@ -605,19 +492,16 @@ class IFC43SchemaRegistry:
             RDFS = rdflib.namespace.RDFS
 
             added = 0
-            # look for triples like: IfcWallStandardCase rdfs:subClassOf IfcWall
             for cls_node, _, parent_node in g.triples((None, RDFS.subClassOf, None)):
-                # URIs look like ".../IfcWall" — we just want the local name
                 cls_name = str(cls_node).rsplit("/", 1)[-1].rsplit("#", 1)[-1]
                 parent_name = str(parent_node).rsplit("/", 1)[-1].rsplit("#", 1)[-1]
 
-                # only care about IFC classes
                 if not (cls_name.startswith("Ifc") and parent_name.startswith("Ifc")):
                     continue
 
                 chain = self._hierarchy.setdefault(cls_name, [])
                 if parent_name not in chain:
-                    # insert at front — it's the most direct parent
+                    # NOTE: Keep nearest parent first.
                     chain.insert(0, parent_name)
                     added += 1
 
@@ -630,30 +514,12 @@ class IFC43SchemaRegistry:
         except Exception as exc:
             logger.warning("Failed to parse bSDD RDF file at %s: %s", path, exc)
 
-    # -------------------------------------------------------------------------
-    # Public methods
-    # -------------------------------------------------------------------------
-
     def normalize_class(self, raw_class: str) -> NormalizedClassResult:
-        """
-        Given a raw IFC class name, return its canonical form and full ancestry.
-
-        Some IFC files use subclasses like IfcWallStandardCase instead of IfcWall.
-        The standard Pset definitions are tied to IfcWall though, so we need to
-        walk up the hierarchy to find the right one.
-
-        If the class is totally unknown, we just return it as-is.
-
-        Example:
-            normalize_class("IfcWallStandardCase")
-            → { raw: "IfcWallStandardCase", canonical: "IfcWall", base: "IfcWall", ... }
-        """
+        """Map a raw class to the nearest canonical class with known psets."""
         ancestors = self._hierarchy.get(raw_class, [])
 
-        # if this class itself is in STANDARD_PSETS, it's already canonical
         canonical = raw_class
         if raw_class not in self._psets:
-            # otherwise walk up the ancestor chain until we find a known one
             for ancestor in ancestors:
                 if ancestor in self._psets:
                     canonical = ancestor
@@ -662,27 +528,14 @@ class IFC43SchemaRegistry:
         return NormalizedClassResult(
             raw=raw_class,
             canonical=canonical,
-            base=canonical,  # base and canonical are the same for now
+            base=canonical,
             ancestors=ancestors,
         )
 
     def expected_properties_for_class(self, ifc_class: str) -> set[str]:
-        """
-        Return all "Pset.Property" strings that the spec says this class should have.
-
-        We check the class itself AND all its ancestors, because a class can
-        inherit Psets from its parent (though in practice the IFC spec defines
-        them per-class, not via inheritance).
-
-        The result is a set of strings like:
-            {"Pset_WallCommon.FireRating", "Pset_WallCommon.IsExternal", ...}
-
-        These are used by ontology-map generation and JSONL extraction to
-        determine which properties are standard IFC fields for each class.
-        """
+        """Return standard ``Pset.Property`` names for a class lineage."""
         result: set[str] = set()
 
-        # check this class and every ancestor
         classes_to_check = [ifc_class, *self._hierarchy.get(ifc_class, [])]
         for cls in classes_to_check:
             if cls in self._psets:
@@ -693,29 +546,14 @@ class IFC43SchemaRegistry:
         return result
 
     def is_known_property(self, pset: str, prop: str) -> bool:
-        """
-        Check if a Pset+property combination is part of the IFC standard.
-
-        Useful for separating "known standard properties" from custom/vendor
-        properties that show up in IFC files. Unknown Psets are still
-        extracted by the JSONL pipeline and classified as custom.
-
-        Example:
-            is_known_property("Pset_WallCommon", "FireRating") → True
-            is_known_property("Pset_VendorCustom", "SomeField") → False
-        """
+        """Return whether a pset/property pair exists in known IFC mappings."""
         for class_psets in self._psets.values():
             if pset in class_psets and prop in class_psets[pset]:
                 return True
         return False
 
 
-# ---------------------------------------------------------------------------
-# Module-level cache so we only parse the schema once per process
-# ---------------------------------------------------------------------------
-
-# keyed by (snapshot_path, schema_name) so different schema versions each get
-# their own registry — important when processing IFC2X3 vs IFC4X3 files.
+# Cache by ``(snapshot_path, schema_name)`` for schema-safe reuse.
 _registry_cache: dict[str, IFC43SchemaRegistry] = {}
 
 
@@ -723,17 +561,7 @@ def get_registry(
     snapshot_path: Path | None = None,
     schema_name: str | None = None,
 ) -> IFC43SchemaRegistry:
-    """
-    Get a cached registry instance.
-
-    Parsing the ifcopenshell schema and (optionally) the RDF file takes a
-    moment, so we cache the result and reuse it for every class we process
-    in the same run.  Subsequent calls with the same arguments are instant.
-
-    The cache key includes both the snapshot path and the schema name so
-    that different IFC schema versions (IFC2X3 vs IFC4X3_ADD2, etc.) each
-    get a correctly-initialised registry rather than sharing one instance.
-    """
+    """Return a cached registry keyed by snapshot path and schema name."""
     path_key = str(snapshot_path) if snapshot_path is not None else ""
     schema_key = schema_name or ""
     key = f"{path_key}::{schema_key}"

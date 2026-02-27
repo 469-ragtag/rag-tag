@@ -1,8 +1,8 @@
-# reads an IFC file and writes one JSON record per element to a .jsonl file
-# each record has the element's identity, where it sits in the building hierarchy,
-# its geometry (centroid + bbox), and its property sets split into official vs custom
-#
-# run with: uv run rag-tag-ifc-to-jsonl
+"""Export IFC elements into one JSONL record per element.
+
+Records include identity, hierarchy, geometry, and psets split into official
+vs custom classifications.
+"""
 
 from __future__ import annotations
 
@@ -45,16 +45,7 @@ def _normalize_schema_family(schema_name: str | None) -> str:
 
 
 def _load_ontology_map() -> dict:
-    """
-    Load the class-to-ValidPsets mapping from the bundled JSON file.
-
-    Resolution order:
-      1. Read ``ifc_ontology_map.json`` next to this module (fastest, offline).
-      2. Generate in-memory via ``build_ontology_map()`` (slower, always works
-         as long as STANDARD_PSETS is available).
-      3. Return an empty dict so the caller degrades gracefully — all psets
-         will be classified as Custom rather than crashing.
-    """
+    """Load class-to-ValidPsets mapping with graceful fallback behavior."""
     if _ONTOLOGY_MAP_PATH.exists():
         try:
             with _ONTOLOGY_MAP_PATH.open(encoding="utf-8") as fh:
@@ -73,7 +64,7 @@ def _load_ontology_map() -> dict:
                 exc,
             )
 
-    # Fallback: generate from STANDARD_PSETS in-memory (no RDF needed)
+    # NOTE: In-memory fallback keeps conversion offline when bundled data is missing.
     try:
         from rag_tag.parser.parse_bsdd_to_map import build_ontology_map  # noqa: PLC0415
 
@@ -94,16 +85,7 @@ def _get_valid_psets_for_class(
     ancestors: list[str],
     ontology_map: dict,
 ) -> set[str]:
-    """
-    Return the set of ValidPsets for an IFC class from the ontology map.
-
-    Checks the canonical class first, then walks the ancestor chain.  This
-    ensures that a subclass like IfcWallStandardCase (mapped to IfcWall) still
-    finds Pset_WallCommon.
-
-    Returns an empty set when neither the class nor any of its ancestors appears
-    in the map — callers then route all psets to Custom (graceful degradation).
-    """
+    """Return ValidPsets for a class, falling back through ancestor classes."""
     for cls in [canonical_class, *ancestors]:
         entry = ontology_map.get(cls)
         if entry and isinstance(entry, dict) and "ValidPsets" in entry:
@@ -114,8 +96,7 @@ def _get_valid_psets_for_class(
 
 
 def _to_python(value: Any) -> Any:
-    # ifcopenshell doesn't always give back plain Python types —
-    # sometimes you get enum objects or entity references, so we force cast
+    """Convert IFC values into JSON-serializable Python scalars when possible."""
     if value is None:
         return None
     if isinstance(value, bool):
@@ -133,11 +114,12 @@ def _to_python(value: Any) -> Any:
 
 
 def _cast_pset(pset_dict: dict) -> dict:
-    # ifcopenshell adds an "id" key to every pset dict that we don't want
+    """Cast a raw pset mapping and drop the synthetic ``id`` field."""
     return {k: _to_python(v) for k, v in pset_dict.items() if k != "id"}
 
 
 def _extract_hierarchy(element) -> dict:
+    """Extract parent metadata and resolved spatial path for an element."""
     try:
         container = ifc_element.get_container(element)
     except Exception:
@@ -163,7 +145,6 @@ def _extract_hierarchy(element) -> dict:
         except Exception:
             pass
 
-    # walk up the tree to get the full spatial path (e.g. ["building", "floor 1"])
     path: list[str] = []
     try:
         node = container
@@ -172,7 +153,7 @@ def _extract_hierarchy(element) -> dict:
             if name:
                 path.append(str(name))
             node = ifc_element.get_container(node)
-        path.reverse()  # we walked bottom-up so flip it
+        path.reverse()
     except Exception:
         path = []
 
@@ -192,6 +173,7 @@ def extract_element(
     *,
     schema_supports_ontology: bool,
 ) -> dict:
+    """Extract one IFC element into the normalized JSONL record schema."""
     try:
         express_id: int | None = element.id()
     except Exception:
@@ -201,8 +183,7 @@ def extract_element(
     norm = registry.normalize_class(raw_class)
     canonical_class = norm.get("canonical", raw_class)
 
-    # Prefer ontology-map ancestry when present; otherwise fall back to registry.
-    # For unsupported schemas we intentionally degrade: no ontology ancestry.
+    # NOTE: Unsupported schema families intentionally emit empty BaseClasses.
     ancestors: list[str] = []
     if schema_supports_ontology:
         map_entry = ontology_map.get(canonical_class)
@@ -240,7 +221,6 @@ def extract_element(
 
     hierarchy = _extract_hierarchy(element)
 
-    # Per-element geometry extraction (no model-wide preloading).
     centroid = get_element_centroid(element, geom_settings)
     bbox = get_element_bounding_box(element, geom_settings)
     geometry = {
@@ -252,9 +232,6 @@ def extract_element(
         ),
     }
 
-    # Per-class Official/Custom classification: uses each element's own ValidPsets
-    # from the ontology map rather than a single global set.  Falls back to empty
-    # set (all psets -> Custom) when the class is absent or schema unsupported.
     valid_psets = (
         _get_valid_psets_for_class(canonical_class, ancestors, ontology_map)
         if schema_supports_ontology
@@ -287,9 +264,7 @@ def extract_element(
     except Exception:
         pass
 
-    # Material extraction — uses get_materials which handles all material set
-    # types (IfcMaterial, IfcMaterialLayerSet, IfcMaterialConstituentSet, etc.).
-    # Deduplicates while preserving order; degrades gracefully on any failure.
+    # NOTE: Keep first-seen order while deduplicating material names.
     materials: list[str] = []
     try:
         raw_mats = ifc_element.get_materials(element)
@@ -331,6 +306,7 @@ def extract_element(
 
 
 def convert_ifc_to_jsonl(ifc_path: Path, out_path: Path) -> int:
+    """Convert one IFC file to JSONL and return record count."""
     logger.info("Opening %s", ifc_path)
     model = ifcopenshell.open(str(ifc_path))
     schema_version = getattr(model, "schema", "IFC4X3_ADD2")
@@ -338,13 +314,9 @@ def convert_ifc_to_jsonl(ifc_path: Path, out_path: Path) -> int:
     schema_family = _normalize_schema_family(schema_version)
     schema_supports_ontology = schema_family in {"IFC4X3", "IFC4", "IFC2X3"}
 
-    # Registry is schema-aware: hierarchy is built from the detected version.
-    # Falls back gracefully when ifcopenshell doesn't recognise the schema string.
+    # NOTE: Registry fallback keeps class normalization available for unknown schemas.
     registry = get_registry(schema_name=schema_version)
 
-    # Load per-class pset classification map only for supported schema families.
-    # Unknown families degrade gracefully: all psets are treated as Custom and
-    # BaseClasses are emitted as empty arrays.
     if schema_supports_ontology:
         ontology_map = _load_ontology_map()
     else:
@@ -363,12 +335,10 @@ def convert_ifc_to_jsonl(ifc_path: Path, out_path: Path) -> int:
             schema_version,
         )
 
-    # Build geometry settings once; the object is reused for every element.
     geom_settings = build_geom_settings()
     logger.info("Geometry will be extracted per-element during processing.")
 
-    # IfcProduct is the base class for physical building elements (walls, doors, etc.)
-    # but IfcProject/IfcSite/IfcBuilding don't inherit from it so we add them manually
+    # NOTE: Spatial roots are not IfcProduct subclasses, so include them explicitly.
     elements: list = list(model.by_type("IfcProduct"))
     for extra in ("IfcProject", "IfcSite", "IfcBuilding"):
         try:
@@ -376,8 +346,7 @@ def convert_ifc_to_jsonl(ifc_path: Path, out_path: Path) -> int:
         except Exception:
             pass
 
-    # in IFC4+ some classes show up under both IfcProduct and the spatial types,
-    # so deduplicate by express ID before processing
+    # NOTE: IFC4+ can surface duplicates across class queries; dedupe by express id.
     seen: set[int] = set()
     unique: list = []
     for elem in elements:
@@ -412,6 +381,7 @@ def convert_ifc_to_jsonl(ifc_path: Path, out_path: Path) -> int:
 
 
 def main() -> None:
+    """Run the IFC-to-JSONL CLI."""
     ap = argparse.ArgumentParser(
         description="Convert IFC file(s) to JSONL (one JSON record per element)."
     )

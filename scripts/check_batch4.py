@@ -13,9 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-# ---------------------------------------------------------------------------
-# Minimal stubs so we can import query_service without installing every dep.
-# ---------------------------------------------------------------------------
+# Minimal stubs so we can import query_service without full runtime deps.
 
 
 # Stub rag_tag.router
@@ -65,9 +63,7 @@ def _make_count_envelope(count: int) -> dict[str, Any]:
     }
 
 
-# ---------------------------------------------------------------------------
-# Import target under test using minimal mocks for heavy deps.
-# ---------------------------------------------------------------------------
+# Import target under test using lightweight mocks for heavy deps.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 # Provide lightweight stubs for packages that require real IFC / GPU resources.
@@ -105,9 +101,7 @@ query_service.SqlQueryError = _FakeSqlQueryError  # type: ignore[attr-defined]
 query_service.query_ifc_sql = None  # replaced per test
 
 
-# ---------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
 
 FAIL = "\033[31mFAIL\033[0m"
 PASS = "\033[32mPASS\033[0m"
@@ -122,9 +116,6 @@ def check(condition: bool, name: str) -> None:
         _failures.append(name)
 
 
-# ---------------------------------------------------------------------------
-# Test 1 — list merge with 2 DBs must not exceed requested limit
-# ---------------------------------------------------------------------------
 print("\n[Test 1] Multi-DB list merge: global limit enforced")
 
 LIMIT = 10
@@ -184,9 +175,6 @@ check(
 )
 
 
-# ---------------------------------------------------------------------------
-# Test 2 — list merge does NOT over-cap when total < limit
-# ---------------------------------------------------------------------------
 print("\n[Test 2] Multi-DB list merge: no over-cap when total < limit")
 
 LIMIT2 = 50
@@ -228,9 +216,6 @@ shown2 = int(m2.group(1)) if m2 else None
 check(shown2 == 8, f"summary 'showing {shown2}' == 8")
 
 
-# ---------------------------------------------------------------------------
-# Test 3 — count intent unaffected
-# ---------------------------------------------------------------------------
 print("\n[Test 3] Count intent: combined count unaffected by limit logic")
 
 envelopes3 = [_make_count_envelope(42), _make_count_envelope(18)]
@@ -261,9 +246,6 @@ check(
 )
 
 
-# ---------------------------------------------------------------------------
-# Test 4 — stale guidance text no longer present
-# ---------------------------------------------------------------------------
 print("\n[Test 4] Stale CSV guidance text absent from user-facing messages")
 
 src_qs = Path(__file__).resolve().parents[1] / "src/rag_tag/query_service.py"
@@ -290,9 +272,6 @@ check(
 )
 
 
-# ---------------------------------------------------------------------------
-# Summary
-# ---------------------------------------------------------------------------
 print()
 if _failures:
     print(f"\033[31m{len(_failures)} check(s) FAILED:\033[0m")

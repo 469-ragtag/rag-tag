@@ -1,3 +1,8 @@
+"""Rule-based routing from user questions to SQL or graph execution.
+
+When cues are ambiguous or unsupported for SQL, routing defaults to graph.
+"""
+
 from __future__ import annotations
 
 import re
@@ -90,6 +95,7 @@ _LEVEL_STOP_WORDS = re.compile(
 
 
 def route_question_rule(question: str) -> RouteDecision:
+    """Route a question using deterministic SQL-vs-graph heuristics."""
     q = question.strip()
     q_lower = q.lower()
 
@@ -124,20 +130,24 @@ def route_question_rule(question: str) -> RouteDecision:
 
 
 def _has_spatial_cues(question_lower: str) -> bool:
+    """Return True when a question contains spatial relationship cues."""
     return any(cue in question_lower for cue in _SPATIAL_CUES)
 
 
 def _has_relation_cues(question_lower: str) -> bool:
+    """Return True for relation terms currently handled outside cue tables."""
     if "contains" in question_lower or "contained" in question_lower:
         return True
     return False
 
 
 def _has_property_cues(question_lower: str) -> bool:
+    """Return True when property/constraint language is present."""
     return _PROPERTY_CUE_RE.search(question_lower) is not None
 
 
 def _detect_sql_intent(question_lower: str) -> SqlIntent | None:
+    """Infer SQL intent from count, existence, or list wording."""
     if any(cue in question_lower for cue in _COUNT_CUES):
         return "count"
     if any(cue in question_lower for cue in _EXISTENCE_CUES):
@@ -148,11 +158,13 @@ def _detect_sql_intent(question_lower: str) -> SqlIntent | None:
 
 
 def _detect_ifc_class(question: str) -> str | None:
+    """Return the first detected IFC class token from a question."""
     classes = _detect_ifc_classes(question)
     return classes[0] if classes else None
 
 
 def _detect_ifc_classes(question: str) -> list[str]:
+    """Return unique IFC classes in first-seen order."""
     matches: list[tuple[int, str]] = []
     for match in _IFC_CLASS_RE.finditer(question):
         matches.append((match.start(), normalize_ifc_class(match.group(0))))
@@ -171,6 +183,7 @@ def _detect_ifc_classes(question: str) -> list[str]:
 
 
 def _detect_level_like(question_lower: str) -> str | None:
+    """Extract a level/storey hint when one can be inferred safely."""
     if any(
         p in question_lower
         for p in (
@@ -199,5 +212,6 @@ def _detect_level_like(question_lower: str) -> str | None:
 
 
 def _mentions_generic_elements(question_lower: str) -> bool:
+    """Return True when generic non-class element terms are used."""
     terms = ("element", "elements", "components")
     return any(term in question_lower for term in terms)

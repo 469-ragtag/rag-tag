@@ -1,1 +1,1 @@
-# CLI entry-point wrappers for rag-tag console scripts.
+"""CLI entry-point wrappers for rag-tag console scripts."""

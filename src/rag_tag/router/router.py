@@ -1,3 +1,8 @@
+"""Select routing strategy and return SQL/graph decisions.
+
+Configured LLM routing is preferred, with deterministic rule fallback.
+"""
+
 from __future__ import annotations
 
 import os
@@ -13,6 +18,7 @@ except ModuleNotFoundError:
 
 
 def _load_env() -> None:
+    """Load ``.env`` from project root when python-dotenv is available."""
     if load_dotenv is None:
         return
     from rag_tag.paths import find_project_root
@@ -23,6 +29,7 @@ def _load_env() -> None:
 
 
 def route_question(question: str, *, debug_llm_io: bool = False) -> RouteDecision:
+    """Route a question with mode-aware LLM fallback selection."""
     _load_env()
     mode = os.getenv("ROUTER_MODE", "").strip().lower()
     if mode in {"rule", "rules", "heuristic"}:
@@ -40,6 +47,7 @@ def _route_with_llm_fallback(
     *,
     debug_llm_io: bool = False,
 ) -> RouteDecision:
+    """Route with the LLM router and fall back to rules on failure."""
     try:
         from .llm import LlmRouterError, route_with_llm
     except Exception as exc:

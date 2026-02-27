@@ -27,15 +27,7 @@ def find_ifc_dir(start_dir: Path | None = None) -> Path | None:
 
 
 def find_bsdd_rdf_path(start_dir: Path | None = None) -> Path:
-    """
-    Returns the default path where we store the downloaded bSDD RDF snapshot.
-
-    We put it in output/metadata/bsdd/ifc43.ttl — alongside generated
-    JSONL/SQLite artifacts, but in its own folder so it stays isolated.
-
-    The file won't exist until you run the refresh script for the first time.
-    That's okay — the schema registry handles a missing file without crashing.
-    """
+    """Return the default local path for the cached bSDD RDF snapshot."""
     root = find_project_root(start_dir)
     if root is None:
         root = Path.cwd()

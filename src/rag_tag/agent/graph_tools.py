@@ -1,16 +1,7 @@
-"""PydanticAI tools for graph queries.
+"""Register PydanticAI tools for IFC graph queries.
 
-Each tool wraps the existing graph query interface from ifc_graph_tool.py,
-preserving the envelope structure (status/data/error) for compatibility.
-
-Fuzzy normalisation is handled here (in the tool layer) so that ifc_graph_tool.py
-remains untouched. The key improvements are:
-
-- fuzzy_find_nodes: score-ranked text search across Name/ObjectType/Description.
-- find_nodes: normalises class_ via rapidfuzz before querying; treats multi-word
-  inputs as name searches; falls back to fuzzy_find_nodes when exact query is empty.
-- list_property_keys: discovers available property keys to aid filter selection.
-- traverse: docstring clarifies contains/contained_in semantics for location queries.
+This module keeps tool responses compatible with the
+``{status, data, error}`` envelope used by ``query_ifc_graph``.
 """
 
 from __future__ import annotations
@@ -27,9 +18,14 @@ from rag_tag.ifc_graph_tool import query_ifc_graph, sanitize_properties_for_llm
 _CLASS_FUZZY_THRESHOLD = 72
 
 
-# ---------------------------------------------------------------------------
-# Module-level helpers (not registered as tools)
-# ---------------------------------------------------------------------------
+def _ok(data: dict[str, Any]) -> dict[str, Any]:
+    """Build a successful tool envelope."""
+    return {"status": "ok", "data": data, "error": None}
+
+
+def _err(error: Any) -> dict[str, Any]:
+    """Build an error tool envelope."""
+    return {"status": "error", "error": error}
 
 
 def _all_class_values(G: nx.DiGraph) -> list[str]:
@@ -109,21 +105,14 @@ def _fuzzy_find_nodes_impl(
             )
 
     results.sort(key=lambda x: x["score"], reverse=True)
-    return {
-        "status": "ok",
-        "data": {
+    return _ok(
+        {
             "query": query,
             "class_filter": class_filter,
             "matches": results[:top_k],
             "total": len(results),
-        },
-        "error": None,
-    }
-
-
-# ---------------------------------------------------------------------------
-# Tool registration
-# ---------------------------------------------------------------------------
+        }
+    )
 
 
 def register_graph_tools(agent: Any) -> None:
@@ -194,14 +183,11 @@ def register_graph_tools(agent: Any) -> None:
             and class_
         ):
             if property_filters:
-                return {
-                    "status": "error",
-                    "error": (
-                        f"Exact match for properties {property_filters} failed. "
-                        "The value might be formatted differently in the raw "
-                        "data. Try using 'fuzzy_find_nodes' instead."
-                    ),
-                }
+                return _err(
+                    f"Exact match for properties {property_filters} failed. "
+                    "The value might be formatted differently in the raw "
+                    "data. Try using 'fuzzy_find_nodes' instead."
+                )
 
         return result
 
@@ -393,11 +379,9 @@ def register_graph_tools(agent: Any) -> None:
                     continue
                 _collect_pset_leaf_keys(str(qto_name), qto_data)
 
-        result: dict[str, Any] = {
-            "status": "ok",
-            "data": {"keys": sorted(key_samples.keys()), "class_filter": class_},
-            "error": None,
-        }
+        result: dict[str, Any] = _ok(
+            {"keys": sorted(key_samples.keys()), "class_filter": class_}
+        )
         if sample_values:
             result["data"]["samples"] = key_samples
         return result

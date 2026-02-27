@@ -1,19 +1,7 @@
-"""
-generate_ontology_map.py
+"""CLI for generating ``ifc_ontology_map.json``.
 
-Run once to export the IFC class hierarchy and known Pset definitions into
-a lightweight JSON file.
-
-Delegates to parse_bsdd_to_map.build_ontology_map() which:
-  - Uses a bSDD / IFC-OWL RDF/TTL snapshot (--rdf) for richer hierarchy
-  - Auto-detects output/metadata/bsdd/ifc43.ttl when --rdf is omitted
-  - Falls back silently to embedded STANDARD_PSETS on any error
-
-The JSON is written to src/rag_tag/parser/ifc_ontology_map.json by default.
-
-Usage:
-  uv run rag-tag-generate-ontology-map
-  uv run rag-tag-generate-ontology-map --rdf output/metadata/bsdd/ifc43.ttl
+The command builds the map from embedded IFC metadata and optionally augments
+class ancestry from a local bSDD/IFC-OWL Turtle snapshot.
 """
 
 from __future__ import annotations
@@ -36,6 +24,7 @@ def _default_out_path() -> Path:
 
 
 def main() -> None:
+    """Parse CLI args, build the ontology map, and write JSON output."""
     default_out = _default_out_path()
     default_rdf = find_bsdd_rdf_path()
 

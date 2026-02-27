@@ -14,8 +14,7 @@ from rag_tag.router import RouteDecision, route_question
 
 
 def find_sqlite_dbs() -> list[Path]:
-    # return all .db files sorted by name so we query every loaded model,
-    # not just whichever one was modified most recently
+    """Return all discovered SQLite DBs in deterministic name order."""
     project_root = find_project_root(Path(__file__).resolve().parent)
     if project_root is None:
         return []
@@ -30,6 +29,7 @@ def find_sqlite_dbs() -> list[Path]:
 
 
 def load_graph(dataset: str | None = None) -> nx.DiGraph:
+    """Build and return the IFC graph for the selected dataset."""
     from rag_tag.parser.jsonl_to_graph import build_graph  # noqa: PLC0415
 
     return build_graph(dataset=dataset)
@@ -39,6 +39,7 @@ def execute_sql_query(
     decision: RouteDecision,
     db_paths: list[Path],
 ) -> dict[str, Any]:
+    """Execute SQL intent across all DBs and merge into one response."""
     if decision.sql_request is None:
         return _sql_error(decision, "Router did not produce a SQL request.")
     if not db_paths:
@@ -47,10 +48,9 @@ def execute_sql_query(
         )
 
     req = decision.sql_request
-    # Canonical effective limit for this request; used as the global cap across DBs.
+    # NOTE: Keep one canonical limit for merged multi-DB list responses.
     effective_limit = req.limit or 50
 
-    # Query every database and merge counts/items across all models.
     combined_count = 0
     combined_total = 0
     combined_items: list[Any] = []
@@ -72,13 +72,10 @@ def execute_sql_query(
     if not last_payload:
         return _sql_error(decision, "All database queries failed.")
 
-    # Enforce global list limit: merged items across all DBs must not exceed the
-    # requested limit.  Each per-DB query already applies the same LIMIT clause,
-    # so the only way to exceed it is when results come from multiple databases.
+    # NOTE: Per-DB queries each apply LIMIT; merged rows can still exceed it.
     if req.intent == "list":
         combined_items = combined_items[:effective_limit]
 
-    # Rebuild summary string with the combined count.
     label = req.ifc_class or "elements"
     if req.intent == "count":
         if req.level_like:
@@ -89,7 +86,6 @@ def execute_sql_query(
             summary = f"Found {combined_count} {label}."
         result_count = combined_count
     else:
-        # Use actual item count post-cap so summary matches displayed rows.
         shown = len(combined_items)
         if req.level_like:
             summary = (
@@ -110,7 +106,6 @@ def execute_sql_query(
             "filters": last_payload.get("filters"),
             "count": result_count,
             "total_count": combined_total,
-            # Return the canonical effective limit, not a per-DB artifact.
             "limit": effective_limit,
             "items": combined_items,
         },
@@ -133,17 +128,7 @@ def execute_graph_query(
     agent: GraphAgent,
     decision: RouteDecision,
 ) -> dict[str, Any]:
-    """Execute graph query via agent.
-
-    Args:
-        question: User question
-        graph: NetworkX graph
-        agent: Graph agent instance
-        decision: Routing decision
-
-    Returns:
-        Result dict with answer, data, or error
-    """
+    """Execute a graph-route question through the graph agent."""
     agent_result = agent.run(question, graph, max_steps=6)
     return {
         "route": "graph",
@@ -162,22 +147,7 @@ def execute_query(
     debug_llm_io: bool = False,
     graph_dataset: str | None = None,
 ) -> dict[str, Any]:
-    """Execute a query through the full pipeline (routing + execution).
-
-    Args:
-        question: User question
-        db_paths: All SQLite databases to query
-        graph: NetworkX graph (or None, will be loaded if needed)
-        agent: Graph agent (or None, will be created if needed)
-        decision: Optional precomputed routing decision
-        debug_llm_io: Enable debug printing
-        graph_dataset: JSONL stem to load (e.g. "Building-Architecture").
-            When None, all .jsonl files in output/ are used.
-
-    Returns:
-        Result dict with answer, route, decision, data, or error.
-        Also returns updated graph and agent if they were loaded/created.
-    """
+    """Route a question and execute it via SQL or graph tools."""
     try:
         if decision is None:
             decision = route_question(question, debug_llm_io=debug_llm_io)
@@ -186,7 +156,6 @@ def execute_query(
             result = execute_sql_query(decision, db_paths)
             return {"result": result, "graph": graph, "agent": agent}
 
-        # Graph route
         graph, agent = _ensure_graph_context(graph, agent, debug_llm_io, graph_dataset)
         result = execute_graph_query(question, graph, agent, decision)
         return {"result": result, "graph": graph, "agent": agent}

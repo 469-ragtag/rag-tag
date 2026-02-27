@@ -1,9 +1,8 @@
-# builds a NetworkX graph from the .jsonl files produced by ifc_to_jsonl.py
-# each node represents an IFC element with its geometry and properties attached
-# edges represent containment (which floor/space something is in),
-# spatial proximity (adjacent_to / connected_to), and topology (above/below/overlaps)
-#
-# run with: uv run rag-tag-jsonl-to-graph
+"""Build a NetworkX graph from IFC element JSONL exports.
+
+Nodes carry element metadata and geometry; edges encode containment and
+derived spatial/topological relations.
+"""
 
 from __future__ import annotations
 
@@ -30,12 +29,13 @@ LOG = logging.getLogger(__name__)
 
 
 def _distance_sq(a: np.ndarray, b: np.ndarray) -> float:
+    """Return squared Euclidean distance between two vectors."""
     diff = a - b
     return float(diff.dot(diff))
 
 
 def distance_between_bboxes(a: tuple, b: tuple) -> float:
-    # minimum distance between two 3D bounding boxes — 0 if they overlap
+    """Return minimum 3D distance between two bounding boxes."""
     amin, amax = a
     bmin, bmax = b
     axis_gaps = [max(bmin[i] - amax[i], amin[i] - bmax[i], 0.0) for i in range(3)]
@@ -43,11 +43,12 @@ def distance_between_bboxes(a: tuple, b: tuple) -> float:
 
 
 def distance_between_points(a: tuple, b: tuple) -> float:
+    """Return Euclidean distance between two 3D points."""
     return float(np.linalg.norm(np.array(a, dtype=float) - np.array(b, dtype=float)))
 
 
 def _bbox_xy_overlap_area(a: tuple, b: tuple) -> float:
-    # how much the footprints of two elements overlap in the XY plane
+    """Return XY footprint overlap area for two 3D bounding boxes."""
     ax0, ay0, _ = a[0]
     ax1, ay1, _ = a[1]
     bx0, by0, _ = b[0]
@@ -58,6 +59,7 @@ def _bbox_xy_overlap_area(a: tuple, b: tuple) -> float:
 
 
 def _bboxes_intersect(a: tuple, b: tuple) -> bool:
+    """Return whether two axis-aligned 3D boxes intersect."""
     amin, amax = a
     bmin, bmax = b
     for i in range(3):
@@ -67,6 +69,7 @@ def _bboxes_intersect(a: tuple, b: tuple) -> bool:
 
 
 def _normalize_positions(positions: list) -> np.ndarray | None:
+    """Return positions as an ``N x 3`` float array when valid."""
     if not positions:
         return None
     arr = np.asarray(positions, dtype=float)
@@ -76,7 +79,7 @@ def _normalize_positions(positions: list) -> np.ndarray | None:
 
 
 def _estimate_cell_size(positions: np.ndarray) -> float:
-    # heuristic: average spacing between elements based on model volume and count
+    """Estimate a spatial-grid cell size from model extent and density."""
     mins = positions.min(axis=0)
     maxs = positions.max(axis=0)
     extent = maxs - mins
@@ -86,12 +89,12 @@ def _estimate_cell_size(positions: np.ndarray) -> float:
 
 
 def _cell_for_point(point: np.ndarray, cell_size: float) -> tuple:
+    """Map a point to its integer spatial-grid cell key."""
     return tuple(np.floor(point / cell_size).astype(int))
 
 
 def _neighbor_cell_keys(key: tuple, radius: int):
-    # yields all grid cell keys at exactly Chebyshev radius from key
-    # radius 0 = just the cell itself, radius 1 = the 26 surrounding cells, etc.
+    """Yield grid cell keys exactly ``radius`` steps from ``key``."""
     if radius == 0:
         yield key
         return
@@ -104,6 +107,7 @@ def _neighbor_cell_keys(key: tuple, radius: int):
 
 
 def _build_spatial_grid(positions: np.ndarray, cell_size: float) -> dict:
+    """Index point positions into integer grid cells."""
     grid: dict = defaultdict(list)
     for idx, point in enumerate(positions):
         grid[_cell_for_point(point, cell_size)].append(idx)
@@ -111,8 +115,7 @@ def _build_spatial_grid(positions: np.ndarray, cell_size: float) -> dict:
 
 
 def compute_adjacency_threshold(positions: list) -> float:
-    # figure out a reasonable distance threshold for "adjacent" elements
-    # using the median nearest-neighbour distance across all centroids
+    """Estimate an adjacency radius from nearest-neighbor centroid distances."""
     if len(positions) < 2:
         return 1.0
     pos = _normalize_positions(positions)
@@ -154,6 +157,7 @@ def compute_adjacency_threshold(positions: list) -> float:
 
 
 def _geom_from_record(rec: dict) -> tuple[tuple | None, tuple | None]:
+    """Extract ``(centroid, bbox)`` tuples from a JSONL element record."""
     geom_block = rec.get("Geometry") or {}
     centroid_raw = geom_block.get("Centroid")
     bbox_raw = geom_block.get("BoundingBox")
@@ -176,8 +180,7 @@ def _geom_from_record(rec: dict) -> tuple[tuple | None, tuple | None]:
 
 
 def _flat_properties(rec: dict) -> dict:
-    # the graph tools still expect a flat "properties" dict on each node
-    # so we pull the top-level fields here for backward compatibility
+    """Return legacy flat node properties expected by graph tools."""
     return {
         "GlobalId": rec.get("GlobalId"),
         "ExpressId": rec.get("ExpressId"),
@@ -190,7 +193,6 @@ def _flat_properties(rec: dict) -> dict:
         "Level": (rec.get("Hierarchy") or {}).get("Level"),
         "TypeName": rec.get("TypeName"),
         "PredefinedType": rec.get("PredefinedType"),
-        # Materials is a list[str]; preserved as-is for membership filtering.
         "Materials": rec.get("Materials") or [],
     }
 
@@ -199,6 +201,7 @@ def _flat_properties(rec: dict) -> dict:
 
 
 def _add_containment_edge(G: nx.DiGraph, parent_id: str, child_id: str) -> None:
+    """Add forward and reverse containment edges when both nodes exist."""
     if parent_id == child_id:
         return
     if parent_id not in G or child_id not in G:
@@ -208,6 +211,7 @@ def _add_containment_edge(G: nx.DiGraph, parent_id: str, child_id: str) -> None:
 
 
 def build_graph_from_jsonl(jsonl_paths: list[Path]) -> nx.DiGraph:
+    """Build a directed IFC graph from one or more JSONL exports."""
     G = nx.DiGraph()
 
     # these two root nodes always exist even if the JSONL doesn't mention them
@@ -325,6 +329,7 @@ def build_graph_from_jsonl(jsonl_paths: list[Path]) -> nx.DiGraph:
 
 
 def add_spatial_adjacency(G: nx.DiGraph, threshold: float | None = None) -> float:
+    """Add symmetric spatial edges between nearby element nodes."""
     element_nodes: list[str] = []
     positions: list[tuple] = []
     bboxes: list[tuple | None] = []
@@ -336,7 +341,7 @@ def add_spatial_adjacency(G: nx.DiGraph, threshold: float | None = None) -> floa
             continue
         centroid = d.get("geometry")
         bbox = d.get("bbox")
-        # fall back to bbox center if we don't have a centroid
+        # NOTE: Some exports miss centroids; bbox center keeps those nodes queryable.
         if centroid is None and bbox is not None:
             mn, mx = bbox
             centroid = tuple((mn[i] + mx[i]) / 2 for i in range(3))
@@ -382,7 +387,7 @@ def add_spatial_adjacency(G: nx.DiGraph, threshold: float | None = None) -> floa
                         d = distance_between_points(centroid_a, centroid_b)
 
                     if d <= threshold:
-                        # distance of 0 means bboxes are literally touching
+                        # NOTE: Zero bbox distance means elements are touching.
                         relation = "connected_to" if d <= 1e-9 else "adjacent_to"
                         G.add_edge(node_a, node_b, relation=relation, distance=d)
                         G.add_edge(node_b, node_a, relation=relation, distance=d)
@@ -391,6 +396,7 @@ def add_spatial_adjacency(G: nx.DiGraph, threshold: float | None = None) -> floa
 
 
 def add_topology_facts(G: nx.DiGraph) -> None:
+    """Add bbox-based topology edges (intersection, overlap, above, below)."""
     element_nodes = []
     element_bboxes = []
 
@@ -430,8 +436,7 @@ def add_topology_facts(G: nx.DiGraph) -> None:
                     source="topology",
                 )
 
-                # only check vertical order if footprints overlap —
-                # otherwise "above/below" doesn't really mean anything
+                # NOTE: Vertical ordering is only meaningful for overlapping footprints.
                 a_min_z, a_max_z = float(bbox_a[0][2]), float(bbox_a[1][2])
                 b_min_z, b_max_z = float(bbox_b[0][2]), float(bbox_b[1][2])
                 if a_min_z > b_max_z:
@@ -453,12 +458,13 @@ def add_topology_facts(G: nx.DiGraph) -> None:
 
 
 def plot_interactive_graph(G: nx.DiGraph, out_html: Path) -> None:
+    """Write an interactive 3D Plotly view of the graph."""
     pos: dict[str, tuple] = {}
     for n, d in G.nodes(data=True):
         geom = d.get("geometry")
         pos[n] = tuple(geom) if geom is not None else None  # type: ignore[arg-type]
 
-    # nodes with no geometry get placed at the average position of their children
+    # NOTE: Container nodes may lack geometry; place them at child centroids.
     for n in G.nodes:
         if pos.get(n) is not None:
             continue
@@ -484,7 +490,7 @@ def plot_interactive_graph(G: nx.DiGraph, out_html: Path) -> None:
     for u, v in G.edges():
         pu = pos.get(u) or (0.0, 0.0, 0.0)
         pv = pos.get(v) or (0.0, 0.0, 0.0)
-        # None breaks the line between separate edges in Plotly
+        # NOTE: Plotly uses None sentinels to break line segments.
         edge_x += [pu[0], pv[0], None]
         edge_y += [pu[1], pv[1], None]
         edge_z += [pu[2], pv[2], None]
@@ -526,7 +532,8 @@ def build_graph(
     jsonl_paths: list[Path] | None = None,
     dataset: str | None = None,
 ) -> nx.DiGraph:
-    # auto-detect jsonl files if no paths given — called with no args from query_service
+    """Load JSONL exports, then add spatial and topology relations."""
+    # NOTE: query_service calls this with no paths, so auto-discovery is required.
     if jsonl_paths is None:
         script_dir = Path(__file__).resolve().parent
         project_root = find_project_root(script_dir) or script_dir.parent.parent.parent
@@ -554,6 +561,7 @@ def build_graph(
 
 
 def main() -> None:
+    """Run the JSONL-to-graph CLI."""
     ap = argparse.ArgumentParser(
         description="Build IFC graph from JSONL and generate 3D visualization."
     )

@@ -1,3 +1,8 @@
+"""CLI entrypoint for interactive IFC query routing and execution.
+
+Coordinates DB selection, tracing setup, and CLI/TUI launch modes.
+"""
+
 from __future__ import annotations
 
 import argparse

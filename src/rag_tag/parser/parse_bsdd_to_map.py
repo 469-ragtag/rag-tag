@@ -1,23 +1,6 @@
-"""
-parse_bsdd_to_map.py
+"""Build IFC ontology maps from embedded schema data and optional RDF.
 
-Parse a bSDD / IFC-OWL RDF/TTL snapshot and generate an offline ontology-map
-JSON file.  The map records:
-
-  IFC class entries:  { "BaseClasses": [...], "ValidPsets": [...] }
-  Pset entries:       { "PropertyName": "IfcTypeName", ... }
-
-If the RDF file is missing, unparseable, or rdflib is unavailable the module
-falls back gracefully to the embedded STANDARD_PSETS dict so downstream
-tooling is never blocked.
-
-Usage (standalone):
-    uv run python -m rag_tag.parser.parse_bsdd_to_map \\
-        --rdf-path output/metadata/bsdd/ifc43.ttl \\
-        --out src/rag_tag/parser/ifc_ontology_map.json
-
-Public API:
-    build_ontology_map(rdf_path)  ->  dict
+Gracefully falls back to embedded mappings when RDF parsing is unavailable.
 """
 
 from __future__ import annotations
@@ -35,19 +18,8 @@ DEFAULT_OUT: Path = Path(__file__).resolve().parent / "ifc_ontology_map.json"
 _IFC_PREFIXES = ("Ifc", "Pset_", "Qto_")
 
 
-# ---------------------------------------------------------------------------
-# Low-level RDF helpers
-# ---------------------------------------------------------------------------
-
-
 def _local_name(node) -> str:
-    """
-    Extract the short token from an RDF URI, BNode, or Literal.
-
-    URIs:    .../IfcWall  or  ...#IfcWall  -> "IfcWall"
-    BNodes:  blank nodes have no useful name  -> ""
-    Literals: return the string value as-is.
-    """
+    """Return the local token for RDF URI, literal, or node value."""
     try:
         import rdflib  # noqa: PLC0415
 
@@ -66,23 +38,14 @@ def _local_name(node) -> str:
 
 
 def _is_ifc_token(name: str) -> bool:
+    """Return True when a token looks like an IFC class or set name."""
     return any(name.startswith(p) for p in _IFC_PREFIXES)
-
-
-# ---------------------------------------------------------------------------
-# Hierarchy expansion
-# ---------------------------------------------------------------------------
 
 
 def _expand_ancestors(
     direct_parents: dict[str, list[str]],
 ) -> dict[str, list[str]]:
-    """
-    Expand direct-parent maps into full ordered ancestor chains.
-
-    The chain for a class is ordered nearest-first (direct parent first,
-    then grandparent, etc.).  Cycles are silently broken.
-    """
+    """Expand direct-parent mappings into nearest-first ancestor chains."""
     cache: dict[str, list[str]] = {}
 
     def _walk(cls: str, visiting: frozenset[str]) -> list[str]:
@@ -104,19 +67,8 @@ def _expand_ancestors(
     return {cls: _walk(cls, frozenset()) for cls in direct_parents}
 
 
-# ---------------------------------------------------------------------------
-# RDF parsing
-# ---------------------------------------------------------------------------
-
-
 def _parse_hierarchy_from_rdf(rdf_path: Path) -> dict[str, list[str]] | None:
-    """
-    Load a bSDD / IFC-OWL Turtle file and return a full ancestor-chain map.
-
-    Reads only ``rdfs:subClassOf`` triples where both ends look like IFC
-    tokens (start with Ifc, Pset_, or Qto_).  Returns None if rdflib is
-    unavailable or the file cannot be parsed.
-    """
+    """Parse ``rdfs:subClassOf`` hierarchy links from an RDF snapshot."""
     try:
         import rdflib  # noqa: PLC0415
         import rdflib.namespace as rdfns  # noqa: PLC0415
@@ -170,29 +122,10 @@ def _parse_hierarchy_from_rdf(rdf_path: Path) -> dict[str, list[str]] | None:
     return _expand_ancestors(direct_parents)
 
 
-# ---------------------------------------------------------------------------
-# Map builder
-# ---------------------------------------------------------------------------
-
-
 def build_ontology_map_from_registry(
     rdf_ancestors: dict[str, list[str]] | None = None,
 ) -> dict:
-    """
-    Build the ontology map from the embedded STANDARD_PSETS registry.
-
-    If *rdf_ancestors* is supplied, it overrides the ifcopenshell-derived
-    ancestor chains for classes that appear in the RDF (richer coverage).
-    Classes not found in the RDF fall back to the ifcopenshell chain.
-
-    Returns a dict with two entry shapes:
-
-      IFC class entries:
-          { "BaseClasses": [<ancestor>, ...], "ValidPsets": [<pset_name>, ...] }
-
-      Pset entries:
-          { <property_name>: "IfcLabel", ... }
-    """
+    """Build ontology entries from embedded pset mappings plus ancestors."""
     from rag_tag.parser.ifc43_schema_registry import (  # noqa: PLC0415
         STANDARD_PSETS,
         get_registry,
@@ -201,7 +134,7 @@ def build_ontology_map_from_registry(
     registry = get_registry()
     result: dict = {}
 
-    # ---- IFC class entries ----
+    # IFC class entries.
     for cls, psets in STANDARD_PSETS.items():
         if rdf_ancestors is not None and cls in rdf_ancestors:
             ancestors: list[str] = rdf_ancestors[cls]
@@ -214,9 +147,8 @@ def build_ontology_map_from_registry(
             "ValidPsets": list(psets.keys()),
         }
 
-    # ---- Pset entries ----
-    # Property type strings are not yet encoded in the RDF so we use
-    # "IfcLabel" as a well-known placeholder consistent with the IFC spec.
+    # NOTE: RDF snapshots currently omit property scalar types, so ``IfcLabel``
+    # is kept as a stable placeholder type.
     for _cls, psets in STANDARD_PSETS.items():
         for pset_name, prop_names in psets.items():
             if pset_name not in result:
@@ -226,21 +158,7 @@ def build_ontology_map_from_registry(
 
 
 def build_ontology_map(rdf_path: Path | None = None) -> dict:
-    """
-    Build the IFC ontology map, optionally augmented by an RDF snapshot.
-
-    Resolution order:
-      1. If *rdf_path* is given and the file exists, parse it for hierarchy.
-      2. If *rdf_path* is None, check the default bSDD path (find_bsdd_rdf_path).
-      3. On any failure (missing file, parse error, no rdflib) fall back to the
-         embedded STANDARD_PSETS registry.  Nothing crashes.
-
-    Args:
-        rdf_path: Path to a bSDD / IFC-OWL Turtle file, or None.
-
-    Returns:
-        Dict conforming to the schema described in build_ontology_map_from_registry.
-    """
+    """Build an ontology map, optionally augmenting ancestry from RDF."""
     rdf_ancestors: dict[str, list[str]] | None = None
     resolved_rdf: Path | None = rdf_path
 
@@ -277,12 +195,8 @@ def build_ontology_map(rdf_path: Path | None = None) -> dict:
     return build_ontology_map_from_registry(rdf_ancestors)
 
 
-# ---------------------------------------------------------------------------
-# CLI entry point (standalone use)
-# ---------------------------------------------------------------------------
-
-
 def main() -> None:
+    """Run the RDF-to-ontology-map CLI."""
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
     try:

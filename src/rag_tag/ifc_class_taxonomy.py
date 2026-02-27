@@ -1,3 +1,8 @@
+"""Normalize IFC class names and resolve common natural-language aliases.
+
+Alias expansion maps user terms to canonical IFC class identifiers.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Iterable

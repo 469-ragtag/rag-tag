@@ -1,8 +1,7 @@
-# takes the .jsonl files from ifc_to_jsonl.py and writes them into SQLite
-# properties and quantities get their own tables with an is_official flag
-# so we can later filter by whether a pset is IFC-standard or custom
-#
-# run with: uv run rag-tag-jsonl-to-sql
+"""Load IFC element JSONL exports into a normalized SQLite schema.
+
+The target database is rebuilt on each run to avoid stale rows.
+"""
 
 from __future__ import annotations
 
@@ -21,6 +20,7 @@ logger = logging.getLogger(__name__)
 
 
 def _coalesce(value: Any) -> str | None:
+    """Return a stripped string value, or None when empty."""
     if value is None:
         return None
     s = str(value).strip()
@@ -28,6 +28,7 @@ def _coalesce(value: Any) -> str | None:
 
 
 def _to_float(value: Any) -> float | None:
+    """Best-effort float conversion that tolerates bad inputs."""
     if value is None:
         return None
     try:
@@ -37,6 +38,7 @@ def _to_float(value: Any) -> float | None:
 
 
 def _insert_element(conn: sqlite3.Connection, rec: dict) -> None:
+    """Insert one element row into the ``elements`` table."""
     conn.execute(
         "INSERT OR IGNORE INTO elements "
         "(express_id, global_id, ifc_class, predefined_type, name, "
@@ -62,6 +64,7 @@ def _collect_property_rows(
     psets: dict[str, dict],
     is_official: int,
 ) -> list[tuple]:
+    """Flatten one property-set block into ``properties`` table rows."""
     rows: list[tuple] = []
     for pset_name, props in psets.items():
         if not isinstance(props, dict):
@@ -79,11 +82,12 @@ def _collect_quantity_rows(
     express_id: int,
     quantities: dict[str, dict],
 ) -> list[tuple]:
+    """Flatten one quantity-set block into ``quantities`` table rows."""
     rows: list[tuple] = []
     for qto_name, qto_props in quantities.items():
         if not isinstance(qto_props, dict):
             continue
-        # anything named Qto_* follows the IFC standard naming convention
+        # NOTE: ``Qto_*`` names follow IFC-standard quantity set conventions.
         is_official = 1 if qto_name.startswith("Qto_") else 0
         for qty_name, value in qto_props.items():
             if qty_name == "id":
@@ -93,9 +97,10 @@ def _collect_quantity_rows(
 
 
 def jsonl_to_sql(jsonl_path: Path, db_path: Path) -> tuple[int, int, int]:
+    """Convert one IFC JSONL export into a fresh SQLite database."""
     logger.info("Reading %s", jsonl_path)
 
-    # always rebuild from scratch so we don't get stale data
+    # NOTE: Rebuild from scratch so stale rows cannot persist between runs.
     if db_path.exists():
         db_path.unlink()
     db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -149,7 +154,7 @@ def jsonl_to_sql(jsonl_path: Path, db_path: Path) -> tuple[int, int, int]:
                 _collect_quantity_rows(express_id, rec.get("Quantities") or {})
             )
 
-    # batch insert everything at once — much faster than row by row
+    # NOTE: Batch inserts are materially faster than per-row writes.
     with conn:
         if all_props:
             conn.executemany(
@@ -179,6 +184,7 @@ def jsonl_to_sql(jsonl_path: Path, db_path: Path) -> tuple[int, int, int]:
 
 
 def main() -> None:
+    """Run the JSONL-to-SQL CLI."""
     ap = argparse.ArgumentParser(
         description="Convert IFC JSONL exports to normalised SQLite databases."
     )

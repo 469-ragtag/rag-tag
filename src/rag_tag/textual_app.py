@@ -34,9 +34,7 @@ _LIST_DISPLAY_LIMIT = 10
 # Maximum sample items shown per graph Q/A block.
 _SAMPLE_DISPLAY_LIMIT = 10
 
-# ---------------------------------------------------------------------------
-# Catppuccin Mocha theme (https://catppuccin.com/palette)
-# ---------------------------------------------------------------------------
+# Catppuccin Mocha palette (https://catppuccin.com/palette).
 _CATPPUCCIN_MOCHA = Theme(
     name="catppuccin-mocha",
     primary="#89b4fa",  # Blue
@@ -53,17 +51,6 @@ _CATPPUCCIN_MOCHA = Theme(
 )
 
 
-# ---------------------------------------------------------------------------
-# Custom Input subclass: frees ctrl+d for the App-level quit binding.
-#
-# Textual's Input maps "delete,ctrl+d" to the delete_right action (readline
-# style forward-delete). Because the focused widget's bindings are checked
-# first, the App-level ("ctrl+d", "quit") binding is never reached.
-#
-# We replace that combined binding with a "delete"-only binding so that
-# ctrl+d no longer matches Input's BINDINGS and naturally bubbles up to the
-# App where the quit binding fires.
-# ---------------------------------------------------------------------------
 class _QueryInput(Input):
     """Input widget that releases ctrl+d so the App can handle it as quit.
 
@@ -87,7 +74,7 @@ class _QueryInput(Input):
 
 
 class QueryApp(App[None]):
-    """A minimal Textual TUI for querying IFC data."""
+    """Minimal Textual TUI for querying IFC data."""
 
     CSS = """
     Screen {
@@ -296,8 +283,6 @@ class QueryApp(App[None]):
             else:
                 widget.remove_class("visible")
 
-    # ------------------------------------------------------------------ actions
-
     async def action_quit(self) -> None:
         """Cancel any running worker then exit the application."""
         self._cancel_worker()
@@ -330,8 +315,6 @@ class QueryApp(App[None]):
         """Scroll the output area down one page (works while Input has focus)."""
         self._output_container().scroll_page_down(animate=True)
 
-    # --------------------------------------------------------------- input flow
-
     def on_input_submitted(self, event: Input.Submitted) -> None:
         """Handle a submitted question."""
         question = event.value.strip()
@@ -344,28 +327,21 @@ class QueryApp(App[None]):
             self.exit()
             return
 
-        # Disable the input while the worker runs to prevent double submission.
         event.input.disabled = True
 
-        # Append the question line immediately.
         self._append_output("")
         self._append_output(f"Q: {question}", style="question")
 
-        # Placeholder that will be replaced with [route] reason once done.
         self._working_widget = Static("   working...", classes="route", markup=False)
         output = self._output_panel()
         output.mount(self._working_widget)
         self._output_container().scroll_end(animate=False)
 
-        # Run the (blocking) query in a background thread to keep UI live.
-        # Store the handle so it can be cancelled on quit or unmount.
         self._worker = self.run_worker(
             functools.partial(self._execute_query, question),
             exclusive=True,
             thread=True,
         )
-
-    # ------------------------------------------------------------------ worker
 
     @staticmethod
     def _worker_cancelled(worker: Worker | None) -> bool:
@@ -436,8 +412,6 @@ class QueryApp(App[None]):
             )
             return
 
-    # ----------------------------------------------------------------- display
-
     def _display_result(self, result: dict[str, Any], duration_ms: float) -> None:
         """Render a completed result.  Always runs on the main event loop."""
         route = result.get("route", "?")
@@ -454,7 +428,6 @@ class QueryApp(App[None]):
         else:
             self._append_output(route_line, style="route")
 
-        # Show error or answer.
         error = result.get("error")
         if error:
             self._append_output(
@@ -507,8 +480,6 @@ class QueryApp(App[None]):
             inp.focus()
         except Exception:
             pass
-
-    # ---------------------------------------------------------- result helpers
 
     def _display_sql_items(self, result: dict[str, Any]) -> None:
         """Show SQL list items in compact rows (capped at _LIST_DISPLAY_LIMIT)."""
@@ -565,8 +536,6 @@ class QueryApp(App[None]):
         for line in lines:
             self._append_output(line, verbose=True)
 
-    # ----------------------------------------------------------- output / status
-
     def _append_output(
         self, text: str, *, style: str = "", verbose: bool = False
     ) -> None:
@@ -591,7 +560,6 @@ class QueryApp(App[None]):
                 for child in non_verbose[:remove_count]:
                     child.remove()
 
-        # Build the CSS class string.
         classes: list[str] = []
         if style:
             classes.append(style)
@@ -622,8 +590,6 @@ class QueryApp(App[None]):
             parts.append(f"{self._last_duration_ms:.0f}ms")
         parts.append("details:on" if self.show_verbose else "details:off")
         return " | ".join(parts)
-
-    # ---------------------------------------------------------------- utilities
 
     @staticmethod
     def _truncate(text: str, max_len: int) -> str:
