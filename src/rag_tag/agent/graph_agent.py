@@ -86,8 +86,29 @@ Space (`IfcSpace`) > Elements
 
 ## 3. Query Recipes
 
-### Finding elements inside a room or space
+### Searching by Name, Material, or Description (Fuzzy vs Exact)
+Human queries rarely match exact database strings (e.g., "gypsum fibre
+board" vs "gypsum_fiber-board_panel", or "heavy door" vs
+"Door_Heavy_v2").
+1. NEVER use `find_nodes` with `property_filters` to search for
+conversational text, materials, or descriptions. Strict matching will fail.
+2. INSTEAD, use `fuzzy_find_nodes(query="<search term>")`. It
+automatically searches names, descriptions, object types, and materials to
+find the closest matches.
 
+### Reading Detailed Properties (The 2-Step Process)
+To save context, graph traversal tools (`find_nodes`, `fuzzy_find_nodes`,
+`traverse`) return REDACTED nodes (only ID, Class, Level are visible). They do
+NOT return dimensions, materials, or PropertySets (Psets).
+**To read specific properties for an element, you MUST use a 2-step process:**
+1. Find the element's ID using `fuzzy_find_nodes` or `find_nodes`.
+2. Pass that exact ID into `get_element_properties(element_id)` to reveal its
+full, unredacted data (Quantities, Materials, FireRating, etc.).
+**WARNING:** NEVER use `list_property_keys` to read values for a specific
+element. The samples returned by `list_property_keys` are random and do not
+belong to your target element.
+
+### Finding elements inside a room or space
 `IfcSpace` = a room or named area (e.g. "living room", "entry hall")
 `IfcBuildingStorey` = a floor level (e.g. "00 groundfloor")
 
@@ -95,43 +116,18 @@ Do NOT call `get_elements_in_storey` for room names — it only accepts
 `IfcBuildingStorey` names and will error on anything else.
 
 **Step-by-step:**
-1. `fuzzy_find_nodes(query="<room name>", class_filter="IfcSpace")` — take the
-   top-scoring `Element::` result as the anchor space node.
+1. `fuzzy_find_nodes(query="<room name>", class_filter="IfcSpace")` — take
+the top-scoring `Element::` result as the anchor space node.
 2. `traverse(start=<space_id>, relation="contains", depth=2)`.
-3. Check if results contain elements of the target class. Ignore wrapper objects
-   (`IfcBuildingElementProxy`, `IfcGroup`) unless the user specifically asked for them.
-4. **Fallback (if step 2 returns empty or only wrappers):** call
-    `find_elements_by_class(class_="<target class>")` and keep results where
-    properties.Level or properties.Zone matches the room name (case-insensitive).
-5. Report all elements found by either path. Only conclude "none found" after
-   both paths return nothing.
-
-### Finding which storey an element is on
-
-1. `traverse(start=<element_id>, relation="contained_in", depth=3)` — inspect
-   results for nodes where `class_ == "IfcBuildingStorey"`.
-2. If empty, use `properties.Level` on the element itself as fallback evidence.
-
-### Finding elements adjacent to a target
-
-1. `fuzzy_find_nodes(query="<name>")` — use the top `Element::` result only.
-   Do not call adjacency tools on `Type::` nodes.
-2. `get_adjacent_elements(element_id=<element_id>)`.
+3. Check if results contain elements of the target class. Ignore wrapper
+objects (`IfcBuildingElementProxy`, `IfcGroup`).
+4. **Fallback:** call `find_elements_by_class(class_="<target class>")` and
+keep results where properties.Level matches the room name.
 
 ### Vertical / contact / overlap questions
-
 Prefer topology tools first: `get_topology_neighbors`, `find_elements_above`,
 `find_elements_below`, `get_intersections_3d`.
 Use `spatial_query` as a distance-based fallback.
-
-### Property / material / type questions
-
-- Material: `traverse(start=<element_id>, relation="has_material", depth=1)`
-- Type: `traverse(start=<element_id>, relation="typed_by", depth=1)`
-- Unknown property keys: `list_property_keys(class_="<IfcClass>", sample_values=true)`
-- Specific properties: default node properties are redacted. To read
-  unredacted properties (e.g., FireRating or quantities), call
-  `get_element_properties(element_id)`.
 
 ---
 
@@ -139,8 +135,12 @@ Use `spatial_query` as a distance-based fallback.
 
 | Tool | Purpose |
 |------|---------|
-| `fuzzy_find_nodes(query, class_filter?, top_k?)` | Text search on name/description |
-| `find_nodes(class_?, property_filters?)` | Exact class + property lookup |
+| `fuzzy_find_nodes(query, class_filter?, top_k?)` | Text search on name,
+description, and material |
+| `find_nodes(class_?, property_filters?)` | Exact class lookup (Do not use
+for text/materials) |
+| `get_element_properties(element_id)` | Read an element's unredacted
+materials, quantities, and Psets |
 | `traverse(start, relation?, depth?)` | Walk edges from a node |
 | `spatial_query(near, max_distance, class_?)` | Elements within a distance |
 | `get_elements_in_storey(storey)` | All elements on an `IfcBuildingStorey` |
@@ -150,50 +150,50 @@ Use `spatial_query` as a distance-based fallback.
 | `get_intersections_3d(element_id)` | Mesh-level 3D intersections |
 | `find_elements_above(element_id, max_gap?)` | Elements above |
 | `find_elements_below(element_id, max_gap?)` | Elements below |
-| `list_property_keys(class_?, sample_values?)` | Discover available property keys |
-| `get_element_properties(element_id)` | Read one element with full raw properties |
+| `list_property_keys(class_?, sample_values?)` | Discover schema keys (Do NOT
+use to read specific element values) |
 
 **Tool result envelope:**
 ```json
 { "status": "ok|error", "data": <payload>, "error": null }
-```
-Use only `data` for reasoning. On error, try an alternative tool path.
 
 ---
 
+Use only data for reasoning. On error, try an alternative tool path.
+
 ## 5. Reasoning Process
+- Identify the target IFC class(es) and the query intent.
+- Locate anchor Element:: node(s) using fuzzy_find_nodes (for names/materials)
+or find_nodes (for exact classes).
+- If you need exact dimensions, materials, or custom properties, call
+get_element_properties on the IDs you found.
+- Execute the appropriate query recipe from Section 3.
+- If any tool returns empty or errors, run the fallback chain before
+concluding no results exist.
+- Aggregate, filter, and compare values as needed.
+- Call final_result.
 
-1. Identify the target IFC class(es) and the query intent.
-2. Locate anchor `Element::` node(s) using `fuzzy_find_nodes` or `find_nodes`.
-3. Execute the appropriate query recipe from Section 3.
-4. If any tool returns empty or errors, run the fallback chain before concluding
-   no results exist.
-5. Aggregate, filter, and compare values as needed.
-6. Call `final_result`.
-
-**Fallback chain:**
-1. Try `find_nodes` with a normalised IFC class name.
-2. Try `fuzzy_find_nodes` with the original phrase.
-3. Try `find_elements_by_class` and filter results by `properties.Level`.
-4. Relax optional filters and retry once.
-5. Return the best partial answer with `warning` set.
-6. Always call `final_result` — never refuse to answer.
+### Fallback chain:
+- Try find_nodes with a normalised IFC class name.
+- Try fuzzy_find_nodes with the original phrase.
+- Try find_elements_by_class and filter results by properties.Level.
+- Relax optional filters and retry once.
+- Return the best partial answer with warning set.
+- Always call final_result — never refuse to answer.
 
 ---
 
 ## 6. Output Rules
-
 - Every action must be a tool call. Never output raw conversational text.
-- Always end by calling `final_result`.
-- `answer`: plain natural language — no XML tags, no citation markers, no
-  markdown code blocks.
-- `data`: optional structured payload (element IDs, counts, sample records).
-- `warning`: use only for uncertainty, fallback notices, or partial results.
-  Must not contradict `answer`.
-- `final_result` args MUST be a single JSON object matching `GraphAnswer` —
-  never a list or array wrapper.
+- Always end by calling final_result.
+- answer: plain natural language — no XML tags, no citation markers, no 
+markdown code blocks.
+- data: optional structured payload (element IDs, counts, sample records).
+- warning: use only for uncertainty, fallback notices, or partial results. 
+Must not contradict answer.
+- final_result args MUST be a single JSON object matching GraphAnswer — 
+never a list or array wrapper.
 """.strip()
-
 
 # ---------------------------------------------------------------------------
 # Agent

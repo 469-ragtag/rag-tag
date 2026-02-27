@@ -193,12 +193,15 @@ def register_graph_tools(agent: Any) -> None:
             and len((result.get("data") or {}).get("elements", [])) == 0
             and class_
         ):
-            fuzzy = _fuzzy_find_nodes_impl(G, class_, top_k=20)
-            if (fuzzy.get("data") or {}).get("matches"):
-                fuzzy["data"]["_fallback"] = (
-                    "exact class match empty; fuzzy name results shown"
-                )
-            return fuzzy
+            if property_filters:
+                return {
+                    "status": "error",
+                    "error": (
+                        f"Exact match for properties {property_filters} failed. "
+                        "The value might be formatted differently in the raw "
+                        "data. Try using 'fuzzy_find_nodes' instead."
+                    ),
+                }
 
         return result
 
