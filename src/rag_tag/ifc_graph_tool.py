@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import logging
 import re
 from collections import deque
+from pathlib import Path
 from typing import Any, Dict, Iterable
 
 import networkx as nx
+
+_logger = logging.getLogger(__name__)
 
 LLM_PAYLOAD_MODE = "llm"
 INTERNAL_PAYLOAD_MODE = "internal"
@@ -58,7 +62,13 @@ def sanitize_properties_for_llm(properties: dict[str, Any] | None) -> dict[str, 
 def build_node_payload(
     node_id: str, node_data: dict[str, Any], *, payload_mode: str = LLM_PAYLOAD_MODE
 ) -> dict[str, Any]:
-    """Build node payload with mode-aware property exposure."""
+    """Build node payload with mode-aware property exposure.
+
+    The ``payload`` key is always present in the returned dict:
+    - In ``INTERNAL_PAYLOAD_MODE``: the full raw payload dict (or None).
+    - In ``LLM_PAYLOAD_MODE``: ``None`` — the LLM sees a null placeholder so
+      the key is structurally stable, but raw payload data is not exposed.
+    """
     mode = _resolve_payload_mode(payload_mode)
     raw_props = node_data.get("properties")
     if mode == INTERNAL_PAYLOAD_MODE:
@@ -66,17 +76,14 @@ def build_node_payload(
     else:
         properties = sanitize_properties_for_llm(raw_props)
 
-    result = {
+    return {
         "id": node_id,
         "label": node_data.get("label"),
         "class_": node_data.get("class_"),
         "properties": properties,
+        # Always include the payload key; value is only exposed in internal mode.
+        "payload": node_data.get("payload") if mode == INTERNAL_PAYLOAD_MODE else None,
     }
-
-    if mode == INTERNAL_PAYLOAD_MODE:
-        result["payload"] = node_data.get("payload")
-
-    return result
 
 
 def _ok(data: dict) -> dict[str, Any]:
@@ -90,6 +97,65 @@ def _err(message: str, code: str, details: dict | None = None) -> dict[str, Any]
     if details:
         error_payload["details"] = details
     return {"status": "error", "data": None, "error": error_payload}
+
+
+def _merge_db_element_data(
+    node_data: dict[str, Any],
+    db_data: dict[str, Any],
+) -> dict[str, Any]:
+    """Merge DB-sourced element data into in-memory node data.
+
+    DB data enriches (fills in or overrides) flat properties and
+    PropertySets/Quantities in the payload.  Other node attributes
+    (geometry, label, class_, graph edges, etc.) are preserved unchanged
+    from the in-memory node.
+
+    Args:
+        node_data: Raw ``G.nodes[node_id]`` dict from the NetworkX graph.
+        db_data: Structured result from ``sql_element_lookup`` with
+            ``properties`` and ``payload`` keys.
+
+    Returns:
+        New dict with merged data (the input dicts are not mutated).
+    """
+    merged: dict[str, Any] = dict(node_data)
+
+    # Merge flat properties: DB values override in-memory for shared keys.
+    db_props = db_data.get("properties") or {}
+    if db_props:
+        existing_props: dict[str, Any] = dict(node_data.get("properties") or {})
+        existing_props.update(db_props)
+        merged["properties"] = existing_props
+
+    # Merge payload sections: DB PropertySets and Quantities enrich in-memory data.
+    db_payload = db_data.get("payload") or {}
+    if db_payload:
+        existing_payload: dict[str, Any] = dict(node_data.get("payload") or {})
+
+        if "PropertySets" in db_payload:
+            existing_psets: dict[str, Any] = dict(
+                existing_payload.get("PropertySets") or {}
+            )
+            db_psets: dict[str, Any] = db_payload["PropertySets"]
+            for section in ("Official", "Custom"):
+                if section in db_psets:
+                    existing_section: dict[str, Any] = dict(
+                        existing_psets.get(section) or {}
+                    )
+                    existing_section.update(db_psets[section])
+                    existing_psets[section] = existing_section
+            existing_payload["PropertySets"] = existing_psets
+
+        if "Quantities" in db_payload:
+            existing_qty: dict[str, Any] = dict(
+                existing_payload.get("Quantities") or {}
+            )
+            existing_qty.update(db_payload["Quantities"])
+            existing_payload["Quantities"] = existing_qty
+
+        merged["payload"] = existing_payload
+
+    return merged
 
 
 def query_ifc_graph(
@@ -846,9 +912,53 @@ def query_ifc_graph(
         if err or not resolved:
             return _err(f"Element not found: {element_id}", "not_found")
 
+        base_node_data: dict[str, Any] = dict(G.nodes[resolved])
+
+        # Attempt DB-backed property enrichment when a DB path is wired into
+        # the graph context.  This is the authoritative source for PropertySets
+        # and Quantities; in-memory payload data is used as a fallback.
+        db_path_raw: Any = G.graph.get("_db_path")
+        if db_path_raw is not None:
+            from rag_tag.sql_element_lookup import (  # noqa: PLC0415
+                lookup_element_by_express_id,
+                lookup_element_by_globalid,
+            )
+
+            db_path = Path(db_path_raw)
+            node_props: dict[str, Any] = base_node_data.get("properties") or {}
+            db_data: dict[str, Any] | None = None
+
+            global_id: Any = node_props.get("GlobalId")
+            if global_id:
+                db_data = lookup_element_by_globalid(db_path, str(global_id))
+
+            if db_data is None:
+                express_id_raw: Any = node_props.get("ExpressId")
+                if express_id_raw is not None:
+                    try:
+                        db_data = lookup_element_by_express_id(
+                            db_path, int(express_id_raw)
+                        )
+                    except (TypeError, ValueError):
+                        _logger.debug(
+                            "get_element_properties: invalid ExpressId %r for %s",
+                            express_id_raw,
+                            resolved,
+                        )
+
+            if db_data is not None:
+                base_node_data = _merge_db_element_data(base_node_data, db_data)
+            else:
+                _logger.debug(
+                    "get_element_properties: DB lookup found no row for %s"
+                    " (db=%s) — using in-memory payload",
+                    resolved,
+                    db_path,
+                )
+
         return _ok(
             build_node_payload(
-                resolved, G.nodes[resolved], payload_mode=INTERNAL_PAYLOAD_MODE
+                resolved, base_node_data, payload_mode=INTERNAL_PAYLOAD_MODE
             )
         )
 

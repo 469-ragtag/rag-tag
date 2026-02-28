@@ -35,6 +35,34 @@ def load_graph(dataset: str | None = None) -> nx.DiGraph:
     return build_graph(dataset=dataset)
 
 
+def _resolve_context_db_path(
+    db_paths: list[Path],
+    graph_dataset: str | None,
+) -> Path | None:
+    """Resolve the primary DB path to wire into the graph context.
+
+    Used so that ``get_element_properties`` can do DB-backed property lookups
+    against the correct database rather than relying solely on in-memory graph
+    data.
+
+    Priority:
+    1. Single DB path → use directly.
+    2. Multiple DBs + *graph_dataset* → first DB whose stem matches the dataset.
+    3. Multiple DBs + no dataset → ``None`` (ambiguous; skip DB lookup).
+    4. No DBs → ``None``.
+    """
+    if not db_paths:
+        return None
+    if len(db_paths) == 1:
+        return db_paths[0]
+    if graph_dataset:
+        for p in db_paths:
+            if p.stem == graph_dataset:
+                return p
+    # Multiple databases with no clear selection — do not guess.
+    return None
+
+
 def execute_sql_query(
     decision: RouteDecision,
     db_paths: list[Path],
@@ -161,6 +189,7 @@ def execute_query(
     decision: RouteDecision | None = None,
     debug_llm_io: bool = False,
     graph_dataset: str | None = None,
+    context_db: Path | None = None,
 ) -> dict[str, Any]:
     """Execute a query through the full pipeline (routing + execution).
 
@@ -173,6 +202,12 @@ def execute_query(
         debug_llm_io: Enable debug printing
         graph_dataset: JSONL stem to load (e.g. "Building-Architecture").
             When None, all .jsonl files in output/ are used.
+        context_db: Explicit DB path to wire into the graph context for
+            ``get_element_properties`` lookups.  When None, it is inferred
+            from *db_paths* and *graph_dataset* via
+            ``_resolve_context_db_path``.  Callers that already know the
+            selected DB (e.g. when ``--db`` was passed explicitly) should
+            supply it here for clarity and correctness.
 
     Returns:
         Result dict with answer, route, decision, data, or error.
@@ -186,8 +221,30 @@ def execute_query(
             result = execute_sql_query(decision, db_paths)
             return {"result": result, "graph": graph, "agent": agent}
 
+        # Resolve the DB path for graph context if not provided by the caller.
+        resolved_context_db = context_db or _resolve_context_db_path(
+            db_paths, graph_dataset
+        )
+
         # Graph route
-        graph, agent = _ensure_graph_context(graph, agent, debug_llm_io, graph_dataset)
+        # Keep backward compatibility with existing helper call sites and
+        # lightweight monkeypatched checks: only pass db_path when we actually
+        # resolved one.
+        if resolved_context_db is None:
+            graph, agent = _ensure_graph_context(
+                graph,
+                agent,
+                debug_llm_io,
+                graph_dataset,
+            )
+        else:
+            graph, agent = _ensure_graph_context(
+                graph,
+                agent,
+                debug_llm_io,
+                graph_dataset,
+                resolved_context_db,
+            )
         result = execute_graph_query(question, graph, agent, decision)
         return {"result": result, "graph": graph, "agent": agent}
 
@@ -201,10 +258,24 @@ def _ensure_graph_context(
     agent: GraphAgent | None,
     debug_llm_io: bool,
     graph_dataset: str | None = None,
+    db_path: Path | None = None,
 ) -> tuple[nx.DiGraph, GraphAgent]:
-    """Load graph and agent instances when missing."""
+    """Load graph and agent instances when missing; wire DB path into graph context.
+
+    Args:
+        graph: Existing graph or None to trigger loading.
+        agent: Existing agent or None to trigger creation.
+        debug_llm_io: Passed through to GraphAgent constructor.
+        graph_dataset: JSONL stem for ``build_graph`` (None = all datasets).
+        db_path: DB path to store on ``graph.graph["_db_path"]`` so that
+            ``get_element_properties`` can perform DB-backed lookups.
+            When None, any previously wired context is preserved.
+    """
     if graph is None:
         graph = load_graph(graph_dataset)
+    if db_path is not None:
+        # Wire the active DB path into the graph for tool-level property lookup.
+        graph.graph["_db_path"] = db_path
     if agent is None:
         agent = GraphAgent(debug_llm_io=debug_llm_io)
     return graph, agent

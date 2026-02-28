@@ -407,7 +407,14 @@ def register_graph_tools(agent: Any) -> None:
         ctx: RunContext[nx.DiGraph],
         element_id: str,
     ) -> dict[str, Any]:
-        """Fetch ALL raw, unredacted properties for a specific element."""
+        """Fetch ALL properties for a specific element (DB-backed when available).
+
+        Looks up *element_id* in the SQLite database wired into the graph
+        context (when available), then merges with the in-memory graph
+        payload.  Falls back to in-memory data only when no DB is configured.
+        Returns the full, unredacted property envelope including PropertySets,
+        Quantities, and flat properties.
+        """
         return query_ifc_graph(
             ctx.deps, "get_element_properties", {"element_id": element_id}
         )

@@ -150,6 +150,7 @@ def main() -> int:
             trace_enabled=args.trace,
             logfire_url=logfire_status.url if logfire_status.enabled else None,
             graph_dataset=graph_dataset,
+            context_db=resolved_db_path,
         )
         return 0
 
@@ -182,6 +183,7 @@ def main() -> int:
                 decision=decision,
                 debug_llm_io=args.input,
                 graph_dataset=graph_dataset,
+                context_db=resolved_db_path,
             )
 
             # Extract components
