@@ -1,7 +1,14 @@
 # builds a NetworkX graph from the .jsonl files produced by ifc_to_jsonl.py
 # each node represents an IFC element with its geometry and properties attached
 # edges represent containment (which floor/space something is in),
-# spatial proximity (adjacent_to / connected_to), and topology (above/below/overlaps)
+# spatial proximity (adjacent_to / connected_to), topology (above/below/overlaps),
+# and explicit IFC semantics (hosts, hosted_by, ifc_connected_to, belongs_to_system,
+# in_zone, classified_as) sourced from the Relationships block added in Batch 0.
+#
+# Edge provenance:
+#   source="ifc"       — explicit relationship extracted from IFC relations
+#   source="heuristic" — spatial adjacency derived from centroid/bbox distance
+#   source="topology"  — bbox intersection / vertical overlap (already present)
 #
 # run with: uv run rag-tag-jsonl-to-graph
 
@@ -195,6 +202,111 @@ def _flat_properties(rec: dict) -> dict:
     }
 
 
+# --- helpers for explicit IFC relationships ---
+
+
+def _normalize_context_label(label: str) -> str:
+    """Return a stable, whitespace-normalised version of a context label.
+
+    Collapses interior runs of whitespace to a single space and strips
+    leading/trailing whitespace so that equivalent labels produce the same
+    deterministic node ID regardless of minor formatting differences.
+    """
+    return " ".join(label.split())
+
+
+def _add_explicit_relationships(
+    G: nx.DiGraph,
+    node_id: str,
+    rels: dict,
+    node_id_by_gid: dict[str, str],
+) -> None:
+    """Materialise the explicit IFC relationships from a record's Relationships block.
+
+    Edges added here carry ``source="ifc"`` to distinguish them from heuristic
+    spatial edges (``source="heuristic"``) and topology edges (``source="topology"``).
+
+    Relationship semantics
+    ----------------------
+    hosts / hosted_by  — element-to-element directed; target resolved via GlobalId.
+    ifc_connected_to   — undirected IFC connectivity; both directions added.
+    belongs_to_system  — element → System context node (created on demand).
+    in_zone            — element → Zone context node (created on demand).
+    classified_as      — element → Classification context node (created on demand).
+    """
+    if node_id not in G:
+        return
+    if not isinstance(rels, dict):
+        return
+
+    # --- element-to-element: hosts ---
+    for target_gid in rels.get("hosts") or []:
+        target = node_id_by_gid.get(target_gid)
+        if target and target in G and target != node_id:
+            G.add_edge(node_id, target, relation="hosts", source="ifc")
+
+    # --- element-to-element: hosted_by ---
+    for target_gid in rels.get("hosted_by") or []:
+        target = node_id_by_gid.get(target_gid)
+        if target and target in G and target != node_id:
+            G.add_edge(node_id, target, relation="hosted_by", source="ifc")
+
+    # --- element-to-element: ifc_connected_to (undirected → both directions) ---
+    for target_gid in rels.get("ifc_connected_to") or []:
+        target = node_id_by_gid.get(target_gid)
+        if target and target in G and target != node_id:
+            G.add_edge(node_id, target, relation="ifc_connected_to", source="ifc")
+            G.add_edge(target, node_id, relation="ifc_connected_to", source="ifc")
+
+    # --- element → System context node ---
+    for raw_label in rels.get("belongs_to_system") or []:
+        label = _normalize_context_label(raw_label)
+        if not label:
+            continue
+        system_nid = f"System::{label}"
+        if system_nid not in G:
+            G.add_node(
+                system_nid,
+                label=label,
+                class_="IfcSystem",
+                node_kind="context",
+                geometry=None,
+            )
+        G.add_edge(node_id, system_nid, relation="belongs_to_system", source="ifc")
+
+    # --- element → Zone context node ---
+    for raw_label in rels.get("in_zone") or []:
+        label = _normalize_context_label(raw_label)
+        if not label:
+            continue
+        zone_nid = f"Zone::{label}"
+        if zone_nid not in G:
+            G.add_node(
+                zone_nid,
+                label=label,
+                class_="IfcZone",
+                node_kind="context",
+                geometry=None,
+            )
+        G.add_edge(node_id, zone_nid, relation="in_zone", source="ifc")
+
+    # --- element → Classification context node ---
+    for raw_label in rels.get("classified_as") or []:
+        label = _normalize_context_label(raw_label)
+        if not label:
+            continue
+        cls_nid = f"Classification::{label}"
+        if cls_nid not in G:
+            G.add_node(
+                cls_nid,
+                label=label,
+                class_="IfcClassificationReference",
+                node_kind="context",
+                geometry=None,
+            )
+        G.add_edge(node_id, cls_nid, relation="classified_as", source="ifc")
+
+
 # --- graph construction ---
 
 
@@ -219,6 +331,15 @@ def build_graph_from_jsonl(jsonl_paths: list[Path]) -> nx.DiGraph:
         "hierarchy": ["aggregates", "contains", "contained_in"],
         "spatial": ["adjacent_to", "connected_to"],
         "topology": ["intersects_bbox", "overlaps_xy", "above", "below"],
+        # explicit IFC relationships extracted from the Relationships block (Batch 0+)
+        "explicit": [
+            "hosts",
+            "hosted_by",
+            "ifc_connected_to",
+            "belongs_to_system",
+            "in_zone",
+            "classified_as",
+        ],
     }
 
     node_id_by_gid: dict[str, str] = {}
@@ -226,6 +347,10 @@ def build_graph_from_jsonl(jsonl_paths: list[Path]) -> nx.DiGraph:
     # we defer containment edges to a second pass because when we read element A,
     # its parent (element B) might not have been added to the graph yet
     deferred_containment: list[tuple[str, str]] = []  # (parent_gid, child_node_id)
+
+    # we also defer explicit relationships: all primary nodes must exist first so
+    # that target GlobalIds can be resolved to their graph node IDs
+    deferred_relationships: list[tuple[str, dict]] = []  # (node_id, relationships)
 
     for jsonl_path in jsonl_paths:
         LOG.info("Reading %s", jsonl_path)
@@ -311,12 +436,26 @@ def build_graph_from_jsonl(jsonl_paths: list[Path]) -> nx.DiGraph:
                 if parent_gid:
                     deferred_containment.append((parent_gid, node_id))
 
-    # second pass — now all nodes exist so we can safely add edges
+                # collect non-empty Relationships blocks for the third pass
+                rels = rec.get("Relationships")
+                if isinstance(rels, dict) and any(rels.values()):
+                    deferred_relationships.append((node_id, rels))
+
+    # second pass — now all nodes exist so we can safely add containment edges
     for parent_gid, child_node_id in deferred_containment:
         parent_node_id = node_id_by_gid.get(parent_gid)
         if parent_node_id is None:
             continue
         _add_containment_edge(G, parent_node_id, child_node_id)
+
+    # third pass — materialise explicit IFC relationships from Relationships blocks
+    explicit_edge_count = 0
+    _before = G.number_of_edges()
+    for node_id, rels in deferred_relationships:
+        _add_explicit_relationships(G, node_id, rels, node_id_by_gid)
+    explicit_edge_count = G.number_of_edges() - _before
+    if explicit_edge_count:
+        LOG.info("Added %d explicit IFC relationship edge(s)", explicit_edge_count)
 
     LOG.info(
         "Graph built: %d nodes, %d edges", G.number_of_nodes(), G.number_of_edges()
@@ -384,8 +523,32 @@ def add_spatial_adjacency(G: nx.DiGraph, threshold: float | None = None) -> floa
                     if d <= threshold:
                         # distance of 0 means bboxes are literally touching
                         relation = "connected_to" if d <= 1e-9 else "adjacent_to"
-                        G.add_edge(node_a, node_b, relation=relation, distance=d)
-                        G.add_edge(node_b, node_a, relation=relation, distance=d)
+                        # Don't overwrite an explicit IFC edge with a heuristic one.
+                        # NetworkX DiGraph only supports one edge per (u, v) pair, so
+                        # if an explicit relationship (source="ifc") already exists for
+                        # this pair we preserve it and skip the heuristic edge.
+                        if (
+                            not G.has_edge(node_a, node_b)
+                            or G[node_a][node_b].get("source") != "ifc"
+                        ):
+                            G.add_edge(
+                                node_a,
+                                node_b,
+                                relation=relation,
+                                distance=d,
+                                source="heuristic",
+                            )
+                        if (
+                            not G.has_edge(node_b, node_a)
+                            or G[node_b][node_a].get("source") != "ifc"
+                        ):
+                            G.add_edge(
+                                node_b,
+                                node_a,
+                                relation=relation,
+                                distance=d,
+                                source="heuristic",
+                            )
 
     return threshold
 
