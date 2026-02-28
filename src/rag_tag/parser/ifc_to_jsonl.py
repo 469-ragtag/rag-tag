@@ -21,6 +21,11 @@ from rag_tag.parser.ifc_geometry_parse import (
     get_element_bounding_box,
     get_element_centroid,
 )
+from rag_tag.parser.ifc_relationships import (
+    RelationBlock,
+    build_relationship_index,
+    empty_relation_block,
+)
 from rag_tag.paths import find_ifc_dir, find_project_root
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
@@ -191,6 +196,7 @@ def extract_element(
     registry,
     *,
     schema_supports_ontology: bool,
+    relationship_index: dict[str, RelationBlock] | None = None,
 ) -> dict:
     try:
         express_id: int | None = element.id()
@@ -307,6 +313,15 @@ def extract_element(
     except Exception:
         pass
 
+    # Relationship block — populated from the pre-built index when available.
+    # Falls back to an empty block so the key is always present in every record.
+    gid_str: str | None = str(global_id) if global_id else None
+    relationships: RelationBlock = (
+        relationship_index.get(gid_str, empty_relation_block())
+        if (relationship_index is not None and gid_str)
+        else empty_relation_block()
+    )
+
     return {
         "GlobalId": str(global_id) if global_id else None,
         "ExpressId": express_id,
@@ -327,6 +342,7 @@ def extract_element(
             "Custom": custom_psets,
         },
         "Quantities": quantities,
+        "Relationships": relationships,
     }
 
 
@@ -367,6 +383,10 @@ def convert_ifc_to_jsonl(ifc_path: Path, out_path: Path) -> int:
     geom_settings = build_geom_settings()
     logger.info("Geometry will be extracted per-element during processing.")
 
+    # Build the relationship index in a single pass over the IFC model.
+    # This avoids repeated model scans and keeps extract_element() O(1) per element.
+    relationship_index = build_relationship_index(model)
+
     # IfcProduct is the base class for physical building elements (walls, doors, etc.)
     # but IfcProject/IfcSite/IfcBuilding don't inherit from it so we add them manually
     elements: list = list(model.by_type("IfcProduct"))
@@ -399,6 +419,7 @@ def convert_ifc_to_jsonl(ifc_path: Path, out_path: Path) -> int:
                     geom_settings,
                     registry,
                     schema_supports_ontology=schema_supports_ontology,
+                    relationship_index=relationship_index,
                 )
             except Exception as exc:
                 logger.warning("Skipping #%s: %s", elem.id(), exc)
