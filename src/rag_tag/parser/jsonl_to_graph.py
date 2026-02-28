@@ -10,6 +10,15 @@
 #   source="heuristic" — spatial adjacency derived from centroid/bbox distance
 #   source="topology"  — bbox intersection / vertical overlap (already present)
 #
+# Payload modes (GRAPH_PAYLOAD_MODE env var):
+#   full    — store the full parsed JSONL record as each node's payload (default).
+#   minimal — store only the fields needed for DB lookup references and basic
+#             filtering (GlobalId, ExpressId, IfcType, ClassRaw, Name).
+#             PropertySets / Quantities / Geometry blocks are omitted, yielding
+#             a smaller in-memory graph.  Dotted pset filters still work when a
+#             DB path is wired into the graph context (get_element_properties uses
+#             a session-level cache to avoid repeated DB opens).
+#
 # run with: uv run rag-tag-jsonl-to-graph
 
 from __future__ import annotations
@@ -18,6 +27,7 @@ import argparse
 import json
 import logging
 import math
+import os
 from collections import defaultdict
 from itertools import product
 from pathlib import Path
@@ -155,6 +165,39 @@ def compute_adjacency_threshold(positions: list) -> float:
     if not nn_distances:
         return 1.0
     return max(0.5, float(np.median(nn_distances)) * 1.5)
+
+
+# --- payload mode helpers ---
+
+
+def _resolve_graph_payload_mode(mode: str) -> str:
+    """Return a validated payload mode string; falls back to 'full' on bad input."""
+    cleaned = (mode or "").strip().lower()
+    return cleaned if cleaned in ("full", "minimal") else "full"
+
+
+def _minimal_payload_stub(rec: dict) -> dict:
+    """Return a compact payload containing only the fields needed for:
+
+    - DB lookup references (GlobalId, ExpressId).
+    - Fuzzy search candidates (Name, IfcType, ClassRaw).
+
+    All other data (PropertySets, Quantities, Geometry, Materials,
+    Relationships) is omitted to reduce memory usage in minimal mode.
+    """
+    stub: dict = {}
+    for key in ("GlobalId", "ExpressId", "IfcType", "ClassRaw", "Name"):
+        val = rec.get(key)
+        if val is not None:
+            stub[key] = val
+    return stub
+
+
+def _make_payload(rec: dict, payload_mode: str) -> dict:
+    """Return the payload dict for a node according to the payload mode."""
+    if payload_mode == "minimal":
+        return _minimal_payload_stub(rec)
+    return rec
 
 
 # --- helpers for reading geometry and properties out of a JSONL record ---
@@ -319,7 +362,11 @@ def _add_containment_edge(G: nx.DiGraph, parent_id: str, child_id: str) -> None:
     G.add_edge(child_id, parent_id, relation="contained_in")
 
 
-def build_graph_from_jsonl(jsonl_paths: list[Path]) -> nx.DiGraph:
+def build_graph_from_jsonl(
+    jsonl_paths: list[Path], payload_mode: str = "full"
+) -> nx.DiGraph:
+    _resolved_mode = _resolve_graph_payload_mode(payload_mode)
+
     G = nx.DiGraph()
 
     # these two root nodes always exist even if the JSONL doesn't mention them
@@ -327,6 +374,7 @@ def build_graph_from_jsonl(jsonl_paths: list[Path]) -> nx.DiGraph:
     G.add_node("IfcBuilding", label="Building", class_="IfcBuilding", geometry=None)
     G.add_edge("IfcProject", "IfcBuilding", relation="aggregates")
 
+    G.graph["_payload_mode"] = _resolved_mode
     G.graph["edge_categories"] = {
         "hierarchy": ["aggregates", "contains", "contained_in"],
         "spatial": ["adjacent_to", "connected_to"],
@@ -380,7 +428,7 @@ def build_graph_from_jsonl(jsonl_paths: list[Path]) -> nx.DiGraph:
                     G.nodes["IfcProject"].update(
                         label=name,
                         class_=ifc_type,
-                        payload=rec,
+                        payload=_make_payload(rec, _resolved_mode),
                         properties=_flat_properties(rec),
                         geometry=centroid,
                         bbox=bbox,
@@ -390,7 +438,7 @@ def build_graph_from_jsonl(jsonl_paths: list[Path]) -> nx.DiGraph:
                     G.nodes["IfcBuilding"].update(
                         label=name,
                         class_=ifc_type,
-                        payload=rec,
+                        payload=_make_payload(rec, _resolved_mode),
                         properties=_flat_properties(rec),
                         geometry=centroid,
                         bbox=bbox,
@@ -407,7 +455,7 @@ def build_graph_from_jsonl(jsonl_paths: list[Path]) -> nx.DiGraph:
                         z_min=(bbox[0][2] if bbox else None),
                         z_max=(bbox[1][2] if bbox else None),
                         height=((bbox[1][2] - bbox[0][2]) if bbox else None),
-                        payload=rec,
+                        payload=_make_payload(rec, _resolved_mode),
                     )
                     G.add_edge("IfcBuilding", node_id, relation="aggregates")
                 else:
@@ -427,7 +475,7 @@ def build_graph_from_jsonl(jsonl_paths: list[Path]) -> nx.DiGraph:
                             if bbox
                             else None
                         ),
-                        payload=rec,
+                        payload=_make_payload(rec, _resolved_mode),
                     )
 
                 node_id_by_gid[gid] = node_id
@@ -554,6 +602,13 @@ def add_spatial_adjacency(G: nx.DiGraph, threshold: float | None = None) -> floa
 
 
 def add_topology_facts(G: nx.DiGraph) -> None:
+    def _add_topology_edge(u: str, v: str, **attrs: object) -> None:
+        # DiGraph supports one edge per (u, v). Preserve explicit IFC semantics
+        # when a pair already has source="ifc".
+        if G.has_edge(u, v) and G[u][v].get("source") == "ifc":
+            return
+        G.add_edge(u, v, source="topology", **attrs)
+
     element_nodes = []
     element_bboxes = []
 
@@ -573,24 +628,22 @@ def add_topology_facts(G: nx.DiGraph) -> None:
             bbox_b = element_bboxes[j]
 
             if _bboxes_intersect(bbox_a, bbox_b):
-                G.add_edge(a, b, relation="intersects_bbox", source="topology")
-                G.add_edge(b, a, relation="intersects_bbox", source="topology")
+                _add_topology_edge(a, b, relation="intersects_bbox")
+                _add_topology_edge(b, a, relation="intersects_bbox")
 
             overlap_area = _bbox_xy_overlap_area(bbox_a, bbox_b)
             if overlap_area > 0.0:
-                G.add_edge(
+                _add_topology_edge(
                     a,
                     b,
                     relation="overlaps_xy",
                     overlap_area_xy=overlap_area,
-                    source="topology",
                 )
-                G.add_edge(
+                _add_topology_edge(
                     b,
                     a,
                     relation="overlaps_xy",
                     overlap_area_xy=overlap_area,
-                    source="topology",
                 )
 
                 # only check vertical order if footprints overlap —
@@ -599,20 +652,12 @@ def add_topology_facts(G: nx.DiGraph) -> None:
                 b_min_z, b_max_z = float(bbox_b[0][2]), float(bbox_b[1][2])
                 if a_min_z > b_max_z:
                     gap = a_min_z - b_max_z
-                    G.add_edge(
-                        a, b, relation="above", vertical_gap=gap, source="topology"
-                    )
-                    G.add_edge(
-                        b, a, relation="below", vertical_gap=gap, source="topology"
-                    )
+                    _add_topology_edge(a, b, relation="above", vertical_gap=gap)
+                    _add_topology_edge(b, a, relation="below", vertical_gap=gap)
                 elif b_min_z > a_max_z:
                     gap = b_min_z - a_max_z
-                    G.add_edge(
-                        b, a, relation="above", vertical_gap=gap, source="topology"
-                    )
-                    G.add_edge(
-                        a, b, relation="below", vertical_gap=gap, source="topology"
-                    )
+                    _add_topology_edge(b, a, relation="above", vertical_gap=gap)
+                    _add_topology_edge(a, b, relation="below", vertical_gap=gap)
 
 
 def plot_interactive_graph(G: nx.DiGraph, out_html: Path) -> None:
@@ -688,6 +733,7 @@ def plot_interactive_graph(G: nx.DiGraph, out_html: Path) -> None:
 def build_graph(
     jsonl_paths: list[Path] | None = None,
     dataset: str | None = None,
+    payload_mode: str | None = None,
 ) -> nx.DiGraph:
     # auto-detect jsonl files if no paths given — called with no args from query_service
     if jsonl_paths is None:
@@ -710,7 +756,14 @@ def build_graph(
                     "Run: uv run rag-tag-ifc-to-jsonl"
                 )
 
-    G = build_graph_from_jsonl(jsonl_paths)
+    # Resolve payload mode: explicit param > env var > default "full".
+    _mode = _resolve_graph_payload_mode(
+        payload_mode
+        if payload_mode is not None
+        else os.environ.get("GRAPH_PAYLOAD_MODE", "full")
+    )
+
+    G = build_graph_from_jsonl(jsonl_paths, payload_mode=_mode)
     add_spatial_adjacency(G)
     add_topology_facts(G)
     return G

@@ -29,10 +29,22 @@ def find_sqlite_dbs() -> list[Path]:
     return candidates
 
 
-def load_graph(dataset: str | None = None) -> nx.DiGraph:
+def load_graph(
+    dataset: str | None = None,
+    payload_mode: str | None = None,
+) -> nx.DiGraph:
+    """Build the NetworkX graph from JSONL output files.
+
+    Args:
+        dataset: JSONL stem to load (e.g. ``"Building-Architecture"``).
+            When ``None``, all ``.jsonl`` files in ``output/`` are used.
+        payload_mode: Graph payload mode (``"full"`` or ``"minimal"``).
+            When ``None``, the ``GRAPH_PAYLOAD_MODE`` env var is used,
+            defaulting to ``"full"`` if unset.
+    """
     from rag_tag.parser.jsonl_to_graph import build_graph  # noqa: PLC0415
 
-    return build_graph(dataset=dataset)
+    return build_graph(dataset=dataset, payload_mode=payload_mode)
 
 
 def _resolve_context_db_path(
@@ -190,6 +202,7 @@ def execute_query(
     debug_llm_io: bool = False,
     graph_dataset: str | None = None,
     context_db: Path | None = None,
+    payload_mode: str | None = None,
 ) -> dict[str, Any]:
     """Execute a query through the full pipeline (routing + execution).
 
@@ -208,6 +221,9 @@ def execute_query(
             ``_resolve_context_db_path``.  Callers that already know the
             selected DB (e.g. when ``--db`` was passed explicitly) should
             supply it here for clarity and correctness.
+        payload_mode: Optional graph payload mode override (``"full"`` or
+            ``"minimal"``).  When None, graph construction uses the
+            ``GRAPH_PAYLOAD_MODE`` env var defaulting to ``"full"``.
 
     Returns:
         Result dict with answer, route, decision, data, or error.
@@ -230,12 +246,28 @@ def execute_query(
         # Keep backward compatibility with existing helper call sites and
         # lightweight monkeypatched checks: only pass db_path when we actually
         # resolved one.
-        if resolved_context_db is None:
+        if resolved_context_db is None and payload_mode is None:
             graph, agent = _ensure_graph_context(
                 graph,
                 agent,
                 debug_llm_io,
                 graph_dataset,
+            )
+        elif resolved_context_db is None:
+            graph, agent = _ensure_graph_context(
+                graph,
+                agent,
+                debug_llm_io,
+                graph_dataset,
+                payload_mode=payload_mode,
+            )
+        elif payload_mode is None:
+            graph, agent = _ensure_graph_context(
+                graph,
+                agent,
+                debug_llm_io,
+                graph_dataset,
+                resolved_context_db,
             )
         else:
             graph, agent = _ensure_graph_context(
@@ -244,6 +276,7 @@ def execute_query(
                 debug_llm_io,
                 graph_dataset,
                 resolved_context_db,
+                payload_mode=payload_mode,
             )
         result = execute_graph_query(question, graph, agent, decision)
         return {"result": result, "graph": graph, "agent": agent}
@@ -259,6 +292,7 @@ def _ensure_graph_context(
     debug_llm_io: bool,
     graph_dataset: str | None = None,
     db_path: Path | None = None,
+    payload_mode: str | None = None,
 ) -> tuple[nx.DiGraph, GraphAgent]:
     """Load graph and agent instances when missing; wire DB path into graph context.
 
@@ -270,12 +304,23 @@ def _ensure_graph_context(
         db_path: DB path to store on ``graph.graph["_db_path"]`` so that
             ``get_element_properties`` can perform DB-backed lookups.
             When None, any previously wired context is preserved.
+        payload_mode: Optional graph payload mode override for graph loading.
     """
     if graph is None:
-        graph = load_graph(graph_dataset)
+        graph = load_graph(graph_dataset, payload_mode=payload_mode)
     if db_path is not None:
         # Wire the active DB path into the graph for tool-level property lookup.
-        graph.graph["_db_path"] = db_path
+        resolved_db_path = db_path.expanduser().resolve()
+        prev_db_raw = graph.graph.get("_db_path")
+        prev_db_path = (
+            Path(prev_db_raw).expanduser().resolve()
+            if prev_db_raw is not None
+            else None
+        )
+        if prev_db_path != resolved_db_path:
+            graph.graph.pop("_property_cache", None)
+            graph.graph.pop("_property_key_cache", None)
+        graph.graph["_db_path"] = resolved_db_path
     if agent is None:
         agent = GraphAgent(debug_llm_io=debug_llm_io)
     return graph, agent

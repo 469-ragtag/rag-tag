@@ -190,6 +190,7 @@ class QueryApp(App[None]):
         logfire_url: str | None = None,
         graph_dataset: str | None = None,
         context_db: Path | None = None,
+        graph_payload_mode: str | None = None,
     ) -> None:
         """Initialize the TUI app.
 
@@ -209,11 +210,15 @@ class QueryApp(App[None]):
                 that ``get_element_properties`` can do DB-backed lookups.
                 When None, the service falls back to auto-resolution from
                 *db_paths* and *graph_dataset*.
+            graph_payload_mode: Optional graph payload mode override
+                (``"full"`` or ``"minimal"``).  When None, the service uses
+                ``GRAPH_PAYLOAD_MODE`` from environment (default ``"full"``).
         """
         super().__init__()
         self.db_paths = db_paths
         self.graph_dataset: str | None = graph_dataset
         self.context_db: Path | None = context_db
+        self.graph_payload_mode: str | None = graph_payload_mode
         # --input / debug_llm_io would write to stderr and corrupt the TUI.
         # Suppress it and record that we did so we can warn the user.
         self._input_flag_ignored: bool = bool(debug_llm_io)
@@ -418,6 +423,7 @@ class QueryApp(App[None]):
                 debug_llm_io=self.debug_llm_io,
                 graph_dataset=self.graph_dataset,
                 context_db=self.context_db,
+                payload_mode=self.graph_payload_mode,
             )
 
             result: dict[str, Any] = result_bundle["result"]
@@ -650,6 +656,7 @@ def run_tui(
     logfire_url: str | None = None,
     graph_dataset: str | None = None,
     context_db: Path | None = None,
+    graph_payload_mode: str | None = None,
 ) -> None:
     """Launch the Textual TUI.
 
@@ -667,6 +674,9 @@ def run_tui(
         context_db: Explicit DB path to wire into the graph context so that
             ``get_element_properties`` can do DB-backed lookups.  When None,
             the service auto-resolves from *db_paths* and *graph_dataset*.
+        graph_payload_mode: Optional graph payload mode override
+            (``"full"`` or ``"minimal"``).  When None, the service uses
+            ``GRAPH_PAYLOAD_MODE`` from environment (default ``"full"``).
     """
     if db_paths is None:
         db_paths = find_sqlite_dbs()
@@ -692,6 +702,7 @@ def run_tui(
             logfire_url=logfire_url,
             graph_dataset=graph_dataset,
             context_db=context_db,
+            graph_payload_mode=graph_payload_mode,
         )
         app.run()
     finally:

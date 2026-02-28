@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import logging
 import re
-from collections import deque
+from collections import OrderedDict, deque
 from pathlib import Path
 from typing import Any, Dict, Iterable
 
 import networkx as nx
 
 _logger = logging.getLogger(__name__)
+
+# Sentinel: distinguishes "not yet cached" from "cached, result was None".
+_CACHE_MISS = object()
+_PROPERTY_CACHE_MAX_ENTRIES = 1024
 
 LLM_PAYLOAD_MODE = "llm"
 INTERNAL_PAYLOAD_MODE = "internal"
@@ -105,7 +109,7 @@ def _merge_db_element_data(
 ) -> dict[str, Any]:
     """Merge DB-sourced element data into in-memory node data.
 
-    DB data enriches (fills in or overrides) flat properties and
+    DB data enriches (fills in) flat properties and
     PropertySets/Quantities in the payload.  Other node attributes
     (geometry, label, class_, graph edges, etc.) are preserved unchanged
     from the in-memory node.
@@ -120,12 +124,30 @@ def _merge_db_element_data(
     """
     merged: dict[str, Any] = dict(node_data)
 
-    # Merge flat properties: DB values override in-memory for shared keys.
+    def _merge_missing(
+        existing: dict[str, Any], incoming: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Merge nested mappings while preserving richer in-memory values."""
+        merged_dict: dict[str, Any] = dict(existing)
+        for key, incoming_value in incoming.items():
+            if key not in merged_dict:
+                merged_dict[key] = incoming_value
+                continue
+
+            existing_value = merged_dict[key]
+            if isinstance(existing_value, dict) and isinstance(incoming_value, dict):
+                merged_dict[key] = _merge_missing(existing_value, incoming_value)
+                continue
+
+            if existing_value is None or existing_value == "":
+                merged_dict[key] = incoming_value
+        return merged_dict
+
+    # Merge flat properties: DB values only fill missing in-memory fields.
     db_props = db_data.get("properties") or {}
     if db_props:
         existing_props: dict[str, Any] = dict(node_data.get("properties") or {})
-        existing_props.update(db_props)
-        merged["properties"] = existing_props
+        merged["properties"] = _merge_missing(existing_props, db_props)
 
     # Merge payload sections: DB PropertySets and Quantities enrich in-memory data.
     db_payload = db_data.get("payload") or {}
@@ -142,20 +164,111 @@ def _merge_db_element_data(
                     existing_section: dict[str, Any] = dict(
                         existing_psets.get(section) or {}
                     )
-                    existing_section.update(db_psets[section])
-                    existing_psets[section] = existing_section
+                    db_section: dict[str, Any] = dict(db_psets.get(section) or {})
+                    existing_psets[section] = _merge_missing(
+                        existing_section, db_section
+                    )
             existing_payload["PropertySets"] = existing_psets
 
         if "Quantities" in db_payload:
             existing_qty: dict[str, Any] = dict(
                 existing_payload.get("Quantities") or {}
             )
-            existing_qty.update(db_payload["Quantities"])
-            existing_payload["Quantities"] = existing_qty
+            db_qty: dict[str, Any] = dict(db_payload.get("Quantities") or {})
+            existing_payload["Quantities"] = _merge_missing(existing_qty, db_qty)
 
         merged["payload"] = existing_payload
 
     return merged
+
+
+def _get_property_cache(G: nx.DiGraph) -> OrderedDict[tuple[str, str], Any]:
+    """Return or create the session-level property cache stored on the graph.
+
+    The cache lives at ``G.graph["_property_cache"]`` and is keyed by
+    ``(<resolved-db-path>, <node-id>)``.
+    Values are DB element data dicts (or ``None`` when not found), with
+    ``_CACHE_MISS`` used as the "not yet fetched" sentinel so that a ``None``
+    result (element absent from DB) is not re-fetched on subsequent calls.
+
+    The cache is bounded (LRU-style) to avoid unbounded memory growth in
+    long-lived sessions.
+    """
+    cache_obj = G.graph.get("_property_cache")
+    if isinstance(cache_obj, OrderedDict):
+        return cache_obj
+    if isinstance(cache_obj, dict):
+        cache: OrderedDict[tuple[str, str], Any] = OrderedDict(cache_obj.items())
+    else:
+        cache = OrderedDict()
+    G.graph["_property_cache"] = cache
+    return cache
+
+
+def _cached_db_lookup(
+    G: nx.DiGraph,
+    node_id: str,
+    db_path: Path,
+    db_conn: Any = None,
+) -> dict[str, Any] | None:
+    """Look up element data from the SQLite DB with a graph-level result cache.
+
+    Avoids reopening the database for the same element within a single agent
+    session. The first call for a given ``(db_path, node_id)`` pair performs
+    the lookup and stores the result (or ``None``) in
+    ``G.graph["_property_cache"]``.
+    Subsequent calls return the cached value immediately.
+
+    Args:
+        G: NetworkX graph with optional ``_property_cache`` graph attribute.
+        node_id: Graph node identifier used as part of the cache key.
+        db_path: Path to the SQLite database file.
+        db_conn: Optional open SQLite connection reused across many lookups.
+
+    Returns:
+        DB element data dict (``properties`` + ``payload`` keys) or ``None``
+        when the element is not present in the database.
+    """
+    cache = _get_property_cache(G)
+    cache_key = (str(db_path.expanduser().resolve()), node_id)
+    cached = cache.get(cache_key, _CACHE_MISS)
+    if cached is not _CACHE_MISS:
+        cache.move_to_end(cache_key)
+        return cached  # type: ignore[return-value]
+
+    from rag_tag.sql_element_lookup import (  # noqa: PLC0415
+        lookup_element_by_express_id,
+        lookup_element_by_globalid,
+    )
+
+    node_props: dict[str, Any] = (G.nodes.get(node_id) or {}).get("properties") or {}
+    db_data: dict[str, Any] | None = None
+
+    global_id = node_props.get("GlobalId")
+    if global_id:
+        db_data = lookup_element_by_globalid(db_path, str(global_id), conn=db_conn)
+
+    if db_data is None:
+        express_id_raw = node_props.get("ExpressId")
+        if express_id_raw is not None:
+            try:
+                db_data = lookup_element_by_express_id(
+                    db_path,
+                    int(express_id_raw),
+                    conn=db_conn,
+                )
+            except (TypeError, ValueError):
+                _logger.debug(
+                    "_cached_db_lookup: invalid ExpressId %r for %s",
+                    express_id_raw,
+                    node_id,
+                )
+
+    cache[cache_key] = db_data
+    cache.move_to_end(cache_key)
+    while len(cache) > _PROPERTY_CACHE_MAX_ENTRIES:
+        cache.popitem(last=False)
+    return db_data
 
 
 def query_ifc_graph(
@@ -332,7 +445,11 @@ def query_ifc_graph(
             seen.add(key)
             yield nbr, edge
 
-    def _apply_property_filters(node_id: str, filters: Dict[str, Any]) -> bool:
+    def _apply_property_filters(
+        node_id: str,
+        filters: Dict[str, Any],
+        db_conn: Any = None,
+    ) -> bool:
         if not filters:
             return True
         data = G.nodes[node_id]
@@ -347,6 +464,52 @@ def query_ifc_graph(
         pset_block = payload.get("PropertySets") or {}
         if not isinstance(pset_block, dict):
             pset_block = {}
+
+        # Effective Quantities block — in-memory first; may be enriched below.
+        _effective_quantities: dict[str, Any] = payload.get("Quantities") or {}
+        if not isinstance(_effective_quantities, dict):
+            _effective_quantities = {}
+
+        def _flat_prop_matches(prop_val: Any, expected: Any) -> bool:
+            # List-valued property (e.g. Materials): support membership testing
+            # so {"Materials": "gypsum"} matches ["gypsum", ...].
+            if isinstance(prop_val, list):
+                if isinstance(expected, str):
+                    return expected in prop_val
+                if isinstance(expected, list):
+                    return all(v in prop_val for v in expected)
+                return False
+            return prop_val == expected
+
+        # Minimal payload mode: pset_block will be empty because PropertySets
+        # are not stored in-memory. When nested pset lookups are required and a
+        # DB path is wired into the graph, fetch the full element data from the
+        # DB (session-cached) so filters like "Pset_WallCommon.FireRating" or
+        # flat-key fallbacks like {"ThermalTransmittance": 0.3} still work.
+        _has_dotted_filter = any("." in k for k in filters)
+        _needs_flat_pset_fallback = any(
+            "." not in key
+            and (key not in props or not _flat_prop_matches(props.get(key), expected))
+            for key, expected in filters.items()
+        )
+        if (_has_dotted_filter or _needs_flat_pset_fallback) and not pset_block:
+            _db_path_raw: Any = G.graph.get("_db_path")
+            if _db_path_raw is not None:
+                _db_data = _cached_db_lookup(
+                    G,
+                    node_id,
+                    Path(_db_path_raw),
+                    db_conn=db_conn,
+                )
+                if _db_data is not None:
+                    _db_payload: dict[str, Any] = _db_data.get("payload") or {}
+                    if isinstance(_db_payload, dict):
+                        _enriched_psets = _db_payload.get("PropertySets") or {}
+                        if isinstance(_enriched_psets, dict):
+                            pset_block = _enriched_psets
+                        _enriched_qty = _db_payload.get("Quantities") or {}
+                        if isinstance(_enriched_qty, dict):
+                            _effective_quantities = _enriched_qty
 
         def _iter_psets() -> Iterable[tuple[str, dict[str, Any]]]:
             """Yield (pset_name, pset_dict) from Official/Custom psets and Quantities.
@@ -368,11 +531,10 @@ def query_ifc_graph(
 
             # Also expose Quantities blocks so that dotted keys like
             # "Qto_WallBaseQuantities.Length" are matched by _match_dotted.
-            quantities_block = payload.get("Quantities") or {}
-            if isinstance(quantities_block, dict):
-                for qto_name, qto_data in quantities_block.items():
-                    if isinstance(qto_data, dict):
-                        yield str(qto_name), qto_data
+            # _effective_quantities was resolved above (in-memory or DB-enriched).
+            for qto_name, qto_data in _effective_quantities.items():
+                if isinstance(qto_data, dict):
+                    yield str(qto_name), qto_data
 
         def _nested_lookup(
             mapping: dict[str, Any], dotted_path: str
@@ -414,17 +576,7 @@ def query_ifc_graph(
             # Flat key: check direct properties first.  Require key existence so
             # that a missing key never accidentally matches an expected None.
             if key in props:
-                prop_val = props[key]
-                # List-valued property (e.g. Materials): support membership
-                # testing so {"Materials": "gypsum"} matches ["gypsum", ...].
-                if isinstance(prop_val, list):
-                    if isinstance(expected, str) and expected in prop_val:
-                        continue
-                    if isinstance(expected, list) and all(
-                        v in prop_val for v in expected
-                    ):
-                        continue
-                elif prop_val == expected:
+                if _flat_prop_matches(props[key], expected):
                     continue
                 # Key exists in flat props but value mismatches; still fall
                 # through to nested psets (same property name may appear there).
@@ -642,14 +794,29 @@ def query_ifc_graph(
         if property_filters and not isinstance(property_filters, dict):
             return _err("Invalid param: property_filters must be an object", "invalid")
 
-        matches = []
-        for n, d in G.nodes(data=True):
-            if class_filter is not None:
-                if str(d.get("class_", "")).lower() != class_filter.lower():
+        db_conn = None
+        try:
+            db_path_raw = G.graph.get("_db_path")
+            if db_path_raw is not None and property_filters:
+                from rag_tag.sql_element_lookup import (  # noqa: PLC0415
+                    open_lookup_connection,
+                )
+
+                db_conn = open_lookup_connection(Path(db_path_raw))
+
+            matches = []
+            for n, d in G.nodes(data=True):
+                if class_filter is not None:
+                    if str(d.get("class_", "")).lower() != class_filter.lower():
+                        continue
+                if not _apply_property_filters(n, property_filters, db_conn=db_conn):
                     continue
-            if not _apply_property_filters(n, property_filters):
-                continue
-            matches.append(build_node_payload(n, d, payload_mode=resolved_payload_mode))
+                matches.append(
+                    build_node_payload(n, d, payload_mode=resolved_payload_mode)
+                )
+        finally:
+            if db_conn is not None:
+                db_conn.close()
         return _ok({"class": class_filter, "elements": matches})
 
     if action == "traverse":
@@ -915,37 +1082,12 @@ def query_ifc_graph(
         base_node_data: dict[str, Any] = dict(G.nodes[resolved])
 
         # Attempt DB-backed property enrichment when a DB path is wired into
-        # the graph context.  This is the authoritative source for PropertySets
-        # and Quantities; in-memory payload data is used as a fallback.
+        # the graph context.  Uses the session-level cache to avoid reopening
+        # the database for elements already fetched during filter evaluation.
         db_path_raw: Any = G.graph.get("_db_path")
         if db_path_raw is not None:
-            from rag_tag.sql_element_lookup import (  # noqa: PLC0415
-                lookup_element_by_express_id,
-                lookup_element_by_globalid,
-            )
-
             db_path = Path(db_path_raw)
-            node_props: dict[str, Any] = base_node_data.get("properties") or {}
-            db_data: dict[str, Any] | None = None
-
-            global_id: Any = node_props.get("GlobalId")
-            if global_id:
-                db_data = lookup_element_by_globalid(db_path, str(global_id))
-
-            if db_data is None:
-                express_id_raw: Any = node_props.get("ExpressId")
-                if express_id_raw is not None:
-                    try:
-                        db_data = lookup_element_by_express_id(
-                            db_path, int(express_id_raw)
-                        )
-                    except (TypeError, ValueError):
-                        _logger.debug(
-                            "get_element_properties: invalid ExpressId %r for %s",
-                            express_id_raw,
-                            resolved,
-                        )
-
+            db_data: dict[str, Any] | None = _cached_db_lookup(G, resolved, db_path)
             if db_data is not None:
                 base_node_data = _merge_db_element_data(base_node_data, db_data)
             else:

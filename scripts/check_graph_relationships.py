@@ -31,9 +31,7 @@ import networkx as nx  # noqa: E402 (networkx is a direct dep)
 from rag_tag.parser.jsonl_to_graph import (  # noqa: E402
     _add_explicit_relationships,
     _normalize_context_label,
-    add_spatial_adjacency,
     build_graph,
-    build_graph_from_jsonl,
 )
 
 # ---------------------------------------------------------------------------
@@ -253,9 +251,9 @@ check(
 
 
 # ===========================================================================
-# Part B: build_graph_from_jsonl with synthetic JSONL containing Relationships
+# Part B: full build_graph path with synthetic JSONL Relationships
 # ===========================================================================
-print("\n=== Part B: build_graph_from_jsonl with explicit relationships ===")
+print("\n=== Part B: build_graph (spatial + topology) with explicit relationships ===")
 
 _RECORDS = [
     {
@@ -370,8 +368,8 @@ with tempfile.NamedTemporaryFile(
     _tmp_path = Path(fh.name)
 
 try:
-    G = build_graph_from_jsonl([_tmp_path])
-    add_spatial_adjacency(G)
+    # Use full build path so both spatial and topology passes execute.
+    G = build_graph([_tmp_path])
 finally:
     _tmp_path.unlink(missing_ok=True)
 

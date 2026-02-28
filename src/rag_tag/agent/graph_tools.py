@@ -15,6 +15,10 @@ remains untouched. The key improvements are:
 
 from __future__ import annotations
 
+import json
+import logging
+import sqlite3
+from pathlib import Path
 from typing import Any
 
 import networkx as nx
@@ -25,6 +29,7 @@ from rag_tag.ifc_graph_tool import query_ifc_graph, sanitize_properties_for_llm
 
 # Minimum rapidfuzz WRatio score (0-100) to accept a fuzzy class normalisation.
 _CLASS_FUZZY_THRESHOLD = 72
+_logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -119,6 +124,81 @@ def _fuzzy_find_nodes_impl(
         },
         "error": None,
     }
+
+
+def _collect_dotted_keys_from_sqlite(
+    db_path: Path,
+    class_filter: str | None,
+) -> dict[str, list[Any]]:
+    """Collect dotted PropertySet/Quantity keys from SQLite.
+
+    Returns a mapping of ``dotted_key -> up to 3 sample values``.
+    Any DB/schema/runtime error is handled gracefully by returning an empty map.
+    """
+    if not db_path.exists():
+        return {}
+
+    where_sql = ""
+    params: tuple[Any, ...] = ()
+    if class_filter:
+        where_sql = " WHERE LOWER(e.ifc_class) = LOWER(?)"
+        params = (class_filter,)
+
+    key_samples: dict[str, list[Any]] = {}
+
+    def _decode_sample(raw_value: Any) -> Any:
+        if raw_value is None:
+            return None
+        if isinstance(raw_value, (bool, int, float, dict, list)):
+            return raw_value
+        text = str(raw_value)
+        if text == "":
+            return ""
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            return text
+
+    def _record_sample(key: str, value: Any) -> None:
+        if key not in key_samples:
+            key_samples[key] = []
+        if len(key_samples[key]) < 3:
+            key_samples[key].append(value)
+
+    try:
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        try:
+            prop_rows = conn.execute(
+                "SELECT p.pset_name, p.property_name, p.value "
+                "FROM properties p "
+                "JOIN elements e ON e.express_id = p.element_id"
+                f"{where_sql}",
+                params,
+            ).fetchall()
+            for row in prop_rows:
+                pset_name = str(row["pset_name"])
+                prop_name = str(row["property_name"])
+                _record_sample(f"{pset_name}.{prop_name}", _decode_sample(row["value"]))
+
+            qty_rows = conn.execute(
+                "SELECT q.qto_name, q.quantity_name, q.value "
+                "FROM quantities q "
+                "JOIN elements e ON e.express_id = q.element_id"
+                f"{where_sql}",
+                params,
+            ).fetchall()
+            for row in qty_rows:
+                qto_name = str(row["qto_name"])
+                qty_name = str(row["quantity_name"])
+                _record_sample(f"{qto_name}.{qty_name}", _decode_sample(row["value"]))
+        finally:
+            conn.close()
+    except Exception as exc:  # noqa: BLE001
+        _logger.debug("list_property_keys DB fallback failed (%s): %s", db_path, exc)
+        return {}
+
+    return key_samples
 
 
 # ---------------------------------------------------------------------------
@@ -331,6 +411,14 @@ def register_graph_tools(agent: Any) -> None:
         Both key formats are accepted by ``find_nodes`` ``property_filters``.
         Use this tool first to discover valid filter keys before calling
         ``find_nodes`` with property constraints.
+
+        Note: When the graph was built in ``minimal`` payload mode
+        (``GRAPH_PAYLOAD_MODE=minimal``), PropertySet and Quantity blocks are
+        not stored in-memory.  When a DB path is wired into the graph context,
+        this tool falls back to SQLite to recover dotted keys
+        (e.g. ``Pset_WallCommon.*``).  Flat keys derived from ``properties``
+        (e.g. ``GlobalId``, ``Name``) are always available regardless of
+        payload mode.
         """
         G: nx.DiGraph = ctx.deps
         key_samples: dict[str, list[Any]] = {}
@@ -392,6 +480,29 @@ def register_graph_tools(agent: Any) -> None:
                 if not isinstance(qto_data, dict):
                     continue
                 _collect_pset_leaf_keys(str(qto_name), qto_data)
+
+        # Minimal payload mode drops nested pset/quantity blocks.  If a DB path
+        # is available in graph context, augment dotted keys from SQLite.
+        payload_mode = str(G.graph.get("_payload_mode", "full")).lower()
+        db_path_raw = G.graph.get("_db_path")
+        if payload_mode == "minimal" and db_path_raw is not None:
+            db_path = Path(db_path_raw)
+            cache = G.graph.setdefault("_property_key_cache", {})
+            cache_key = (str(db_path.resolve()), class_ or "")
+            db_key_samples = cache.get(cache_key)
+            if db_key_samples is None:
+                db_key_samples = _collect_dotted_keys_from_sqlite(db_path, class_)
+                cache[cache_key] = db_key_samples
+
+            for key, samples in db_key_samples.items():
+                if sample_values:
+                    existing = key_samples.setdefault(key, [])
+                    for sample in samples:
+                        if len(existing) >= 3:
+                            break
+                        existing.append(sample)
+                else:
+                    _record_key(key, None)
 
         result: dict[str, Any] = {
             "status": "ok",

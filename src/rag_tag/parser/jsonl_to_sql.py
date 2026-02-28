@@ -27,13 +27,15 @@ def _coalesce(value: Any) -> str | None:
     return s if s else None
 
 
-def _to_float(value: Any) -> float | None:
+def _encode_json_value(value: Any) -> str | None:
+    """Serialize values as JSON so scalar/list/dict types survive roundtrip."""
     if value is None:
         return None
     try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
+        return json.dumps(value, ensure_ascii=False, sort_keys=True)
+    except TypeError:
+        # Fallback for non-JSON-serializable objects.
+        return json.dumps(str(value), ensure_ascii=False)
 
 
 def _insert_element(conn: sqlite3.Connection, rec: dict) -> None:
@@ -70,7 +72,13 @@ def _collect_property_rows(
             if prop_name == "id":
                 continue
             rows.append(
-                (express_id, pset_name, prop_name, _coalesce(value), is_official)
+                (
+                    express_id,
+                    pset_name,
+                    prop_name,
+                    _encode_json_value(value),
+                    is_official,
+                )
             )
     return rows
 
@@ -88,7 +96,15 @@ def _collect_quantity_rows(
         for qty_name, value in qto_props.items():
             if qty_name == "id":
                 continue
-            rows.append((express_id, qto_name, qty_name, _to_float(value), is_official))
+            rows.append(
+                (
+                    express_id,
+                    qto_name,
+                    qty_name,
+                    _encode_json_value(value),
+                    is_official,
+                )
+            )
     return rows
 
 
