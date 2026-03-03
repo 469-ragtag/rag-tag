@@ -14,11 +14,15 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sqlite3
+from ast import literal_eval
 from pathlib import Path
 from typing import Any
 
 _logger = logging.getLogger(__name__)
+_TYPED_JSON_PREFIX = "json:"
+_LEGACY_FLOAT_RE = re.compile(r"^-?(?:\d+\.\d*|\.\d+)(?:[eE][+-]?\d+)?$")
 
 
 # ---------------------------------------------------------------------------
@@ -27,22 +31,28 @@ _logger = logging.getLogger(__name__)
 
 
 def open_lookup_connection(db_path: Path) -> sqlite3.Connection | None:
-    """Open a reusable SQLite connection for batched element lookups."""
+    """Open a SQLite connection configured for element lookup.
+
+    Returns ``None`` on any open/configuration error so callers can
+    gracefully fall back to in-memory graph payloads.
+    """
     if not db_path.exists():
         _logger.debug("sql_element_lookup: DB not found: %s", db_path)
         return None
+
     try:
         conn = sqlite3.connect(str(db_path))
         conn.row_factory = sqlite3.Row
+        return conn
     except Exception as exc:  # noqa: BLE001
-        _logger.debug("sql_element_lookup: failed to open DB %s: %s", db_path, exc)
+        _logger.debug("sql_element_lookup: failed opening %s: %s", db_path, exc)
         return None
-    return conn
 
 
 def lookup_element_by_globalid(
     db_path: Path,
     global_id: str,
+    *,
     conn: sqlite3.Connection | None = None,
 ) -> dict[str, Any] | None:
     """Look up element properties from SQLite by GlobalId.
@@ -57,34 +67,30 @@ def lookup_element_by_globalid(
         the ``get_element_properties`` contract, or ``None`` if the element is
         not found or any error occurs (missing DB, schema mismatch, etc.).
     """
-    if conn is not None:
-        try:
-            return _fetch_element(conn, "global_id = ?", global_id)
-        except Exception as exc:  # noqa: BLE001
-            _logger.debug(
-                "sql_element_lookup: GlobalId=%r lookup failed: %s",
-                global_id,
-                exc,
-            )
+    active_conn = conn
+    owns_connection = False
+    if active_conn is None:
+        active_conn = open_lookup_connection(db_path)
+        if active_conn is None:
             return None
+        owns_connection = True
 
-    conn_local = open_lookup_connection(db_path)
-    if conn_local is None:
-        return None
     try:
-        return _fetch_element(conn_local, "global_id = ?", global_id)
+        return _fetch_element(active_conn, "global_id = ?", global_id)
     except Exception as exc:  # noqa: BLE001
         _logger.debug(
             "sql_element_lookup: GlobalId=%r lookup failed: %s", global_id, exc
         )
         return None
     finally:
-        conn_local.close()
+        if owns_connection:
+            active_conn.close()
 
 
 def lookup_element_by_express_id(
     db_path: Path,
     express_id: int,
+    *,
     conn: sqlite3.Connection | None = None,
 ) -> dict[str, Any] | None:
     """Look up element properties from SQLite by ExpressId.
@@ -97,34 +103,98 @@ def lookup_element_by_express_id(
         A dict with ``properties`` and ``payload`` keys, or ``None`` if not
         found or on any error.
     """
-    if conn is not None:
-        try:
-            return _fetch_element(conn, "express_id = ?", express_id)
-        except Exception as exc:  # noqa: BLE001
-            _logger.debug(
-                "sql_element_lookup: ExpressId=%r lookup failed: %s",
-                express_id,
-                exc,
-            )
+    active_conn = conn
+    owns_connection = False
+    if active_conn is None:
+        active_conn = open_lookup_connection(db_path)
+        if active_conn is None:
             return None
+        owns_connection = True
 
-    conn_local = open_lookup_connection(db_path)
-    if conn_local is None:
-        return None
     try:
-        return _fetch_element(conn_local, "express_id = ?", express_id)
+        return _fetch_element(active_conn, "express_id = ?", express_id)
     except Exception as exc:  # noqa: BLE001
         _logger.debug(
             "sql_element_lookup: ExpressId=%r lookup failed: %s", express_id, exc
         )
         return None
     finally:
-        conn_local.close()
+        if owns_connection:
+            active_conn.close()
 
 
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+
+def decode_db_value(raw_value: Any) -> Any:
+    """Decode typed/legacy DB values into best-effort Python types.
+
+    New rows are stored with the ``json:`` prefix followed by JSON text.
+    Legacy rows are decoded with conservative fallback rules.
+    """
+    if not isinstance(raw_value, str):
+        return raw_value
+
+    text = raw_value.strip()
+    if not text:
+        return raw_value
+
+    if not text.startswith(_TYPED_JSON_PREFIX):
+        # Backward-compat fallback for legacy databases written before typed
+        # storage. Those rows may contain JSON-ish strings or Python bool
+        # literals ("True"/"False") from ``str(value)`` coercion.
+
+        # First, attempt strict JSON decode for any scalar/container form.
+        # Handles values like:
+        #   10, 0.28, true, null, "EI 90", {"A":1}, [1,2]
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            pass
+
+        # JSON booleans/null + Python-style booleans/null.
+        low = text.lower()
+        if low == "true":
+            return True
+        if low == "false":
+            return False
+        if low in {"none", "null"}:
+            return None
+
+        # Decode structured legacy payloads when they are valid JSON.
+        if text[0] in {"{", "["}:
+            try:
+                return json.loads(text)
+            except json.JSONDecodeError:
+                # Legacy ``str(dict)`` payloads use single quotes and are not
+                # valid JSON; ``literal_eval`` safely recovers Python literals.
+                try:
+                    return literal_eval(text)
+                except (SyntaxError, ValueError):
+                    return raw_value
+
+        # Recover numeric fidelity for common legacy decimal encodings.
+        if _LEGACY_FLOAT_RE.match(text):
+            try:
+                return float(text)
+            except ValueError:
+                return raw_value
+
+        return raw_value
+
+    payload = text[len(_TYPED_JSON_PREFIX) :]
+    try:
+        return json.loads(payload)
+    except json.JSONDecodeError as exc:
+        _logger.debug("sql_element_lookup: invalid typed JSON payload: %s", exc)
+        return raw_value
+
+
+def _decode_typed_value(raw_value: Any) -> Any:
+    """Backward-compatible alias for older internal call sites."""
+    return decode_db_value(raw_value)
 
 
 def _fetch_element(
@@ -181,28 +251,6 @@ def _set_if_not_none(target: dict[str, Any], key: str, value: Any) -> None:
         target[key] = value
 
 
-def _decode_json_value(raw_value: Any) -> Any:
-    """Decode JSON-encoded DB values while remaining backward-compatible."""
-    if raw_value is None:
-        return None
-    if isinstance(raw_value, (bool, int, float, dict, list)):
-        return raw_value
-
-    text: str
-    if isinstance(raw_value, (bytes, bytearray)):
-        text = raw_value.decode("utf-8", errors="replace")
-    else:
-        text = str(raw_value)
-
-    if text == "":
-        return ""
-
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        return text
-
-
 def _fetch_psets(
     conn: sqlite3.Connection,
     element_id: int,
@@ -230,7 +278,7 @@ def _fetch_psets(
     for row in rows:
         pset_name: str = row["pset_name"]
         prop_name: str = row["property_name"]
-        value = _decode_json_value(row["value"])
+        value: Any = _decode_typed_value(row["value"])
         target = official if row["is_official"] else custom
         if pset_name not in target:
             target[pset_name] = {}
@@ -265,7 +313,7 @@ def _fetch_quantities(
     for row in rows:
         qto_name: str = row["qto_name"]
         qty_name: str = row["quantity_name"]
-        value = _decode_json_value(row["value"])
+        value: Any = _decode_typed_value(row["value"])
         if qto_name not in result:
             result[qto_name] = {}
         result[qto_name][qty_name] = value

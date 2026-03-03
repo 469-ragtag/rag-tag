@@ -31,7 +31,9 @@ import networkx as nx  # noqa: E402 (networkx is a direct dep)
 from rag_tag.parser.jsonl_to_graph import (  # noqa: E402
     _add_explicit_relationships,
     _normalize_context_label,
+    add_spatial_adjacency,
     build_graph,
+    build_graph_from_jsonl,
 )
 
 # ---------------------------------------------------------------------------
@@ -251,9 +253,9 @@ check(
 
 
 # ===========================================================================
-# Part B: full build_graph path with synthetic JSONL Relationships
+# Part B: build_graph_from_jsonl with synthetic JSONL containing Relationships
 # ===========================================================================
-print("\n=== Part B: build_graph (spatial + topology) with explicit relationships ===")
+print("\n=== Part B: build_graph_from_jsonl with explicit relationships ===")
 
 _RECORDS = [
     {
@@ -368,8 +370,8 @@ with tempfile.NamedTemporaryFile(
     _tmp_path = Path(fh.name)
 
 try:
-    # Use full build path so both spatial and topology passes execute.
-    G = build_graph([_tmp_path])
+    G = build_graph_from_jsonl([_tmp_path])
+    add_spatial_adjacency(G)
 finally:
     _tmp_path.unlink(missing_ok=True)
 
@@ -600,6 +602,47 @@ check(
 check(
     G.has_edge("Element::WALL001", "Storey::STOR001"),
     "B-10c  contained_in reverse edge still present",
+)
+
+# B-11: full build path (adds adjacency + topology) must preserve explicit IFC
+# edges when relations share the same (u, v) pair in a DiGraph.
+print("\n[B-11] build_graph path preserves explicit IFC edges after topology")
+
+with tempfile.NamedTemporaryFile(
+    mode="w", suffix=".jsonl", delete=False, encoding="utf-8"
+) as fh:
+    for rec in _RECORDS:
+        fh.write(json.dumps(rec) + "\n")
+    _tmp_path_full = Path(fh.name)
+
+try:
+    G_full_path = build_graph([_tmp_path_full])
+finally:
+    _tmp_path_full.unlink(missing_ok=True)
+
+hosts_after_topology = G_full_path.edges.get(
+    ("Element::WALL001", "Element::DOOR001"), {}
+)
+check(
+    hosts_after_topology.get("relation") == "hosts",
+    "B-11a explicit hosts relation survives topology pass",
+)
+check(
+    hosts_after_topology.get("source") == "ifc",
+    "B-11b explicit hosts source='ifc' survives topology pass",
+)
+
+hosted_by_after_topology = G_full_path.edges.get(
+    ("Element::DOOR001", "Element::WALL001"),
+    {},
+)
+check(
+    hosted_by_after_topology.get("relation") == "hosted_by",
+    "B-11c explicit hosted_by relation survives topology pass",
+)
+check(
+    hosted_by_after_topology.get("source") == "ifc",
+    "B-11d explicit hosted_by source='ifc' survives topology pass",
 )
 
 

@@ -18,6 +18,7 @@ from rag_tag.paths import find_project_root
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
+_TYPED_JSON_PREFIX = "json:"
 
 
 def _coalesce(value: Any) -> str | None:
@@ -27,15 +28,27 @@ def _coalesce(value: Any) -> str | None:
     return s if s else None
 
 
-def _encode_json_value(value: Any) -> str | None:
-    """Serialize values as JSON so scalar/list/dict types survive roundtrip."""
+def _to_float(value: Any) -> float | None:
     if value is None:
         return None
     try:
-        return json.dumps(value, ensure_ascii=False, sort_keys=True)
-    except TypeError:
-        # Fallback for non-JSON-serializable objects.
-        return json.dumps(str(value), ensure_ascii=False)
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _encode_typed_property_value(value: Any) -> str | None:
+    """Encode a property value with typed JSON storage.
+
+    Values are persisted as ``json:<JSON payload>`` so lookup can faithfully
+    reconstruct booleans, numbers, lists, dicts, and nulls.  If a value is not
+    JSON-serializable, we gracefully fall back to legacy string coercion.
+    """
+    try:
+        encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+        return f"{_TYPED_JSON_PREFIX}{encoded}"
+    except (TypeError, ValueError):
+        return _coalesce(value)
 
 
 def _insert_element(conn: sqlite3.Connection, rec: dict) -> None:
@@ -76,7 +89,7 @@ def _collect_property_rows(
                     express_id,
                     pset_name,
                     prop_name,
-                    _encode_json_value(value),
+                    _encode_typed_property_value(value),
                     is_official,
                 )
             )
@@ -96,15 +109,7 @@ def _collect_quantity_rows(
         for qty_name, value in qto_props.items():
             if qty_name == "id":
                 continue
-            rows.append(
-                (
-                    express_id,
-                    qto_name,
-                    qty_name,
-                    _encode_json_value(value),
-                    is_official,
-                )
-            )
+            rows.append((express_id, qto_name, qty_name, _to_float(value), is_official))
     return rows
 
 

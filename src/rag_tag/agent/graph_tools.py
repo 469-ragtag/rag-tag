@@ -15,7 +15,6 @@ remains untouched. The key improvements are:
 
 from __future__ import annotations
 
-import json
 import logging
 import sqlite3
 from pathlib import Path
@@ -26,6 +25,7 @@ from pydantic_ai import RunContext
 from rapidfuzz import fuzz, process
 
 from rag_tag.ifc_graph_tool import query_ifc_graph, sanitize_properties_for_llm
+from rag_tag.sql_element_lookup import decode_db_value
 
 # Minimum rapidfuzz WRatio score (0-100) to accept a fuzzy class normalisation.
 _CLASS_FUZZY_THRESHOLD = 72
@@ -126,6 +126,11 @@ def _fuzzy_find_nodes_impl(
     }
 
 
+def _decode_typed_db_value(value: Any) -> Any:
+    """Decode DB value using the shared sql_element_lookup decoder."""
+    return decode_db_value(value)
+
+
 def _collect_dotted_keys_from_sqlite(
     db_path: Path,
     class_filter: str | None,
@@ -145,19 +150,6 @@ def _collect_dotted_keys_from_sqlite(
         params = (class_filter,)
 
     key_samples: dict[str, list[Any]] = {}
-
-    def _decode_sample(raw_value: Any) -> Any:
-        if raw_value is None:
-            return None
-        if isinstance(raw_value, (bool, int, float, dict, list)):
-            return raw_value
-        text = str(raw_value)
-        if text == "":
-            return ""
-        try:
-            return json.loads(text)
-        except json.JSONDecodeError:
-            return text
 
     def _record_sample(key: str, value: Any) -> None:
         if key not in key_samples:
@@ -179,7 +171,10 @@ def _collect_dotted_keys_from_sqlite(
             for row in prop_rows:
                 pset_name = str(row["pset_name"])
                 prop_name = str(row["property_name"])
-                _record_sample(f"{pset_name}.{prop_name}", _decode_sample(row["value"]))
+                _record_sample(
+                    f"{pset_name}.{prop_name}",
+                    _decode_typed_db_value(row["value"]),
+                )
 
             qty_rows = conn.execute(
                 "SELECT q.qto_name, q.quantity_name, q.value "
@@ -191,7 +186,10 @@ def _collect_dotted_keys_from_sqlite(
             for row in qty_rows:
                 qto_name = str(row["qto_name"])
                 qty_name = str(row["quantity_name"])
-                _record_sample(f"{qto_name}.{qty_name}", _decode_sample(row["value"]))
+                _record_sample(
+                    f"{qto_name}.{qty_name}",
+                    _decode_typed_db_value(row["value"]),
+                )
         finally:
             conn.close()
     except Exception as exc:  # noqa: BLE001

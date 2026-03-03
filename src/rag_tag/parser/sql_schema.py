@@ -47,7 +47,7 @@ CREATE TABLE IF NOT EXISTS quantities (
     element_id    INTEGER NOT NULL REFERENCES elements(express_id),
     qto_name      TEXT    NOT NULL,
     quantity_name TEXT    NOT NULL,
-    value         TEXT,
+    value         REAL,
     is_official   INTEGER NOT NULL DEFAULT 0
 );
 

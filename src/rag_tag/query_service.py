@@ -286,6 +286,25 @@ def execute_query(
         return {"result": error_result, "graph": graph, "agent": agent}
 
 
+def _normalize_db_path(raw_path: Path | str | None) -> str | None:
+    if raw_path is None:
+        return None
+    return str(Path(raw_path).expanduser().resolve())
+
+
+def _clear_graph_db_caches(graph: nx.DiGraph) -> None:
+    """Clear graph-scoped DB caches after context DB changes."""
+    graph.graph.pop("_property_cache", None)
+    graph.graph.pop("_property_key_cache", None)
+
+    cached_conn = graph.graph.pop("_db_lookup_conn", None)
+    if cached_conn is not None:
+        try:
+            cached_conn.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def _ensure_graph_context(
     graph: nx.DiGraph | None,
     agent: GraphAgent | None,
@@ -310,16 +329,13 @@ def _ensure_graph_context(
         graph = load_graph(graph_dataset, payload_mode=payload_mode)
     if db_path is not None:
         # Wire the active DB path into the graph for tool-level property lookup.
+        # When the DB context changes on an existing graph instance, clear
+        # graph-scoped property caches to avoid stale cross-DB reads.
         resolved_db_path = db_path.expanduser().resolve()
-        prev_db_raw = graph.graph.get("_db_path")
-        prev_db_path = (
-            Path(prev_db_raw).expanduser().resolve()
-            if prev_db_raw is not None
-            else None
-        )
-        if prev_db_path != resolved_db_path:
-            graph.graph.pop("_property_cache", None)
-            graph.graph.pop("_property_key_cache", None)
+        previous_db_path = _normalize_db_path(graph.graph.get("_db_path"))
+        current_db_path = str(resolved_db_path)
+        if previous_db_path != current_db_path:
+            _clear_graph_db_caches(graph)
         graph.graph["_db_path"] = resolved_db_path
     if agent is None:
         agent = GraphAgent(debug_llm_io=debug_llm_io)

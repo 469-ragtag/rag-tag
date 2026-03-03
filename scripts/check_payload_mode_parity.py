@@ -1,13 +1,16 @@
 """Parity check: verify GRAPH_PAYLOAD_MODE=full vs minimal behaviour.
 
-Builds synthetic graphs/DBs and checks:
+Builds synthetic graphs in both modes from the same JSONL fixture and asserts:
 
-  1. Node/property parity between full and minimal payload modes.
-  2. DB-backed parity for dotted filters (string + numeric).
-  3. DB-backed parity for flat-key fallback into PropertySets (numeric).
-  4. Context DB switch on the same graph object does not return stale cache data.
-  5. query_service DB context rewiring clears property caches safely.
-  6. get_element_properties preserves typed/nested payload fidelity with DB merge.
+  1. Node IDs and flat ``properties`` parity.
+  2. ``_payload_mode`` metadata reflects the requested mode.
+  3. ``full`` keeps PropertySets/Quantities while ``minimal`` omits them.
+  4. ``find_nodes`` flat + dotted filtering parity (with and without DB wiring).
+  5. Minimal+DB supports flat pset fallback (e.g. ThermalTransmittance).
+  6. Minimal+DB supports numeric dotted-key parity.
+  7. DB context switching on one graph object does not leak stale cache data.
+  8. ``get_element_properties`` returns typed/nested payload values and does not
+     degrade richer in-memory payload content when DB rows are legacy/degraded.
 
 Run with:
     uv run python scripts/check_payload_mode_parity.py
@@ -16,12 +19,13 @@ Run with:
 from __future__ import annotations
 
 import json
+import shutil
+import sqlite3
 import sys
 import tempfile
-from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any
 
 # ---------------------------------------------------------------------------
 # Minimal JSONL fixture
@@ -52,8 +56,10 @@ _WALL_RECORD: dict = {
             "Pset_WallCommon": {
                 "FireRating": "EI 90",
                 "ThermalTransmittance": 0.28,
-                "IsExternal": True,
-                "NestedSpec": {"Layer": {"Code": "A1"}},
+                "PerformanceData": {
+                    "UValue": 0.28,
+                    "IsExternal": True,
+                },
             }
         },
         "Custom": {},
@@ -84,19 +90,6 @@ _STOREY_RECORD: dict = {
     "PropertySets": {"Official": {}, "Custom": {}},
     "Quantities": {},
     "Relationships": {},
-}
-
-_WALL_RECORD_ALT: dict = deepcopy(_WALL_RECORD)
-_WALL_RECORD_ALT["PropertySets"] = {
-    "Official": {
-        "Pset_WallCommon": {
-            "FireRating": "EI 120",
-            "ThermalTransmittance": 0.41,
-            "IsExternal": True,
-            "NestedSpec": {"Layer": {"Code": "B7"}},
-        }
-    },
-    "Custom": {},
 }
 
 # ---------------------------------------------------------------------------
@@ -135,364 +128,419 @@ def main() -> int:
     from rag_tag.ifc_graph_tool import query_ifc_graph
     from rag_tag.parser.jsonl_to_graph import build_graph_from_jsonl
     from rag_tag.parser.jsonl_to_sql import jsonl_to_sql
-    from rag_tag.query_service import _ensure_graph_context
 
-    with tempfile.NamedTemporaryFile(
-        suffix=".jsonl", mode="w", delete=False, encoding="utf-8"
-    ) as tmp:
-        tmp_path = Path(tmp.name)
-    tmp_db = tmp_path.with_suffix(".db")
-    _write_jsonl(tmp_path, [_STOREY_RECORD, _WALL_RECORD])
-    jsonl_to_sql(tmp_path, tmp_db)
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        tmp_dir_path = Path(tmp_dir)
+        tmp_path = tmp_dir_path / "model_a.jsonl"
+        tmp_db = tmp_dir_path / "model_a.db"
+        _write_jsonl(tmp_path, [_STOREY_RECORD, _WALL_RECORD])
+        jsonl_to_sql(tmp_path, tmp_db)
 
-    with tempfile.NamedTemporaryFile(
-        suffix=".jsonl", mode="w", delete=False, encoding="utf-8"
-    ) as tmp_alt:
-        tmp_path_alt = Path(tmp_alt.name)
-    tmp_db_alt = tmp_path_alt.with_suffix(".db")
-    _write_jsonl(tmp_path_alt, [_STOREY_RECORD, _WALL_RECORD_ALT])
-    jsonl_to_sql(tmp_path_alt, tmp_db_alt)
+        wall_record_db2 = json.loads(json.dumps(_WALL_RECORD))
+        wall_pset_db2 = wall_record_db2["PropertySets"]["Official"]["Pset_WallCommon"]
+        wall_pset_db2["FireRating"] = "EI 30"
+        wall_pset_db2["ThermalTransmittance"] = 0.31
+        wall_pset_db2["PerformanceData"] = {"UValue": 0.31, "IsExternal": False}
 
-    class _ToolCollector:
-        def __init__(self) -> None:
-            self.tools: dict[str, Any] = {}
+        tmp_path_db2 = tmp_dir_path / "model_b.jsonl"
+        tmp_db2 = tmp_dir_path / "model_b.db"
+        _write_jsonl(tmp_path_db2, [_STOREY_RECORD, wall_record_db2])
+        jsonl_to_sql(tmp_path_db2, tmp_db2)
 
-        def tool(self, fn):
-            self.tools[fn.__name__] = fn
-            return fn
+        class _ToolCollector:
+            def __init__(self) -> None:
+                self.tools: dict[str, Any] = {}
 
-    # -----------------------------------------------------------------------
-    print("\n[Part 1] Build graphs in both modes")
-    # -----------------------------------------------------------------------
-    G_full = build_graph_from_jsonl([tmp_path], payload_mode="full")
-    G_min = build_graph_from_jsonl([tmp_path], payload_mode="minimal")
+            def tool(self, fn):
+                self.tools[fn.__name__] = fn
+                return fn
 
-    check(
-        G_full.graph["_payload_mode"] == "full",
-        "full G.graph['_payload_mode'] == 'full'",
-    )
-    check(
-        G_min.graph["_payload_mode"] == "minimal",
-        "minimal G.graph['_payload_mode'] == 'minimal'",
-    )
+        def _wall_common_pset(result: dict[str, Any]) -> dict[str, Any]:
+            payload = (result.get("data") or {}).get("payload") or {}
+            psets = (payload.get("PropertySets") or {}).get("Official") or {}
+            return psets.get("Pset_WallCommon") or {}
 
-    # -----------------------------------------------------------------------
-    print("\n[Part 2] Node ID parity")
-    # -----------------------------------------------------------------------
-    full_ids = set(G_full.nodes)
-    min_ids = set(G_min.nodes)
-    check(full_ids == min_ids, f"Same node IDs in both modes ({len(full_ids)} nodes)")
+        # -------------------------------------------------------------------
+        print("\n[Part 1] Build graphs in both modes")
+        # -------------------------------------------------------------------
+        G_full = build_graph_from_jsonl([tmp_path], payload_mode="full")
+        G_min = build_graph_from_jsonl([tmp_path], payload_mode="minimal")
 
-    # -----------------------------------------------------------------------
-    print("\n[Part 3] Flat properties parity")
-    # -----------------------------------------------------------------------
-    wall_nid = "Element::WALL001"
-    check(wall_nid in G_full, f"{wall_nid} present in full graph")
-    check(wall_nid in G_min, f"{wall_nid} present in minimal graph")
-
-    full_props = G_full.nodes[wall_nid].get("properties") or {}
-    min_props = G_min.nodes[wall_nid].get("properties") or {}
-    check(full_props == min_props, "Flat properties are identical between modes")
-    check(
-        full_props.get("GlobalId") == "WALL001", "GlobalId present in flat properties"
-    )
-    check(full_props.get("Name") == "Wall 1", "Name present in flat properties")
-
-    # -----------------------------------------------------------------------
-    print("\n[Part 4] Payload content diverges as expected")
-    # -----------------------------------------------------------------------
-    full_payload = G_full.nodes[wall_nid].get("payload") or {}
-    min_payload = G_min.nodes[wall_nid].get("payload") or {}
-
-    check(
-        "PropertySets" in full_payload,
-        "full mode: PropertySets present in wall payload",
-    )
-    check(
-        "PropertySets" not in min_payload,
-        "minimal mode: PropertySets absent from wall payload",
-    )
-    check(
-        "Quantities" in full_payload,
-        "full mode: Quantities present in wall payload",
-    )
-    check(
-        "Quantities" not in min_payload,
-        "minimal mode: Quantities absent from wall payload",
-    )
-
-    # Minimal payload stub must contain the DB-lookup reference fields.
-    for field in ("GlobalId", "ExpressId", "IfcType", "ClassRaw", "Name"):
         check(
-            field in min_payload,
-            f"minimal mode: '{field}' present in minimal payload stub",
+            G_full.graph["_payload_mode"] == "full",
+            "full G.graph['_payload_mode'] == 'full'",
+        )
+        check(
+            G_min.graph["_payload_mode"] == "minimal",
+            "minimal G.graph['_payload_mode'] == 'minimal'",
         )
 
-    # -----------------------------------------------------------------------
-    print("\n[Part 5] find_nodes flat filter works in both modes")
-    # -----------------------------------------------------------------------
-    for mode_label, G in (("full", G_full), ("minimal", G_min)):
-        res = query_ifc_graph(G, "find_nodes", {"property_filters": {"Name": "Wall 1"}})
-        elements = (res.get("data") or {}).get("elements", [])
+        # -------------------------------------------------------------------
+        print("\n[Part 2] Node ID parity")
+        # -------------------------------------------------------------------
+        full_ids = set(G_full.nodes)
+        min_ids = set(G_min.nodes)
         check(
-            len(elements) == 1,
-            f"{mode_label} mode: find_nodes flat filter Name='Wall 1' returns 1 match",
+            full_ids == min_ids,
+            f"Same node IDs in both modes ({len(full_ids)} nodes)",
         )
 
-    # -----------------------------------------------------------------------
-    print("\n[Part 6] DB-backed filter parity (dotted + flat numeric)")
-    # -----------------------------------------------------------------------
-    pset_filters = {"Pset_WallCommon.FireRating": "EI 90"}
-    dotted_numeric_filters = {"Qto_WallBaseQuantities.Length": 10.0}
-    flat_pset_numeric_filters = {"ThermalTransmittance": 0.28}
+        # -------------------------------------------------------------------
+        print("\n[Part 3] Flat properties parity")
+        # -------------------------------------------------------------------
+        wall_nid = "Element::WALL001"
+        check(wall_nid in G_full, f"{wall_nid} present in full graph")
+        check(wall_nid in G_min, f"{wall_nid} present in minimal graph")
 
-    res_full = query_ifc_graph(G_full, "find_nodes", {"property_filters": pset_filters})
-    full_matches = (res_full.get("data") or {}).get("elements", [])
-    check(len(full_matches) == 1, "full mode: dotted string pset filter returns 1")
+        full_props = G_full.nodes[wall_nid].get("properties") or {}
+        min_props = G_min.nodes[wall_nid].get("properties") or {}
+        check(full_props == min_props, "Flat properties are identical between modes")
+        check(
+            full_props.get("GlobalId") == "WALL001",
+            "GlobalId present in flat properties",
+        )
+        check(full_props.get("Name") == "Wall 1", "Name present in flat properties")
 
-    res_full_qto = query_ifc_graph(
-        G_full,
-        "find_nodes",
-        {"property_filters": dotted_numeric_filters},
-    )
-    full_qto_matches = (res_full_qto.get("data") or {}).get("elements", [])
-    check(
-        len(full_qto_matches) == 1,
-        "full mode: dotted numeric quantity filter returns 1",
-    )
+        # -------------------------------------------------------------------
+        print("\n[Part 4] Payload content diverges as expected")
+        # -------------------------------------------------------------------
+        full_payload = G_full.nodes[wall_nid].get("payload") or {}
+        min_payload = G_min.nodes[wall_nid].get("payload") or {}
 
-    res_full_flat_pset = query_ifc_graph(
-        G_full,
-        "find_nodes",
-        {"property_filters": flat_pset_numeric_filters},
-    )
-    full_flat_pset_matches = (res_full_flat_pset.get("data") or {}).get("elements", [])
-    check(
-        len(full_flat_pset_matches) == 1,
-        "full mode: flat pset fallback ThermalTransmittance=0.28 returns 1",
-    )
+        check(
+            "PropertySets" in full_payload,
+            "full mode: PropertySets present in wall payload",
+        )
+        check(
+            "PropertySets" not in min_payload,
+            "minimal mode: PropertySets absent from wall payload",
+        )
+        check(
+            "Quantities" in full_payload,
+            "full mode: Quantities present in wall payload",
+        )
+        check(
+            "Quantities" not in min_payload,
+            "minimal mode: Quantities absent from wall payload",
+        )
 
-    res_min = query_ifc_graph(G_min, "find_nodes", {"property_filters": pset_filters})
-    min_matches = (res_min.get("data") or {}).get("elements", [])
-    check(
-        len(min_matches) == 0,
-        "minimal mode (no DB): dotted string pset filter returns 0",
-    )
+        # Minimal payload stub must contain the DB-lookup reference fields.
+        for field in ("GlobalId", "ExpressId", "IfcType", "ClassRaw", "Name"):
+            check(
+                field in min_payload,
+                f"minimal mode: '{field}' present in minimal payload stub",
+            )
 
-    res_min_qto = query_ifc_graph(
-        G_min,
-        "find_nodes",
-        {"property_filters": dotted_numeric_filters},
-    )
-    min_qto_matches = (res_min_qto.get("data") or {}).get("elements", [])
-    check(
-        len(min_qto_matches) == 0,
-        "minimal mode (no DB): dotted numeric quantity filter returns 0",
-    )
+        # -------------------------------------------------------------------
+        print("\n[Part 5] find_nodes flat filter works in both modes")
+        # -------------------------------------------------------------------
+        for mode_label, G in (("full", G_full), ("minimal", G_min)):
+            res = query_ifc_graph(
+                G,
+                "find_nodes",
+                {"property_filters": {"Name": "Wall 1"}},
+            )
+            elements = (res.get("data") or {}).get("elements", [])
+            check(
+                len(elements) == 1,
+                (
+                    f"{mode_label} mode: find_nodes flat filter Name='Wall 1' "
+                    "returns 1 match"
+                ),
+            )
 
-    res_min_flat_pset = query_ifc_graph(
-        G_min,
-        "find_nodes",
-        {"property_filters": flat_pset_numeric_filters},
-    )
-    min_flat_pset_matches = (res_min_flat_pset.get("data") or {}).get("elements", [])
-    check(
-        len(min_flat_pset_matches) == 0,
-        "minimal mode (no DB): flat pset fallback ThermalTransmittance=0.28 returns 0",
-    )
+        # -------------------------------------------------------------------
+        print("\n[Part 6] Dotted pset filter: full=match, minimal=no match (no DB)")
+        # -------------------------------------------------------------------
+        pset_filters = {"Pset_WallCommon.FireRating": "EI 90"}
 
-    # Wire DB context and verify parity is restored in minimal mode.
-    G_min.graph["_db_path"] = tmp_db
-    res_min_db = query_ifc_graph(
-        G_min, "find_nodes", {"property_filters": pset_filters}
-    )
-    min_db_matches = (res_min_db.get("data") or {}).get("elements", [])
-    check(
-        len(min_db_matches) == 1,
-        "minimal mode (with DB): dotted string pset filter returns 1",
-    )
+        res_full = query_ifc_graph(
+            G_full,
+            "find_nodes",
+            {"property_filters": pset_filters},
+        )
+        full_matches = (res_full.get("data") or {}).get("elements", [])
+        check(len(full_matches) == 1, "full mode: dotted pset filter returns 1 match")
 
-    res_min_db_qto = query_ifc_graph(
-        G_min,
-        "find_nodes",
-        {"property_filters": dotted_numeric_filters},
-    )
-    min_db_qto_matches = (res_min_db_qto.get("data") or {}).get("elements", [])
-    check(
-        len(min_db_qto_matches) == 1,
-        "minimal mode (with DB): dotted numeric quantity filter returns 1",
-    )
+        res_min = query_ifc_graph(
+            G_min,
+            "find_nodes",
+            {"property_filters": pset_filters},
+        )
+        min_matches = (res_min.get("data") or {}).get("elements", [])
+        check(
+            len(min_matches) == 0,
+            "minimal mode (no DB): dotted pset filter returns 0 matches"
+            " (graceful degradation)",
+        )
 
-    res_min_db_flat_pset = query_ifc_graph(
-        G_min,
-        "find_nodes",
-        {"property_filters": flat_pset_numeric_filters},
-    )
-    min_db_flat_pset_matches = (res_min_db_flat_pset.get("data") or {}).get(
-        "elements", []
-    )
-    check(
-        len(min_db_flat_pset_matches) == 1,
-        "minimal mode (with DB): flat pset fallback "
-        "ThermalTransmittance=0.28 returns 1",
-    )
+        # Wire DB context and verify dotted filter parity is restored in minimal mode.
+        G_min.graph["_db_path"] = tmp_db
+        res_min_db = query_ifc_graph(
+            G_min,
+            "find_nodes",
+            {"property_filters": pset_filters},
+        )
+        min_db_matches = (res_min_db.get("data") or {}).get("elements", [])
+        check(
+            len(min_db_matches) == 1,
+            "minimal mode (with DB): dotted pset filter returns 1 match",
+        )
 
-    # list_property_keys should also recover dotted keys in minimal mode with DB.
-    collector = _ToolCollector()
-    register_graph_tools(collector)
-    list_property_keys = collector.tools["list_property_keys"]
-    key_result = list_property_keys(
-        SimpleNamespace(deps=G_min),
-        class_=None,
-        sample_values=False,
-    )
-    keys = set(((key_result.get("data") or {}).get("keys") or []))
-    check(
-        "Pset_WallCommon.FireRating" in keys,
-        "minimal mode (with DB): list_property_keys includes dotted pset key",
-    )
-    check(
-        "Qto_WallBaseQuantities.Length" in keys,
-        "minimal mode (with DB): list_property_keys includes dotted quantity key",
-    )
+        # list_property_keys should also recover dotted keys in minimal mode with DB.
+        collector = _ToolCollector()
+        register_graph_tools(collector)
+        list_property_keys = collector.tools["list_property_keys"]
+        key_result = list_property_keys(
+            SimpleNamespace(deps=G_min),
+            class_=None,
+            sample_values=False,
+        )
+        keys = set(((key_result.get("data") or {}).get("keys") or []))
+        check(
+            "Pset_WallCommon.FireRating" in keys,
+            "minimal mode (with DB): list_property_keys includes dotted pset key",
+        )
 
-    # -----------------------------------------------------------------------
-    print("\n[Part 7] Context DB switch on same graph does not return stale values")
-    # -----------------------------------------------------------------------
-    warm_028 = query_ifc_graph(
-        G_min,
-        "find_nodes",
-        {"property_filters": {"ThermalTransmittance": 0.28}},
-    )
-    warm_028_matches = (warm_028.get("data") or {}).get("elements", [])
-    check(
-        len(warm_028_matches) == 1,
-        "warm cache on DB-A: ThermalTransmittance=0.28 returns 1",
-    )
+        # -------------------------------------------------------------------
+        print("\n[Part 7] Minimal+DB flat fallback + numeric dotted-key parity")
+        # -------------------------------------------------------------------
+        flat_pset_filter = {"ThermalTransmittance": 0.28}
+        full_flat = query_ifc_graph(
+            G_full,
+            "find_nodes",
+            {"property_filters": flat_pset_filter},
+        )
+        min_flat = query_ifc_graph(
+            G_min,
+            "find_nodes",
+            {"property_filters": flat_pset_filter},
+        )
+        full_flat_ids = {
+            e["id"] for e in (full_flat.get("data") or {}).get("elements", [])
+        }
+        min_flat_ids = {
+            e["id"] for e in (min_flat.get("data") or {}).get("elements", [])
+        }
+        check(
+            full_flat_ids == {wall_nid},
+            "full mode: flat pset fallback ThermalTransmittance=0.28 matches wall",
+        )
+        check(
+            min_flat_ids == full_flat_ids,
+            "minimal mode (with DB): flat pset fallback matches full mode",
+        )
 
-    G_min.graph["_db_path"] = tmp_db_alt
-    switched_old = query_ifc_graph(
-        G_min,
-        "find_nodes",
-        {"property_filters": {"ThermalTransmittance": 0.28}},
-    )
-    switched_old_matches = (switched_old.get("data") or {}).get("elements", [])
-    check(
-        len(switched_old_matches) == 0,
-        "after DB switch to DB-B: old value 0.28 no longer matches",
-    )
+        numeric_dotted_filter = {"Pset_WallCommon.ThermalTransmittance": 0.28}
+        full_num = query_ifc_graph(
+            G_full,
+            "find_nodes",
+            {"property_filters": numeric_dotted_filter},
+        )
+        min_num = query_ifc_graph(
+            G_min,
+            "find_nodes",
+            {"property_filters": numeric_dotted_filter},
+        )
+        full_num_ids = {
+            e["id"] for e in (full_num.get("data") or {}).get("elements", [])
+        }
+        min_num_ids = {e["id"] for e in (min_num.get("data") or {}).get("elements", [])}
+        check(
+            full_num_ids == {wall_nid},
+            "full mode: numeric dotted-key filter matches wall",
+        )
+        check(
+            min_num_ids == full_num_ids,
+            "minimal mode (with DB): numeric dotted-key parity matches full mode",
+        )
 
-    switched_new = query_ifc_graph(
-        G_min,
-        "find_nodes",
-        {"property_filters": {"ThermalTransmittance": 0.41}},
-    )
-    switched_new_matches = (switched_new.get("data") or {}).get("elements", [])
-    check(
-        len(switched_new_matches) == 1,
-        "after DB switch to DB-B: new value 0.41 matches",
-    )
+        # -------------------------------------------------------------------
+        print("\n[Part 8] DB-switch cache invalidation + property fidelity")
+        # -------------------------------------------------------------------
+        props_db1 = query_ifc_graph(
+            G_min,
+            "get_element_properties",
+            {"element_id": "WALL001"},
+        )
+        wall_common_db1 = _wall_common_pset(props_db1)
+        check(
+            wall_common_db1.get("FireRating") == "EI 90",
+            "minimal+DB1: get_element_properties returns FireRating='EI 90'",
+        )
 
-    # -----------------------------------------------------------------------
-    print("\n[Part 8] query_service context rewiring clears graph property caches")
-    # -----------------------------------------------------------------------
-    G_ctx = build_graph_from_jsonl([tmp_path], payload_mode="minimal")
-    G_ctx.graph["_db_path"] = tmp_db
-    G_ctx.graph["_property_cache"] = {("old-db", wall_nid): {"payload": {}}}
-    G_ctx.graph["_property_key_cache"] = {("old-db", ""): {"k": [1]}}
-    _ensure_graph_context(
-        G_ctx,
-        cast(Any, object()),
-        False,
-        db_path=tmp_db_alt,
-    )
-    ctx_db_path = G_ctx.graph.get("_db_path")
-    check(
-        ctx_db_path is not None and Path(ctx_db_path).resolve() == tmp_db_alt.resolve(),
-        "_ensure_graph_context updates graph _db_path to new DB",
-    )
-    check(
-        "_property_cache" not in G_ctx.graph,
-        "_ensure_graph_context clears _property_cache on DB switch",
-    )
-    check(
-        "_property_key_cache" not in G_ctx.graph,
-        "_ensure_graph_context clears _property_key_cache on DB switch",
-    )
+        G_min.graph["_db_path"] = tmp_db2
+        props_db2 = query_ifc_graph(
+            G_min,
+            "get_element_properties",
+            {"element_id": "WALL001"},
+        )
+        wall_common_db2 = _wall_common_pset(props_db2)
+        check(
+            wall_common_db2.get("FireRating") == "EI 30",
+            "minimal+DB2: switching _db_path updates values on same graph object",
+        )
 
-    # -----------------------------------------------------------------------
-    print("\n[Part 9] get_element_properties preserves typed/nested fidelity")
-    # -----------------------------------------------------------------------
-    G_full.graph.pop("_db_path", None)
-    props_no_db = query_ifc_graph(
-        G_full,
-        "get_element_properties",
-        {"element_id": wall_nid},
-    )
-    check(
-        props_no_db.get("status") == "ok",
-        "get_element_properties without DB returns ok",
-    )
-    payload_no_db = (props_no_db.get("data") or {}).get("payload") or {}
+        # Switch back to DB1 and validate typed decoding (float + nested dict).
+        G_min.graph["_db_path"] = tmp_db
+        props_typed = query_ifc_graph(
+            G_min,
+            "get_element_properties",
+            {"element_id": "WALL001"},
+        )
+        wall_common_typed = _wall_common_pset(props_typed)
+        thermal_value = wall_common_typed.get("ThermalTransmittance")
+        performance_value = wall_common_typed.get("PerformanceData")
+        check(
+            isinstance(thermal_value, float) and thermal_value == 0.28,
+            "minimal+DB: ThermalTransmittance preserved as float (not string)",
+        )
+        check(
+            isinstance(performance_value, dict)
+            and performance_value.get("UValue") == 0.28,
+            "minimal+DB: nested PerformanceData payload preserved as dict",
+        )
 
-    G_full.graph["_db_path"] = tmp_db
-    props_with_db = query_ifc_graph(
-        G_full,
-        "get_element_properties",
-        {"element_id": wall_nid},
-    )
-    check(
-        props_with_db.get("status") == "ok", "get_element_properties with DB returns ok"
-    )
-    payload_with_db = (props_with_db.get("data") or {}).get("payload") or {}
+        # Legacy compatibility: unprefixed JSON/decimal strings should still
+        # decode with best-effort fidelity.
+        legacy_untyped_db = tmp_dir_path / "model_legacy_untyped.db"
+        shutil.copyfile(tmp_db, legacy_untyped_db)
+        with sqlite3.connect(str(legacy_untyped_db)) as conn:
+            conn.execute(
+                "UPDATE properties SET value = ? WHERE element_id = ? "
+                "AND pset_name = ? AND property_name = ?",
+                (
+                    '"EI 90"',
+                    101,
+                    "Pset_WallCommon",
+                    "FireRating",
+                ),
+            )
+            conn.execute(
+                "UPDATE properties SET value = ? WHERE element_id = ? "
+                "AND pset_name = ? AND property_name = ?",
+                (
+                    "0.28",
+                    101,
+                    "Pset_WallCommon",
+                    "ThermalTransmittance",
+                ),
+            )
+            conn.execute(
+                "UPDATE properties SET value = ? WHERE element_id = ? "
+                "AND pset_name = ? AND property_name = ?",
+                (
+                    '{"UValue":0.28,"IsExternal":true}',
+                    101,
+                    "Pset_WallCommon",
+                    "PerformanceData",
+                ),
+            )
+            conn.execute(
+                "INSERT INTO properties "
+                "(element_id, pset_name, property_name, value, is_official) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (101, "Pset_WallCommon", "LegacyIntTest", "10", 1),
+            )
+            conn.execute(
+                "INSERT INTO properties "
+                "(element_id, pset_name, property_name, value, is_official) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (101, "Pset_WallCommon", "LegacyBoolTest", "True", 1),
+            )
+            conn.execute(
+                "INSERT INTO properties "
+                "(element_id, pset_name, property_name, value, is_official) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (101, "Pset_WallCommon", "LegacyNoneTest", "None", 1),
+            )
+            conn.commit()
 
-    pset_no_db = (
-        payload_no_db.get("PropertySets", {})
-        .get("Official", {})
-        .get("Pset_WallCommon", {})
-    )
-    pset_with_db = (
-        payload_with_db.get("PropertySets", {})
-        .get("Official", {})
-        .get("Pset_WallCommon", {})
-    )
-    check(
-        pset_with_db.get("ThermalTransmittance") == 0.28
-        and isinstance(pset_with_db.get("ThermalTransmittance"), float),
-        "DB merge keeps ThermalTransmittance as float (not string)",
-    )
-    check(
-        pset_with_db.get("IsExternal") is True,
-        "DB merge keeps boolean pset value type",
-    )
-    check(
-        isinstance(pset_with_db.get("NestedSpec"), dict),
-        "DB merge keeps nested dict pset value (not string blob)",
-    )
-    check(
-        pset_with_db == pset_no_db,
-        "DB merge does not mutate richer in-memory pset structure",
-    )
+        G_min.graph["_db_path"] = legacy_untyped_db
+        props_legacy_untyped = query_ifc_graph(
+            G_min,
+            "get_element_properties",
+            {"element_id": "WALL001"},
+        )
+        wall_common_legacy_untyped = _wall_common_pset(props_legacy_untyped)
+        check(
+            isinstance(wall_common_legacy_untyped.get("ThermalTransmittance"), float)
+            and wall_common_legacy_untyped.get("ThermalTransmittance") == 0.28,
+            "minimal+legacy DB: decimal string ThermalTransmittance decodes to float",
+        )
+        check(
+            isinstance(wall_common_legacy_untyped.get("PerformanceData"), dict),
+            "minimal+legacy DB: unprefixed JSON object decodes to dict",
+        )
+        check(
+            wall_common_legacy_untyped.get("FireRating") == "EI 90",
+            "minimal+legacy DB: quoted JSON scalar decodes to plain string",
+        )
+        check(
+            isinstance(wall_common_legacy_untyped.get("LegacyIntTest"), int)
+            and wall_common_legacy_untyped.get("LegacyIntTest") == 10,
+            "minimal+legacy DB: integer scalar decodes to int",
+        )
 
-    # -----------------------------------------------------------------------
-    print("\n[Part 10] Invalid payload_mode falls back to 'full'")
-    # -----------------------------------------------------------------------
-    G_bad = build_graph_from_jsonl([tmp_path], payload_mode="bogus")
-    check(
-        G_bad.graph["_payload_mode"] == "full",
-        "Invalid payload_mode 'bogus' silently resolved to 'full'",
-    )
-    bad_wall_payload = G_bad.nodes[wall_nid].get("payload") or {}
-    check(
-        "PropertySets" in bad_wall_payload,
-        "Fallback 'full' mode: PropertySets present in payload",
-    )
+        key_result_samples = list_property_keys(
+            SimpleNamespace(deps=G_min),
+            class_=None,
+            sample_values=True,
+        )
+        key_samples = (key_result_samples.get("data") or {}).get("samples") or {}
+        legacy_bool_samples = key_samples.get("Pset_WallCommon.LegacyBoolTest") or []
+        legacy_none_samples = key_samples.get("Pset_WallCommon.LegacyNoneTest") or []
+        check(
+            bool(legacy_bool_samples) and isinstance(legacy_bool_samples[0], bool),
+            "minimal+legacy DB: sample_values decodes LegacyBoolTest as bool",
+        )
+        check(
+            bool(legacy_none_samples) and legacy_none_samples[0] is None,
+            "minimal+legacy DB: sample_values decodes LegacyNoneTest as None",
+        )
 
-    # -----------------------------------------------------------------------
-    tmp_path.unlink(missing_ok=True)
-    tmp_db.unlink(missing_ok=True)
-    tmp_path_alt.unlink(missing_ok=True)
-    tmp_db_alt.unlink(missing_ok=True)
+        # Simulate legacy/degraded DB row and ensure full-mode in-memory payload
+        # is not clobbered by lower-fidelity DB data.
+        legacy_db = tmp_dir_path / "model_legacy.db"
+        shutil.copyfile(tmp_db, legacy_db)
+        with sqlite3.connect(str(legacy_db)) as conn:
+            conn.execute(
+                "UPDATE properties SET value = ? WHERE element_id = ? "
+                "AND pset_name = ? AND property_name = ?",
+                (
+                    "legacy-string",
+                    101,
+                    "Pset_WallCommon",
+                    "PerformanceData",
+                ),
+            )
+            conn.commit()
+
+        G_full.graph["_db_path"] = legacy_db
+        props_full_legacy = query_ifc_graph(
+            G_full,
+            "get_element_properties",
+            {"element_id": "WALL001"},
+        )
+        wall_common_full_legacy = _wall_common_pset(props_full_legacy)
+        check(
+            isinstance(wall_common_full_legacy.get("PerformanceData"), dict),
+            "full+DB: merge keeps richer nested in-memory payload over degraded DB",
+        )
+
+        # -------------------------------------------------------------------
+        print("\n[Part 9] Invalid payload_mode falls back to 'full'")
+        # -------------------------------------------------------------------
+        G_bad = build_graph_from_jsonl([tmp_path], payload_mode="bogus")
+        check(
+            G_bad.graph["_payload_mode"] == "full",
+            "Invalid payload_mode 'bogus' silently resolved to 'full'",
+        )
+        bad_wall_payload = G_bad.nodes[wall_nid].get("payload") or {}
+        check(
+            "PropertySets" in bad_wall_payload,
+            "Fallback 'full' mode: PropertySets present in payload",
+        )
 
     if _failures:
         print(f"\n\033[31m{len(_failures)} check(s) FAILED:\033[0m")

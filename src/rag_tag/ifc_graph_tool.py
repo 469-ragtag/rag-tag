@@ -12,7 +12,7 @@ _logger = logging.getLogger(__name__)
 
 # Sentinel: distinguishes "not yet cached" from "cached, result was None".
 _CACHE_MISS = object()
-_PROPERTY_CACHE_MAX_ENTRIES = 1024
+_PROPERTY_CACHE_MAX_ENTRIES = 2048
 
 LLM_PAYLOAD_MODE = "llm"
 INTERNAL_PAYLOAD_MODE = "internal"
@@ -109,10 +109,8 @@ def _merge_db_element_data(
 ) -> dict[str, Any]:
     """Merge DB-sourced element data into in-memory node data.
 
-    DB data enriches (fills in) flat properties and
-    PropertySets/Quantities in the payload.  Other node attributes
-    (geometry, label, class_, graph edges, etc.) are preserved unchanged
-    from the in-memory node.
+    DB data is used as a *fill-missing* enrichment source. Existing in-memory
+    values are preserved to avoid degrading richer payload structures.
 
     Args:
         node_data: Raw ``G.nodes[node_id]`` dict from the NetworkX graph.
@@ -122,36 +120,36 @@ def _merge_db_element_data(
     Returns:
         New dict with merged data (the input dicts are not mutated).
     """
-    merged: dict[str, Any] = dict(node_data)
 
-    def _merge_missing(
-        existing: dict[str, Any], incoming: dict[str, Any]
+    def _merge_fill_missing(
+        current: dict[str, Any],
+        incoming: dict[str, Any],
     ) -> dict[str, Any]:
-        """Merge nested mappings while preserving richer in-memory values."""
-        merged_dict: dict[str, Any] = dict(existing)
+        """Recursively merge *incoming* into *current* without clobbering values."""
+        merged_dict: dict[str, Any] = dict(current)
         for key, incoming_value in incoming.items():
-            if key not in merged_dict:
+            if key not in merged_dict or merged_dict[key] is None:
                 merged_dict[key] = incoming_value
                 continue
 
             existing_value = merged_dict[key]
             if isinstance(existing_value, dict) and isinstance(incoming_value, dict):
-                merged_dict[key] = _merge_missing(existing_value, incoming_value)
-                continue
+                merged_dict[key] = _merge_fill_missing(existing_value, incoming_value)
 
-            if existing_value is None or existing_value == "":
-                merged_dict[key] = incoming_value
         return merged_dict
 
-    # Merge flat properties: DB values only fill missing in-memory fields.
-    db_props = db_data.get("properties") or {}
-    if db_props:
-        existing_props: dict[str, Any] = dict(node_data.get("properties") or {})
-        merged["properties"] = _merge_missing(existing_props, db_props)
+    merged: dict[str, Any] = dict(node_data)
 
-    # Merge payload sections: DB PropertySets and Quantities enrich in-memory data.
+    # Merge flat properties without overriding existing non-null graph values.
+    db_props = db_data.get("properties") or {}
+    if isinstance(db_props, dict) and db_props:
+        existing_props: dict[str, Any] = dict(node_data.get("properties") or {})
+        merged["properties"] = _merge_fill_missing(existing_props, db_props)
+
+    # Merge payload sections; DB fills holes but never overwrites richer in-memory
+    # nested content.
     db_payload = db_data.get("payload") or {}
-    if db_payload:
+    if isinstance(db_payload, dict) and db_payload:
         existing_payload: dict[str, Any] = dict(node_data.get("payload") or {})
 
         if "PropertySets" in db_payload:
@@ -159,23 +157,18 @@ def _merge_db_element_data(
                 existing_payload.get("PropertySets") or {}
             )
             db_psets: dict[str, Any] = db_payload["PropertySets"]
-            for section in ("Official", "Custom"):
-                if section in db_psets:
-                    existing_section: dict[str, Any] = dict(
-                        existing_psets.get(section) or {}
-                    )
-                    db_section: dict[str, Any] = dict(db_psets.get(section) or {})
-                    existing_psets[section] = _merge_missing(
-                        existing_section, db_section
-                    )
+            if isinstance(db_psets, dict):
+                existing_psets = _merge_fill_missing(existing_psets, db_psets)
             existing_payload["PropertySets"] = existing_psets
 
         if "Quantities" in db_payload:
             existing_qty: dict[str, Any] = dict(
                 existing_payload.get("Quantities") or {}
             )
-            db_qty: dict[str, Any] = dict(db_payload.get("Quantities") or {})
-            existing_payload["Quantities"] = _merge_missing(existing_qty, db_qty)
+            db_qty: dict[str, Any] = db_payload["Quantities"]
+            if isinstance(db_qty, dict):
+                existing_qty = _merge_fill_missing(existing_qty, db_qty)
+            existing_payload["Quantities"] = existing_qty
 
         merged["payload"] = existing_payload
 
@@ -186,13 +179,12 @@ def _get_property_cache(G: nx.DiGraph) -> OrderedDict[tuple[str, str], Any]:
     """Return or create the session-level property cache stored on the graph.
 
     The cache lives at ``G.graph["_property_cache"]`` and is keyed by
-    ``(<resolved-db-path>, <node-id>)``.
+    ``(db_path, node_id)`` tuples so entries remain valid when the same graph
+    object is reused with a different DB context.
+
     Values are DB element data dicts (or ``None`` when not found), with
     ``_CACHE_MISS`` used as the "not yet fetched" sentinel so that a ``None``
     result (element absent from DB) is not re-fetched on subsequent calls.
-
-    The cache is bounded (LRU-style) to avoid unbounded memory growth in
-    long-lived sessions.
     """
     cache_obj = G.graph.get("_property_cache")
     if isinstance(cache_obj, OrderedDict):
@@ -209,21 +201,23 @@ def _cached_db_lookup(
     G: nx.DiGraph,
     node_id: str,
     db_path: Path,
-    db_conn: Any = None,
+    *,
+    db_conn: Any | None = None,
 ) -> dict[str, Any] | None:
     """Look up element data from the SQLite DB with a graph-level result cache.
 
     Avoids reopening the database for the same element within a single agent
-    session. The first call for a given ``(db_path, node_id)`` pair performs
-    the lookup and stores the result (or ``None``) in
-    ``G.graph["_property_cache"]``.
-    Subsequent calls return the cached value immediately.
+    session. Cache keys include both DB path and node id, so the same graph
+    object can safely switch DB context without stale property leakage.
+
+    Callers may optionally provide an open ``db_conn`` to reuse one SQLite
+    connection across many lookups in a filter pass.
 
     Args:
         G: NetworkX graph with optional ``_property_cache`` graph attribute.
         node_id: Graph node identifier used as part of the cache key.
         db_path: Path to the SQLite database file.
-        db_conn: Optional open SQLite connection reused across many lookups.
+        db_conn: Optional open sqlite connection for pass-level reuse.
 
     Returns:
         DB element data dict (``properties`` + ``payload`` keys) or ``None``
@@ -246,7 +240,11 @@ def _cached_db_lookup(
 
     global_id = node_props.get("GlobalId")
     if global_id:
-        db_data = lookup_element_by_globalid(db_path, str(global_id), conn=db_conn)
+        db_data = lookup_element_by_globalid(
+            db_path,
+            str(global_id),
+            conn=db_conn,
+        )
 
     if db_data is None:
         express_id_raw = node_props.get("ExpressId")
@@ -448,7 +446,8 @@ def query_ifc_graph(
     def _apply_property_filters(
         node_id: str,
         filters: Dict[str, Any],
-        db_conn: Any = None,
+        *,
+        db_conn: Any | None = None,
     ) -> bool:
         if not filters:
             return True
@@ -470,9 +469,8 @@ def query_ifc_graph(
         if not isinstance(_effective_quantities, dict):
             _effective_quantities = {}
 
-        def _flat_prop_matches(prop_val: Any, expected: Any) -> bool:
-            # List-valued property (e.g. Materials): support membership testing
-            # so {"Materials": "gypsum"} matches ["gypsum", ...].
+        def _match_flat_property_value(prop_val: Any, expected: Any) -> bool:
+            """Return True when a direct flat property value matches *expected*."""
             if isinstance(prop_val, list):
                 if isinstance(expected, str):
                     return expected in prop_val
@@ -482,17 +480,20 @@ def query_ifc_graph(
             return prop_val == expected
 
         # Minimal payload mode: pset_block will be empty because PropertySets
-        # are not stored in-memory. When nested pset lookups are required and a
-        # DB path is wired into the graph, fetch the full element data from the
-        # DB (session-cached) so filters like "Pset_WallCommon.FireRating" or
-        # flat-key fallbacks like {"ThermalTransmittance": 0.3} still work.
+        # are not stored in-memory.  If filters require pset/quantity fallback
+        # (dotted key OR flat key not directly matched), enrich from DB.
         _has_dotted_filter = any("." in k for k in filters)
         _needs_flat_pset_fallback = any(
-            "." not in key
-            and (key not in props or not _flat_prop_matches(props.get(key), expected))
+            key not in props or not _match_flat_property_value(props[key], expected)
             for key, expected in filters.items()
+            if "." not in key
         )
-        if (_has_dotted_filter or _needs_flat_pset_fallback) and not pset_block:
+
+        if (
+            (_has_dotted_filter or _needs_flat_pset_fallback)
+            and not pset_block
+            and not _effective_quantities
+        ):
             _db_path_raw: Any = G.graph.get("_db_path")
             if _db_path_raw is not None:
                 _db_data = _cached_db_lookup(
@@ -576,7 +577,8 @@ def query_ifc_graph(
             # Flat key: check direct properties first.  Require key existence so
             # that a missing key never accidentally matches an expected None.
             if key in props:
-                if _flat_prop_matches(props[key], expected):
+                prop_val = props[key]
+                if _match_flat_property_value(prop_val, expected):
                     continue
                 # Key exists in flat props but value mismatches; still fall
                 # through to nested psets (same property name may appear there).
@@ -794,29 +796,33 @@ def query_ifc_graph(
         if property_filters and not isinstance(property_filters, dict):
             return _err("Invalid param: property_filters must be an object", "invalid")
 
-        db_conn = None
+        db_lookup_conn: Any | None = None
+        db_path_raw: Any = G.graph.get("_db_path")
+        if property_filters and db_path_raw is not None:
+            from rag_tag.sql_element_lookup import (  # noqa: PLC0415
+                open_lookup_connection,
+            )
+
+            db_lookup_conn = open_lookup_connection(Path(db_path_raw))
+
+        matches = []
         try:
-            db_path_raw = G.graph.get("_db_path")
-            if db_path_raw is not None and property_filters:
-                from rag_tag.sql_element_lookup import (  # noqa: PLC0415
-                    open_lookup_connection,
-                )
-
-                db_conn = open_lookup_connection(Path(db_path_raw))
-
-            matches = []
             for n, d in G.nodes(data=True):
                 if class_filter is not None:
                     if str(d.get("class_", "")).lower() != class_filter.lower():
                         continue
-                if not _apply_property_filters(n, property_filters, db_conn=db_conn):
+                if not _apply_property_filters(
+                    n,
+                    property_filters,
+                    db_conn=db_lookup_conn,
+                ):
                     continue
                 matches.append(
                     build_node_payload(n, d, payload_mode=resolved_payload_mode)
                 )
         finally:
-            if db_conn is not None:
-                db_conn.close()
+            if db_lookup_conn is not None:
+                db_lookup_conn.close()
         return _ok({"class": class_filter, "elements": matches})
 
     if action == "traverse":

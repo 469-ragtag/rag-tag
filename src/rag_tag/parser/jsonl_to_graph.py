@@ -603,8 +603,7 @@ def add_spatial_adjacency(G: nx.DiGraph, threshold: float | None = None) -> floa
 
 def add_topology_facts(G: nx.DiGraph) -> None:
     def _add_topology_edge(u: str, v: str, **attrs: object) -> None:
-        # DiGraph supports one edge per (u, v). Preserve explicit IFC semantics
-        # when a pair already has source="ifc".
+        """Add topology edge unless an explicit IFC edge already exists."""
         if G.has_edge(u, v) and G[u][v].get("source") == "ifc":
             return
         G.add_edge(u, v, source="topology", **attrs)
