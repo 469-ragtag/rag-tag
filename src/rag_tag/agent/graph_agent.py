@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 
@@ -340,6 +341,31 @@ class GraphAgent:
                 # attempts via the output_validator).  Return a safe fallback
                 # immediately — no extra run_sync call is made here.
                 raw = getattr(exc, "body", None) or str(exc)
+                recovered = _recover_graph_answer(raw)
+                if recovered is None:
+                    recovered = _recover_graph_answer(str(exc))
+                if recovered is not None:
+                    answer = _sanitize_model_text(recovered.answer) or ""
+                    warning = _sanitize_model_text(recovered.warning)
+
+                    response: dict[str, object] = {
+                        "answer": _polish_answer_with_data(answer, recovered.data)
+                    }
+                    if recovered.data:
+                        response["data"] = recovered.data
+                    recovery_warning = (
+                        "Recovered answer from malformed final_result output."
+                    )
+                    if warning:
+                        response["warning"] = f"{warning} {recovery_warning}"
+                    else:
+                        response["warning"] = recovery_warning
+
+                    _logger.warning(
+                        "Recovered answer from malformed output after retries: %s", exc
+                    )
+                    return response
+
                 raw_snippet = str(raw)[:400] if raw else ""
                 _logger.error(
                     "Output validation failed after all retries; "
@@ -454,3 +480,104 @@ def _extract_primary_list(data: dict[str, object]) -> list[str]:
         if values:
             return values
     return []
+
+
+def _recover_graph_answer(raw: object) -> GraphAnswer | None:
+    """Best-effort salvage path for malformed output payloads.
+
+    Attempts direct validation first, then extracts likely JSON payloads from
+    error wrappers and retries validation on those candidates.
+    """
+    for candidate in _iter_recovery_candidates(raw):
+        try:
+            output = GraphAnswer.model_validate(candidate)
+        except Exception:
+            continue
+        if output.answer and output.answer.strip():
+            return output
+    return None
+
+
+def _iter_recovery_candidates(raw: object) -> list[object]:
+    candidates: list[object] = []
+
+    def add(value: object) -> None:
+        if value is None:
+            return
+        candidates.append(value)
+
+    add(raw)
+
+    if isinstance(raw, dict):
+        for key in ("input", "error", "errors", "message", "messages"):
+            add(raw.get(key))
+        add(_extract_error_inputs(raw))
+
+    if isinstance(raw, list):
+        for item in raw:
+            add(item)
+            if isinstance(item, dict):
+                add(item.get("input"))
+        add(_extract_error_inputs(raw))
+
+    if isinstance(raw, str):
+        for payload in _extract_json_payloads(raw):
+            add(payload)
+            add(_extract_error_inputs(payload))
+
+    flattened: list[object] = []
+    for value in candidates:
+        if isinstance(value, list):
+            flattened.extend(value)
+        else:
+            flattened.append(value)
+    return flattened
+
+
+def _extract_json_payloads(text: str) -> list[object]:
+    payloads: list[object] = []
+    stripped = text.strip()
+    if not stripped:
+        return payloads
+
+    # Parse whole text when it is valid JSON.
+    try:
+        payloads.append(json.loads(stripped))
+    except json.JSONDecodeError:
+        pass
+
+    # Parse fenced JSON blocks.
+    fenced_blocks = re.findall(r"```(?:json)?\s*([\s\S]*?)\s*```", stripped)
+    for block in fenced_blocks:
+        try:
+            payloads.append(json.loads(block))
+        except json.JSONDecodeError:
+            continue
+
+    # Parse first object/array substring if surrounded by prose.
+    starts = [idx for idx in (stripped.find("{"), stripped.find("[")) if idx >= 0]
+    if starts:
+        start = min(starts)
+        end = max(stripped.rfind("}"), stripped.rfind("]"))
+        if end > start:
+            try:
+                payloads.append(json.loads(stripped[start : end + 1]))
+            except json.JSONDecodeError:
+                pass
+
+    return payloads
+
+
+def _extract_error_inputs(payload: object) -> list[object]:
+    inputs: list[object] = []
+
+    if isinstance(payload, dict):
+        if "input" in payload:
+            inputs.append(payload["input"])
+        for value in payload.values():
+            inputs.extend(_extract_error_inputs(value))
+    elif isinstance(payload, list):
+        for item in payload:
+            inputs.extend(_extract_error_inputs(item))
+
+    return inputs
