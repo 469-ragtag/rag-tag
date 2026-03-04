@@ -18,6 +18,13 @@ from typing import Any
 
 CANONICAL_ACTIONS: tuple[str, ...] = (
     "get_elements_in_storey",
+    "get_elements_in_zone",
+    "get_elements_in_system",
+    "get_elements_in_space",
+    "get_hosted_elements",
+    "get_host",
+    "trace_mep_network",
+    "get_elements_by_classification",
     "find_elements_by_class",
     "get_adjacent_elements",
     "get_topology_neighbors",
@@ -101,6 +108,44 @@ KNOWN_RELATION_SOURCE_SET = frozenset(KNOWN_RELATION_SOURCES)
 # Defaults also define required field presence for each action's data payload.
 ACTION_DATA_DEFAULTS: dict[str, dict[str, Any]] = {
     "get_elements_in_storey": {"storey": None, "elements": []},
+    "get_elements_in_zone": {
+        "zone": None,
+        "elements": [],
+        "max_results": 200,
+        "truncated": False,
+    },
+    "get_elements_in_system": {
+        "system": None,
+        "elements": [],
+        "max_results": 200,
+        "truncated": False,
+    },
+    "get_elements_in_space": {
+        "space": None,
+        "elements": [],
+        "max_results": 200,
+        "truncated": False,
+    },
+    "get_hosted_elements": {
+        "element_id": None,
+        "hosted_elements": [],
+        "max_results": 200,
+        "truncated": False,
+    },
+    "get_host": {"element_id": None, "host": None},
+    "trace_mep_network": {
+        "element_id": None,
+        "max_depth": 10,
+        "max_results": 200,
+        "truncated": False,
+        "results": [],
+    },
+    "get_elements_by_classification": {
+        "classification": None,
+        "elements": [],
+        "max_results": 200,
+        "truncated": False,
+    },
     "find_elements_by_class": {"class": None, "elements": []},
     "get_adjacent_elements": {"element_id": None, "adjacent": []},
     "get_topology_neighbors": {

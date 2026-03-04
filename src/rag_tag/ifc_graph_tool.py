@@ -44,6 +44,11 @@ LLM_PROPERTY_ALLOWLIST: tuple[str, ...] = (
 MAX_LLM_STRING_CHARS = 160
 REDACTED_COMPLEX_VALUE = "[REDACTED_COMPLEX]"
 TRUNCATED_SUFFIX = "...[truncated]"
+TRACE_MEP_MAX_DEPTH_DEFAULT = 10
+TRACE_MEP_MAX_RESULTS_DEFAULT = 200
+TRACE_MEP_MAX_RESULTS_HARD_LIMIT = 1000
+ACTION_LIST_MAX_RESULTS_DEFAULT = TRACE_MEP_MAX_RESULTS_DEFAULT
+ACTION_LIST_MAX_RESULTS_HARD_LIMIT = TRACE_MEP_MAX_RESULTS_HARD_LIMIT
 
 
 def _resolve_payload_mode(payload_mode: str) -> str:
@@ -408,6 +413,15 @@ def query_ifc_graph(
     def _normalize_text(value: str) -> str:
         return re.sub(r"[^a-z0-9]+", " ", value.lower()).strip()
 
+    def _node_sort_key(node_id: str) -> tuple[str, str]:
+        label = ""
+        if node_id in G:
+            label = _normalize_text(str(G.nodes[node_id].get("label", "")))
+        return label, str(node_id)
+
+    def _sorted_node_ids(node_ids: Iterable[str]) -> list[str]:
+        return sorted((str(node_id) for node_id in node_ids), key=_node_sort_key)
+
     def _edge_relation(edge: dict[str, Any]) -> str | None:
         relation = normalize_relation_name(edge.get("relation"))
         if relation in CANONICAL_RELATION_SET:
@@ -503,6 +517,265 @@ def query_ifc_graph(
             return None, {"error": "Ambiguous storey", "candidates": norm_matches}
 
         return None, {"error": f"Storey not found: {storey_query}"}
+
+    def _resolver_error_envelope(err: Dict[str, Any]) -> dict[str, Any]:
+        message = str(err.get("error", "Unknown error"))
+        code = str(err.get("code", "")).strip().lower()
+
+        if code == "ambiguous":
+            candidates = _sorted_node_ids(err.get("candidates") or [])
+            return _err(message, "ambiguous", {"candidates": candidates})
+        if code in {"missing_param", "invalid", "not_found"}:
+            return _err(message, code)
+
+        if "Ambiguous" in message:
+            candidates = _sorted_node_ids(err.get("candidates") or [])
+            return _err(message, "ambiguous", {"candidates": candidates})
+        if "Missing param" in message:
+            return _err(message, "missing_param")
+        if "Invalid" in message:
+            return _err(message, "invalid")
+        return _err(message, "not_found")
+
+    def _resolve_element_error_envelope(err: Dict[str, Any]) -> dict[str, Any]:
+        message = str(err.get("error", "Unknown error"))
+        if "Ambiguous" in message:
+            candidates = _sorted_node_ids(err.get("candidates") or [])
+            return _err(message, "ambiguous", {"candidates": candidates})
+        if "Invalid element_id" in message:
+            return _err(message, "invalid")
+        return _err(message, "not_found")
+
+    def _parse_positive_int_param(
+        param_name: str,
+        *,
+        default: int,
+        hard_limit: int | None = None,
+    ) -> tuple[int | None, dict[str, Any] | None]:
+        raw_value = params.get(param_name, default)
+
+        parsed: int
+        if isinstance(raw_value, bool):
+            return (
+                None,
+                _err(f"Invalid param: {param_name} must be an integer", "invalid"),
+            )
+        if isinstance(raw_value, int):
+            parsed = raw_value
+        elif isinstance(raw_value, str):
+            candidate = raw_value.strip()
+            if not re.fullmatch(r"[+-]?\d+", candidate):
+                return (
+                    None,
+                    _err(
+                        f"Invalid param: {param_name} must be an integer",
+                        "invalid",
+                    ),
+                )
+            parsed = int(candidate)
+        else:
+            return (
+                None,
+                _err(f"Invalid param: {param_name} must be an integer", "invalid"),
+            )
+
+        if parsed < 1:
+            return (
+                None,
+                _err(f"Invalid param: {param_name} must be >= 1", "invalid"),
+            )
+
+        if hard_limit is not None and parsed > hard_limit:
+            parsed = hard_limit
+
+        return parsed, None
+
+    def _apply_result_limit(
+        items: list[dict[str, Any]],
+        max_results: int,
+    ) -> tuple[list[dict[str, Any]], bool]:
+        if len(items) <= max_results:
+            return items, False
+        return items[:max_results], True
+
+    def _resolve_context_node(
+        query_value: str,
+        *,
+        param_name: str,
+        prefix: str,
+        class_name: str,
+        display_name: str,
+    ) -> tuple[str | None, Dict[str, Any] | None]:
+        query = query_value.strip()
+        if not query:
+            return None, {
+                "error": f"Missing param: {param_name}",
+                "code": "missing_param",
+            }
+
+        class_lower = class_name.lower()
+        class_nodes = [
+            str(n)
+            for n, d in G.nodes(data=True)
+            if str(d.get("class_", "")).lower() == class_lower
+        ]
+
+        def _is_expected_class(node_id: str) -> bool:
+            return node_id in G and (
+                str(G.nodes[node_id].get("class_", "")).lower() == class_lower
+            )
+
+        prefix_token = f"{prefix}::"
+        direct_ids: list[str] = []
+        if query.startswith(prefix_token):
+            direct_ids.append(query)
+        else:
+            direct_ids.append(f"{prefix_token}{query}")
+            if query in G:
+                direct_ids.append(query)
+
+        for direct_id in direct_ids:
+            if direct_id not in G:
+                continue
+            if _is_expected_class(direct_id):
+                return direct_id, None
+            return (
+                None,
+                {
+                    "error": (
+                        f"Invalid param: {param_name} is not a {display_name}: "
+                        f"{direct_id}"
+                    ),
+                    "code": "invalid",
+                },
+            )
+
+        lowered = query.lower()
+        prefixed_lowered = (
+            lowered
+            if query.startswith(prefix_token)
+            else f"{prefix_token}{query}".lower()
+        )
+        id_matches = [
+            node_id
+            for node_id in class_nodes
+            if node_id.lower() in {lowered, prefixed_lowered}
+        ]
+        if len(id_matches) == 1:
+            return id_matches[0], None
+        if len(id_matches) > 1:
+            return None, {
+                "error": f"Ambiguous {param_name}",
+                "code": "ambiguous",
+                "candidates": _sorted_node_ids(id_matches),
+            }
+
+        gid_matches: list[str] = []
+        for node_id in class_nodes:
+            props = G.nodes[node_id].get("properties") or {}
+            if not isinstance(props, dict):
+                continue
+            gid = props.get("GlobalId")
+            if isinstance(gid, str) and gid.strip().lower() == lowered:
+                gid_matches.append(node_id)
+        if len(gid_matches) == 1:
+            return gid_matches[0], None
+        if len(gid_matches) > 1:
+            return None, {
+                "error": f"Ambiguous {param_name}",
+                "code": "ambiguous",
+                "candidates": _sorted_node_ids(gid_matches),
+            }
+
+        exact = _find_nodes_by_label(query, class_filter=class_name)
+        if len(exact) == 1:
+            return exact[0], None
+        if len(exact) > 1:
+            return None, {
+                "error": f"Ambiguous {param_name}",
+                "code": "ambiguous",
+                "candidates": _sorted_node_ids(exact),
+            }
+
+        normalized_query = _normalize_text(query)
+        normalized_matches = [
+            node_id
+            for node_id in class_nodes
+            if _normalize_text(str(G.nodes[node_id].get("label", "")))
+            == normalized_query
+        ]
+        if len(normalized_matches) == 1:
+            return normalized_matches[0], None
+        if len(normalized_matches) > 1:
+            return None, {
+                "error": f"Ambiguous {param_name}",
+                "code": "ambiguous",
+                "candidates": _sorted_node_ids(normalized_matches),
+            }
+
+        return None, {
+            "error": f"{display_name} not found: {query_value}",
+            "code": "not_found",
+        }
+
+    def _incoming_membership_nodes(
+        context_node_id: str,
+        relation_name: str,
+    ) -> list[dict[str, Any]]:
+        members: dict[str, dict[str, Any]] = {}
+        for source_id in G.predecessors(context_node_id):
+            source_node_id = str(source_id)
+            if source_node_id == context_node_id:
+                continue
+            edge = G[source_node_id][context_node_id]
+            edge_relation = _edge_relation(edge)
+            if edge_relation != relation_name:
+                continue
+
+            source_data = G.nodes.get(source_node_id) or {}
+            source_class = str(source_data.get("class_", "")).strip()
+            if not source_class:
+                continue
+            if str(source_data.get("node_kind", "")).strip().lower() == "context":
+                continue
+
+            members[source_node_id] = {
+                "id": source_node_id,
+                "label": source_data.get("label"),
+                "class_": source_data.get("class_"),
+                "relation": edge_relation,
+                "source": _edge_source(edge, edge_relation),
+            }
+        return [members[node_id] for node_id in _sorted_node_ids(members)]
+
+    def _contains_descendants(
+        start: str,
+    ) -> list[tuple[str, int, dict[str, Any]]]:
+        visited = {start}
+        q: deque[tuple[str, int]] = deque([(start, 0)])
+        descendants: list[tuple[str, int, dict[str, Any]]] = []
+
+        while q:
+            node, depth = q.popleft()
+            candidates: list[tuple[str, dict[str, Any]]] = []
+            for nbr in G.successors(node):
+                edge = G[node][nbr]
+                if _edge_relation(edge) != "contains":
+                    continue
+                nbr_id = str(nbr)
+                if nbr_id in visited:
+                    continue
+                candidates.append((nbr_id, edge))
+
+            candidates.sort(key=lambda item: _node_sort_key(item[0]))
+            for nbr_id, edge in candidates:
+                if nbr_id in visited:
+                    continue
+                visited.add(nbr_id)
+                q.append((nbr_id, depth + 1))
+                descendants.append((nbr_id, depth + 1, edge))
+
+        return descendants
 
     def _storey_elements(start: str) -> Iterable[str]:
         """Traverse downward storey containment only (contains edges)."""
@@ -771,6 +1044,443 @@ def query_ifc_graph(
                 }
             )
         return _ok_action(action, {"storey": storey, "elements": elements})
+
+    if action == "get_elements_in_zone":
+        zone = params.get("zone")
+        if not zone:
+            return _err("Missing param: zone", "missing_param")
+        if not isinstance(zone, str):
+            return _err("Invalid param: zone must be a string", "invalid")
+
+        max_results, max_results_err = _parse_positive_int_param(
+            "max_results",
+            default=ACTION_LIST_MAX_RESULTS_DEFAULT,
+            hard_limit=ACTION_LIST_MAX_RESULTS_HARD_LIMIT,
+        )
+        if max_results_err:
+            return max_results_err
+        if max_results is None:
+            return _err("Invalid param: max_results must be an integer", "invalid")
+
+        resolved_zone, err = _resolve_context_node(
+            zone,
+            param_name="zone",
+            prefix="Zone",
+            class_name="IfcZone",
+            display_name="Zone",
+        )
+        if err:
+            return _resolver_error_envelope(err)
+        if resolved_zone is None:
+            return _err(f"Zone not found: {zone}", "not_found")
+
+        all_elements = _incoming_membership_nodes(resolved_zone, "in_zone")
+        elements, truncated = _apply_result_limit(all_elements, max_results)
+        return _ok_action(
+            action,
+            {
+                "zone": resolved_zone,
+                "elements": elements,
+                "max_results": max_results,
+                "truncated": truncated,
+            },
+        )
+
+    if action == "get_elements_in_system":
+        system = params.get("system")
+        if not system:
+            return _err("Missing param: system", "missing_param")
+        if not isinstance(system, str):
+            return _err("Invalid param: system must be a string", "invalid")
+
+        max_results, max_results_err = _parse_positive_int_param(
+            "max_results",
+            default=ACTION_LIST_MAX_RESULTS_DEFAULT,
+            hard_limit=ACTION_LIST_MAX_RESULTS_HARD_LIMIT,
+        )
+        if max_results_err:
+            return max_results_err
+        if max_results is None:
+            return _err("Invalid param: max_results must be an integer", "invalid")
+
+        resolved_system, err = _resolve_context_node(
+            system,
+            param_name="system",
+            prefix="System",
+            class_name="IfcSystem",
+            display_name="System",
+        )
+        if err:
+            return _resolver_error_envelope(err)
+        if resolved_system is None:
+            return _err(f"System not found: {system}", "not_found")
+
+        all_elements = _incoming_membership_nodes(
+            resolved_system,
+            "belongs_to_system",
+        )
+        elements, truncated = _apply_result_limit(all_elements, max_results)
+        return _ok_action(
+            action,
+            {
+                "system": resolved_system,
+                "elements": elements,
+                "max_results": max_results,
+                "truncated": truncated,
+            },
+        )
+
+    if action == "get_elements_by_classification":
+        classification = params.get("classification")
+        if not classification:
+            return _err("Missing param: classification", "missing_param")
+        if not isinstance(classification, str):
+            return _err(
+                "Invalid param: classification must be a string",
+                "invalid",
+            )
+
+        max_results, max_results_err = _parse_positive_int_param(
+            "max_results",
+            default=ACTION_LIST_MAX_RESULTS_DEFAULT,
+            hard_limit=ACTION_LIST_MAX_RESULTS_HARD_LIMIT,
+        )
+        if max_results_err:
+            return max_results_err
+        if max_results is None:
+            return _err("Invalid param: max_results must be an integer", "invalid")
+
+        resolved_classification, err = _resolve_context_node(
+            classification,
+            param_name="classification",
+            prefix="Classification",
+            class_name="IfcClassificationReference",
+            display_name="Classification",
+        )
+        if err:
+            return _resolver_error_envelope(err)
+        if resolved_classification is None:
+            return _err(
+                f"Classification not found: {classification}",
+                "not_found",
+            )
+
+        all_elements = _incoming_membership_nodes(
+            resolved_classification,
+            "classified_as",
+        )
+        elements, truncated = _apply_result_limit(all_elements, max_results)
+        return _ok_action(
+            action,
+            {
+                "classification": resolved_classification,
+                "elements": elements,
+                "max_results": max_results,
+                "truncated": truncated,
+            },
+        )
+
+    if action == "get_elements_in_space":
+        space = params.get("space")
+        if not space:
+            return _err("Missing param: space", "missing_param")
+        if not isinstance(space, str):
+            return _err("Invalid param: space must be a string", "invalid")
+
+        max_results, max_results_err = _parse_positive_int_param(
+            "max_results",
+            default=ACTION_LIST_MAX_RESULTS_DEFAULT,
+            hard_limit=ACTION_LIST_MAX_RESULTS_HARD_LIMIT,
+        )
+        if max_results_err:
+            return max_results_err
+        if max_results is None:
+            return _err("Invalid param: max_results must be an integer", "invalid")
+
+        resolved_space, err = _resolve_context_node(
+            space,
+            param_name="space",
+            prefix="Element",
+            class_name="IfcSpace",
+            display_name="IfcSpace",
+        )
+        if err:
+            return _resolver_error_envelope(err)
+        if resolved_space is None:
+            return _err(f"IfcSpace not found: {space}", "not_found")
+
+        container_classes = {
+            "IfcProject",
+            "IfcSite",
+            "IfcBuilding",
+            "IfcBuildingStorey",
+            "IfcSpace",
+            "IfcZone",
+            "IfcSpatialZone",
+            "IfcTypeObject",
+        }
+
+        elements = []
+        for node_id, depth, edge in _contains_descendants(resolved_space):
+            if not node_id.startswith("Element::"):
+                continue
+            cls = G.nodes[node_id].get("class_")
+            if cls in container_classes:
+                continue
+            edge_relation = _edge_relation(edge)
+            elements.append(
+                {
+                    "id": node_id,
+                    "label": G.nodes[node_id].get("label"),
+                    "class_": cls,
+                    "relation": edge_relation,
+                    "source": _edge_source(edge, edge_relation),
+                    "depth": depth,
+                }
+            )
+
+        bounded_elements, truncated = _apply_result_limit(elements, max_results)
+        return _ok_action(
+            action,
+            {
+                "space": resolved_space,
+                "elements": bounded_elements,
+                "max_results": max_results,
+                "truncated": truncated,
+            },
+        )
+
+    if action == "get_hosted_elements":
+        element_id = params.get("element_id")
+        if not element_id:
+            return _err("Missing param: element_id", "missing_param")
+        if not isinstance(element_id, str):
+            return _err("Invalid param: element_id must be a string", "invalid")
+
+        max_results, max_results_err = _parse_positive_int_param(
+            "max_results",
+            default=ACTION_LIST_MAX_RESULTS_DEFAULT,
+            hard_limit=ACTION_LIST_MAX_RESULTS_HARD_LIMIT,
+        )
+        if max_results_err:
+            return max_results_err
+        if max_results is None:
+            return _err("Invalid param: max_results must be an integer", "invalid")
+
+        resolved, err = _resolve_element_id(element_id)
+        if err:
+            return _resolve_element_error_envelope(err)
+        if resolved is None:
+            return _err(f"Element not found: {element_id}", "not_found")
+
+        hosted: dict[str, dict[str, Any]] = {}
+
+        for nbr in G.successors(resolved):
+            edge = G[resolved][nbr]
+            if _edge_relation(edge) != "hosts":
+                continue
+            hosted_id = str(nbr)
+            if not hosted_id.startswith("Element::"):
+                continue
+            hosted[hosted_id] = {
+                "id": hosted_id,
+                "label": G.nodes[hosted_id].get("label"),
+                "class_": G.nodes[hosted_id].get("class_"),
+                "relation": "hosts",
+                "source": _edge_source(edge, "hosts"),
+            }
+
+        for nbr in G.predecessors(resolved):
+            edge = G[nbr][resolved]
+            if _edge_relation(edge) != "hosted_by":
+                continue
+            hosted_id = str(nbr)
+            if not hosted_id.startswith("Element::"):
+                continue
+            hosted.setdefault(
+                hosted_id,
+                {
+                    "id": hosted_id,
+                    "label": G.nodes[hosted_id].get("label"),
+                    "class_": G.nodes[hosted_id].get("class_"),
+                    "relation": "hosts",
+                    "source": _edge_source(edge, "hosts"),
+                },
+            )
+
+        all_hosted_elements = [hosted[node_id] for node_id in _sorted_node_ids(hosted)]
+        hosted_elements, truncated = _apply_result_limit(
+            all_hosted_elements, max_results
+        )
+        return _ok_action(
+            action,
+            {
+                "element_id": resolved,
+                "hosted_elements": hosted_elements,
+                "max_results": max_results,
+                "truncated": truncated,
+            },
+        )
+
+    if action == "get_host":
+        element_id = params.get("element_id")
+        if not element_id:
+            return _err("Missing param: element_id", "missing_param")
+        if not isinstance(element_id, str):
+            return _err("Invalid param: element_id must be a string", "invalid")
+
+        resolved, err = _resolve_element_id(element_id)
+        if err:
+            return _resolve_element_error_envelope(err)
+        if resolved is None:
+            return _err(f"Element not found: {element_id}", "not_found")
+
+        hosts: dict[str, dict[str, Any]] = {}
+
+        for nbr in G.successors(resolved):
+            edge = G[resolved][nbr]
+            if _edge_relation(edge) != "hosted_by":
+                continue
+            host_id = str(nbr)
+            if not host_id.startswith("Element::"):
+                continue
+            hosts[host_id] = {
+                "id": host_id,
+                "label": G.nodes[host_id].get("label"),
+                "class_": G.nodes[host_id].get("class_"),
+                "relation": "hosted_by",
+                "source": _edge_source(edge, "hosted_by"),
+            }
+
+        for nbr in G.predecessors(resolved):
+            edge = G[nbr][resolved]
+            if _edge_relation(edge) != "hosts":
+                continue
+            host_id = str(nbr)
+            if not host_id.startswith("Element::"):
+                continue
+            hosts.setdefault(
+                host_id,
+                {
+                    "id": host_id,
+                    "label": G.nodes[host_id].get("label"),
+                    "class_": G.nodes[host_id].get("class_"),
+                    "relation": "hosted_by",
+                    "source": _edge_source(edge, "hosted_by"),
+                },
+            )
+
+        ordered_host_ids = _sorted_node_ids(hosts)
+        if not ordered_host_ids:
+            return _ok_action(action, {"element_id": resolved, "host": None})
+        if len(ordered_host_ids) > 1:
+            return _err(
+                f"Ambiguous host for element_id: {resolved}",
+                "ambiguous",
+                {"candidates": ordered_host_ids},
+            )
+
+        host = hosts[ordered_host_ids[0]]
+        return _ok_action(action, {"element_id": resolved, "host": host})
+
+    if action == "trace_mep_network":
+        element_id = params.get("element_id")
+        if not element_id:
+            return _err("Missing param: element_id", "missing_param")
+        if not isinstance(element_id, str):
+            return _err("Invalid param: element_id must be a string", "invalid")
+
+        max_depth, max_depth_err = _parse_positive_int_param(
+            "max_depth",
+            default=TRACE_MEP_MAX_DEPTH_DEFAULT,
+        )
+        if max_depth_err:
+            return max_depth_err
+        if max_depth is None:
+            return _err("Invalid param: max_depth must be an integer", "invalid")
+
+        max_results, max_results_err = _parse_positive_int_param(
+            "max_results",
+            default=TRACE_MEP_MAX_RESULTS_DEFAULT,
+            hard_limit=TRACE_MEP_MAX_RESULTS_HARD_LIMIT,
+        )
+        if max_results_err:
+            return max_results_err
+        if max_results is None:
+            return _err("Invalid param: max_results must be an integer", "invalid")
+
+        resolved, err = _resolve_element_id(element_id)
+        if err:
+            return _resolve_element_error_envelope(err)
+        if resolved is None:
+            return _err(f"Element not found: {element_id}", "not_found")
+
+        network_frontier: deque[tuple[str, int]] = deque([(resolved, 0)])
+        visited = {resolved}
+        results = []
+        truncated = False
+
+        while network_frontier and not truncated:
+            node_id, depth = network_frontier.popleft()
+            if depth >= max_depth:
+                continue
+
+            candidates: dict[str, dict[str, Any]] = {}
+            for nbr in G.successors(node_id):
+                edge = G[node_id][nbr]
+                if _edge_relation(edge) != "ifc_connected_to":
+                    continue
+                nbr_id = str(nbr)
+                if not nbr_id.startswith("Element::"):
+                    continue
+                candidates[nbr_id] = edge
+
+            for nbr in G.predecessors(node_id):
+                edge = G[nbr][node_id]
+                if _edge_relation(edge) != "ifc_connected_to":
+                    continue
+                nbr_id = str(nbr)
+                if not nbr_id.startswith("Element::"):
+                    continue
+                candidates.setdefault(nbr_id, edge)
+
+            for nbr_id in _sorted_node_ids(candidates):
+                if nbr_id in visited:
+                    continue
+
+                if len(results) >= max_results:
+                    truncated = True
+                    break
+
+                visited.add(nbr_id)
+                network_frontier.append((nbr_id, depth + 1))
+                edge = candidates[nbr_id]
+                relation = "ifc_connected_to"
+                results.append(
+                    {
+                        "from": node_id,
+                        "to": nbr_id,
+                        "relation": relation,
+                        "source": _edge_source(edge, relation),
+                        "hops": depth + 1,
+                        "node": build_node_payload(
+                            nbr_id,
+                            G.nodes[nbr_id],
+                            payload_mode=resolved_payload_mode,
+                        ),
+                    }
+                )
+
+        return _ok_action(
+            action,
+            {
+                "element_id": resolved,
+                "max_depth": max_depth,
+                "max_results": max_results,
+                "truncated": truncated,
+                "results": results,
+            },
+        )
 
     if action == "find_elements_by_class":
         cls = params.get("class")
