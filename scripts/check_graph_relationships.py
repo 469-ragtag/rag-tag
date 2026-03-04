@@ -52,6 +52,36 @@ def check(condition: bool, name: str) -> None:
         _failures.append(name)
 
 
+def _iter_edge_attrs(G: nx.Graph, u: str, v: str) -> list[dict]:
+    edge_data = G.get_edge_data(u, v)
+    if edge_data is None:
+        return []
+    if G.is_multigraph():
+        if isinstance(edge_data, dict):
+            return [attrs for attrs in edge_data.values() if isinstance(attrs, dict)]
+        return []
+    if isinstance(edge_data, dict):
+        return [edge_data]
+    return []
+
+
+def _has_edge_with(
+    G: nx.Graph,
+    u: str,
+    v: str,
+    *,
+    relation: str | None = None,
+    source: str | None = None,
+) -> bool:
+    for attrs in _iter_edge_attrs(G, u, v):
+        if relation is not None and attrs.get("relation") != relation:
+            continue
+        if source is not None and attrs.get("source") != source:
+            continue
+        return True
+    return False
+
+
 # ===========================================================================
 # Part A: Unit tests on helper functions
 # ===========================================================================
@@ -125,13 +155,15 @@ for target_nid, rel_name in [
     ("Zone::Zone Alpha", "in_zone"),
     ("Classification::ISO 12006:A-1", "classified_as"),
 ]:
-    edge_data = G_ctx.edges.get(("Element::A", target_nid), {})
+    has_ifc = _has_edge_with(
+        G_ctx, "Element::A", target_nid, relation=rel_name, source="ifc"
+    )
     check(
-        edge_data.get("source") == "ifc",
+        has_ifc,
         f"A-3  {rel_name} edge has source='ifc'",
     )
     check(
-        edge_data.get("relation") == rel_name,
+        _has_edge_with(G_ctx, "Element::A", target_nid, relation=rel_name),
         f"A-3  {rel_name} edge has correct relation attr",
     )
 
@@ -176,11 +208,15 @@ check(
     "A-4a  hosted_by edge Door1 → Wall1 created",
 )
 check(
-    G_e2e["Element::Door1"]["Element::Wall1"].get("relation") == "hosted_by",
+    _has_edge_with(
+        G_e2e, "Element::Door1", "Element::Wall1", relation="hosted_by"
+    ),
     "A-4b  hosted_by edge has correct relation attr",
 )
 check(
-    G_e2e["Element::Door1"]["Element::Wall1"].get("source") == "ifc",
+    _has_edge_with(
+        G_e2e, "Element::Door1", "Element::Wall1", relation="hosted_by", source="ifc"
+    ),
     "A-4c  hosted_by edge has source='ifc'",
 )
 
@@ -193,11 +229,19 @@ check(
     "A-4e  ifc_connected_to reverse Pipe2 → Pipe1 created (bidirectional)",
 )
 check(
-    G_e2e["Element::Pipe1"]["Element::Pipe2"].get("relation") == "ifc_connected_to",
+    _has_edge_with(
+        G_e2e, "Element::Pipe1", "Element::Pipe2", relation="ifc_connected_to"
+    ),
     "A-4f  ifc_connected_to edge has correct relation attr",
 )
 check(
-    G_e2e["Element::Pipe1"]["Element::Pipe2"].get("source") == "ifc",
+    _has_edge_with(
+        G_e2e,
+        "Element::Pipe1",
+        "Element::Pipe2",
+        relation="ifc_connected_to",
+        source="ifc",
+    ),
     "A-4g  ifc_connected_to edge has source='ifc'",
 )
 
@@ -400,11 +444,15 @@ check(
     "B-2a  hosts edge Element::WALL001 → Element::DOOR001 present",
 )
 check(
-    G["Element::WALL001"]["Element::DOOR001"].get("relation") == "hosts",
+    _has_edge_with(
+        G, "Element::WALL001", "Element::DOOR001", relation="hosts"
+    ),
     "B-2b  hosts edge has relation='hosts'",
 )
 check(
-    G["Element::WALL001"]["Element::DOOR001"].get("source") == "ifc",
+    _has_edge_with(
+        G, "Element::WALL001", "Element::DOOR001", relation="hosts", source="ifc"
+    ),
     "B-2c  hosts edge has source='ifc'",
 )
 
@@ -414,11 +462,19 @@ check(
     "B-2d  hosted_by edge Element::DOOR001 → Element::WALL001 present",
 )
 check(
-    G["Element::DOOR001"]["Element::WALL001"].get("relation") == "hosted_by",
+    _has_edge_with(
+        G, "Element::DOOR001", "Element::WALL001", relation="hosted_by"
+    ),
     "B-2e  hosted_by edge has relation='hosted_by'",
 )
 check(
-    G["Element::DOOR001"]["Element::WALL001"].get("source") == "ifc",
+    _has_edge_with(
+        G,
+        "Element::DOOR001",
+        "Element::WALL001",
+        relation="hosted_by",
+        source="ifc",
+    ),
     "B-2f  hosted_by edge has source='ifc'",
 )
 
@@ -432,11 +488,19 @@ check(
     "B-2h  ifc_connected_to Pipe2 → Pipe1 present (bidirectional)",
 )
 check(
-    G["Element::PIPE001"]["Element::PIPE002"].get("relation") == "ifc_connected_to",
+    _has_edge_with(
+        G, "Element::PIPE001", "Element::PIPE002", relation="ifc_connected_to"
+    ),
     "B-2i  ifc_connected_to edge has correct relation attr",
 )
 check(
-    G["Element::PIPE001"]["Element::PIPE002"].get("source") == "ifc",
+    _has_edge_with(
+        G,
+        "Element::PIPE001",
+        "Element::PIPE002",
+        relation="ifc_connected_to",
+        source="ifc",
+    ),
     "B-2j  ifc_connected_to edge has source='ifc'",
 )
 
@@ -446,7 +510,9 @@ check(
     "B-2k  in_zone edge Element::WALL001 → Zone::Zone Alpha present",
 )
 check(
-    G["Element::WALL001"]["Zone::Zone Alpha"].get("source") == "ifc",
+    _has_edge_with(
+        G, "Element::WALL001", "Zone::Zone Alpha", relation="in_zone", source="ifc"
+    ),
     "B-2l  in_zone edge has source='ifc'",
 )
 
@@ -456,7 +522,13 @@ check(
     "B-2m  classified_as edge IfcBuilding → Classification present",
 )
 check(
-    G["IfcBuilding"]["Classification::ISO 16739:IfcBuilding"].get("source") == "ifc",
+    _has_edge_with(
+        G,
+        "IfcBuilding",
+        "Classification::ISO 16739:IfcBuilding",
+        relation="classified_as",
+        source="ifc",
+    ),
     "B-2n  classified_as edge has source='ifc'",
 )
 
@@ -466,7 +538,13 @@ check(
     "B-2o  belongs_to_system edge Pipe1 → System present",
 )
 check(
-    G["Element::PIPE001"]["System::HVAC Supply"].get("source") == "ifc",
+    _has_edge_with(
+        G,
+        "Element::PIPE001",
+        "System::HVAC Supply",
+        relation="belongs_to_system",
+        source="ifc",
+    ),
     "B-2p  belongs_to_system edge has source='ifc'",
 )
 
@@ -596,7 +674,9 @@ check(
     "B-10a  contains edge Storey → Wall still present",
 )
 check(
-    G["Storey::STOR001"]["Element::WALL001"].get("relation") == "contains",
+    _has_edge_with(
+        G, "Storey::STOR001", "Element::WALL001", relation="contains"
+    ),
     "B-10b  contains edge has correct relation attr",
 )
 check(
@@ -620,28 +700,37 @@ try:
 finally:
     _tmp_path_full.unlink(missing_ok=True)
 
-hosts_after_topology = G_full_path.edges.get(
-    ("Element::WALL001", "Element::DOOR001"), {}
-)
 check(
-    hosts_after_topology.get("relation") == "hosts",
+    _has_edge_with(
+        G_full_path, "Element::WALL001", "Element::DOOR001", relation="hosts"
+    ),
     "B-11a explicit hosts relation survives topology pass",
 )
 check(
-    hosts_after_topology.get("source") == "ifc",
+    _has_edge_with(
+        G_full_path,
+        "Element::WALL001",
+        "Element::DOOR001",
+        relation="hosts",
+        source="ifc",
+    ),
     "B-11b explicit hosts source='ifc' survives topology pass",
 )
 
-hosted_by_after_topology = G_full_path.edges.get(
-    ("Element::DOOR001", "Element::WALL001"),
-    {},
-)
 check(
-    hosted_by_after_topology.get("relation") == "hosted_by",
+    _has_edge_with(
+        G_full_path, "Element::DOOR001", "Element::WALL001", relation="hosted_by"
+    ),
     "B-11c explicit hosted_by relation survives topology pass",
 )
 check(
-    hosted_by_after_topology.get("source") == "ifc",
+    _has_edge_with(
+        G_full_path,
+        "Element::DOOR001",
+        "Element::WALL001",
+        relation="hosted_by",
+        source="ifc",
+    ),
     "B-11d explicit hosted_by source='ifc' survives topology pass",
 )
 

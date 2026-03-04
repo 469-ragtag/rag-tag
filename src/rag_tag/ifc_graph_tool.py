@@ -187,7 +187,9 @@ def _merge_db_element_data(
     return merged
 
 
-def _get_property_cache(G: nx.DiGraph) -> OrderedDict[tuple[str, str], Any]:
+def _get_property_cache(
+    G: nx.DiGraph | nx.MultiDiGraph,
+) -> OrderedDict[tuple[str, str], Any]:
     """Return or create the session-level property cache stored on the graph.
 
     The cache lives at ``G.graph["_property_cache"]`` and is keyed by
@@ -210,7 +212,7 @@ def _get_property_cache(G: nx.DiGraph) -> OrderedDict[tuple[str, str], Any]:
 
 
 def _cached_db_lookup(
-    G: nx.DiGraph,
+    G: nx.DiGraph | nx.MultiDiGraph,
     node_id: str,
     db_path: Path,
     *,
@@ -359,7 +361,7 @@ def _collect_dotted_keys_from_sqlite(
 
 
 def query_ifc_graph(
-    G: nx.DiGraph,
+    G: nx.DiGraph | nx.MultiDiGraph,
     action: str,
     params: Dict[str, Any],
     *,
@@ -414,11 +416,27 @@ def query_ifc_graph(
             return relation
         return None
 
+    def _iter_edge_dicts(u: str, v: str) -> Iterable[dict[str, Any]]:
+        edge_data = G.get_edge_data(u, v)
+        if edge_data is None:
+            return ()
+        if G.is_multigraph():
+            if isinstance(edge_data, dict):
+                return tuple(
+                    attrs for attrs in edge_data.values() if isinstance(attrs, dict)
+                )
+            return ()
+        if isinstance(edge_data, dict):
+            return (edge_data,)
+        return ()
+
     def _expected_source_for_relation(relation: str | None) -> str | None:
         bucket = relation_bucket(relation)
         if bucket == "explicit_ifc":
             return "ifc"
         if bucket == "topology":
+            if relation in {"space_bounded_by", "bounds_space", "path_connected_to"}:
+                return "ifc"
             return "topology"
         if bucket == "spatial":
             return "heuristic"
@@ -511,9 +529,11 @@ def query_ifc_graph(
         while q:
             node = q.popleft()
             for nbr in G.successors(node):
-                edge = G[node][nbr]
-                relation = normalize_relation_name(edge.get("relation"))
-                if relation != "contains":
+                has_contains = any(
+                    normalize_relation_name(edge.get("relation")) == "contains"
+                    for edge in _iter_edge_dicts(node, nbr)
+                )
+                if not has_contains:
                     continue
                 if nbr in visited:
                     continue
@@ -523,64 +543,82 @@ def query_ifc_graph(
 
     def _spatial_neighbors(node_id: str) -> Iterable[tuple[str, Dict[str, Any]]]:
         """Yield unique spatial neighbors across both outgoing and incoming edges."""
-        seen: set[str] = set()
+        seen: set[tuple[str, str, str]] = set()
         spatial_relations = set(SPATIAL_RELATIONS)
 
         for nbr in G.successors(node_id):
-            if nbr in seen:
-                continue
-            edge = G[node_id][nbr]
-            relation = normalize_relation_name(edge.get("relation"))
-            if relation not in spatial_relations:
-                continue
-            seen.add(nbr)
-            yield nbr, edge
+            for edge in _iter_edge_dicts(node_id, nbr):
+                relation = normalize_relation_name(edge.get("relation"))
+                if relation not in spatial_relations:
+                    continue
+                dedupe_key = (nbr, relation or "", str(edge.get("distance")))
+                if dedupe_key in seen:
+                    continue
+                seen.add(dedupe_key)
+                yield nbr, edge
 
         for nbr in G.predecessors(node_id):
-            if nbr in seen:
-                continue
-            edge = G[nbr][node_id]
-            relation = normalize_relation_name(edge.get("relation"))
-            if relation not in spatial_relations:
-                continue
-            seen.add(nbr)
-            yield nbr, edge
+            for edge in _iter_edge_dicts(nbr, node_id):
+                relation = normalize_relation_name(edge.get("relation"))
+                if relation not in spatial_relations:
+                    continue
+                dedupe_key = (nbr, relation or "", str(edge.get("distance")))
+                if dedupe_key in seen:
+                    continue
+                seen.add(dedupe_key)
+                yield nbr, edge
 
     def _topology_neighbors(
         node_id: str,
         allowed_relations: set[str] | None = None,
     ) -> Iterable[tuple[str, Dict[str, Any]]]:
         """Yield unique topology neighbors across both directions."""
-        seen: set[tuple[str, str]] = set()
+        seen: set[tuple[str, str, str]] = set()
         topology_relations = set(TOPOLOGY_RELATIONS)
         if allowed_relations is None:
             allowed_relations = topology_relations
 
         for nbr in G.successors(node_id):
-            edge = G[node_id][nbr]
-            relation = normalize_relation_name(edge.get("relation"))
-            if relation not in allowed_relations:
-                continue
-            if relation is None:
-                continue
-            key = (nbr, relation)
-            if key in seen:
-                continue
-            seen.add(key)
-            yield nbr, edge
+            for edge in _iter_edge_dicts(node_id, nbr):
+                relation = normalize_relation_name(edge.get("relation"))
+                if relation not in allowed_relations:
+                    continue
+                if relation is None:
+                    continue
+                key = (
+                    nbr,
+                    relation,
+                    str(
+                        edge.get("vertical_gap")
+                        or edge.get("intersection_volume")
+                        or ""
+                    ),
+                )
+                if key in seen:
+                    continue
+                seen.add(key)
+                yield nbr, edge
 
         for nbr in G.predecessors(node_id):
-            edge = G[nbr][node_id]
-            relation = normalize_relation_name(edge.get("relation"))
-            if relation not in allowed_relations:
-                continue
-            if relation is None:
-                continue
-            key = (nbr, relation)
-            if key in seen:
-                continue
-            seen.add(key)
-            yield nbr, edge
+            for edge in _iter_edge_dicts(nbr, node_id):
+                relation = normalize_relation_name(edge.get("relation"))
+                if relation not in allowed_relations:
+                    continue
+                if relation is None:
+                    continue
+                key = (
+                    nbr,
+                    relation,
+                    str(
+                        edge.get("vertical_gap")
+                        or edge.get("intersection_volume")
+                        or ""
+                    ),
+                )
+                if key in seen:
+                    continue
+                seen.add(key)
+                yield nbr, edge
 
     def _apply_property_filters(
         node_id: str,
@@ -1003,16 +1041,21 @@ def query_ifc_graph(
             next_frontier = set()
             for node in frontier:
                 for nbr in G.successors(node):
-                    edge = G[node][nbr]
-                    edge_relation = _edge_relation(edge)
-                    if edge_relation is None:
-                        continue
-                    if relation_filter and edge_relation not in relation_filter:
+                    matched_edges = []
+                    for edge in _iter_edge_dicts(node, nbr):
+                        edge_relation = _edge_relation(edge)
+                        if edge_relation is None:
+                            continue
+                        if relation_filter and edge_relation not in relation_filter:
+                            continue
+                        matched_edges.append((edge, edge_relation))
+                    if not matched_edges:
                         continue
                     if nbr in visited:
                         continue
                     visited.add(nbr)
                     next_frontier.add(nbr)
+                    edge, edge_relation = matched_edges[0]
                     results.append(
                         {
                             "from": node,
