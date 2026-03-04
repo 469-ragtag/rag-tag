@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import re
 from collections import OrderedDict, deque
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Dict, Iterable
 
@@ -49,6 +50,8 @@ TRACE_MEP_MAX_RESULTS_DEFAULT = 200
 TRACE_MEP_MAX_RESULTS_HARD_LIMIT = 1000
 ACTION_LIST_MAX_RESULTS_DEFAULT = TRACE_MEP_MAX_RESULTS_DEFAULT
 ACTION_LIST_MAX_RESULTS_HARD_LIMIT = TRACE_MEP_MAX_RESULTS_HARD_LIMIT
+CONTEXT_FUZZY_MIN_SCORE = 86.0
+CONTEXT_FUZZY_AMBIGUITY_DELTA = 2.0
 
 
 def _resolve_payload_mode(payload_mode: str) -> str:
@@ -413,6 +416,33 @@ def query_ifc_graph(
     def _normalize_text(value: str) -> str:
         return re.sub(r"[^a-z0-9]+", " ", value.lower()).strip()
 
+    def _fuzzy_context_matches(
+        query: str,
+        candidate_node_ids: Iterable[str],
+    ) -> list[tuple[str, float]]:
+        query_norm = _normalize_text(query)
+        if not query_norm:
+            return []
+
+        scored: list[tuple[str, float]] = []
+        for node_id in candidate_node_ids:
+            label = str(G.nodes[node_id].get("label", ""))
+            label_norm = _normalize_text(label)
+            if not label_norm:
+                continue
+
+            score = SequenceMatcher(None, query_norm, label_norm).ratio() * 100.0
+            if query_norm in label_norm:
+                score = max(score, 96.0)
+            elif label_norm in query_norm:
+                score = max(score, 90.0)
+
+            if score >= CONTEXT_FUZZY_MIN_SCORE:
+                scored.append((str(node_id), score))
+
+        scored.sort(key=lambda item: (-item[1], _node_sort_key(item[0])))
+        return scored
+
     def _node_sort_key(node_id: str) -> tuple[str, str]:
         label = ""
         if node_id in G:
@@ -605,6 +635,7 @@ def query_ifc_graph(
         prefix: str,
         class_name: str,
         display_name: str,
+        enable_fuzzy: bool = False,
     ) -> tuple[str | None, Dict[str, Any] | None]:
         query = query_value.strip()
         if not query:
@@ -713,8 +744,106 @@ def query_ifc_graph(
                 "candidates": _sorted_node_ids(normalized_matches),
             }
 
+        if enable_fuzzy:
+            fuzzy_matches = _fuzzy_context_matches(query, class_nodes)
+            if fuzzy_matches:
+                top_score = fuzzy_matches[0][1]
+                near_best = [
+                    node_id
+                    for node_id, score in fuzzy_matches
+                    if (top_score - score) <= CONTEXT_FUZZY_AMBIGUITY_DELTA
+                ]
+                if len(near_best) == 1:
+                    return near_best[0], None
+                return None, {
+                    "error": f"Ambiguous {param_name}",
+                    "code": "ambiguous",
+                    "candidates": _sorted_node_ids(near_best),
+                }
+
         return None, {
             "error": f"{display_name} not found: {query_value}",
+            "code": "not_found",
+        }
+
+    def _classification_label_matches(label: str, query: str) -> bool:
+        """Return True when *query* matches a classification label robustly.
+
+        Classification labels are stored as
+        ``<SourceName>:<Identification>:<RefName>``. Users often query by code
+        only (e.g. ``E-AAA``) or by the human name segment. This matcher checks
+        exact/normalized segment equality first, then falls back to substring
+        match against the full label.
+        """
+        label_text = str(label or "").strip()
+        query_text = str(query or "").strip()
+        if not label_text or not query_text:
+            return False
+
+        label_norm = _normalize_text(label_text)
+        query_norm = _normalize_text(query_text)
+        if not query_norm:
+            return False
+
+        if label_norm == query_norm:
+            return True
+
+        segments = [segment.strip() for segment in label_text.split(":") if segment]
+        for segment in segments:
+            if segment.lower() == query_text.lower():
+                return True
+            if _normalize_text(segment) == query_norm:
+                return True
+
+        return query_text.lower() in label_text.lower()
+
+    def _resolve_classification_node(
+        classification_query: str,
+    ) -> tuple[str | None, Dict[str, Any] | None]:
+        """Resolve an IfcClassificationReference by id/label/code fragment.
+
+        Starts with strict context resolution, then applies classification-aware
+        matching so queries like ``E-AAA`` resolve against labels such as
+        ``CCI Construction:E-AAA:Single-family house``.
+        """
+        resolved, err = _resolve_context_node(
+            classification_query,
+            param_name="classification",
+            prefix="Classification",
+            class_name="IfcClassificationReference",
+            display_name="Classification",
+            enable_fuzzy=True,
+        )
+        if resolved is not None:
+            return resolved, None
+        if err is None or str(err.get("code", "")).lower() != "not_found":
+            return resolved, err
+
+        query = classification_query.strip()
+        class_nodes = [
+            str(node_id)
+            for node_id, data in G.nodes(data=True)
+            if str(data.get("class_", "")).lower() == "ifcclassificationreference"
+        ]
+        matches = [
+            node_id
+            for node_id in class_nodes
+            if _classification_label_matches(
+                str(G.nodes[node_id].get("label", "")), query
+            )
+        ]
+
+        if len(matches) == 1:
+            return matches[0], None
+        if len(matches) > 1:
+            return None, {
+                "error": "Ambiguous classification",
+                "code": "ambiguous",
+                "candidates": _sorted_node_ids(matches),
+            }
+
+        return None, {
+            "error": f"Classification not found: {classification_query}",
             "code": "not_found",
         }
 
@@ -1068,6 +1197,7 @@ def query_ifc_graph(
             prefix="Zone",
             class_name="IfcZone",
             display_name="Zone",
+            enable_fuzzy=True,
         )
         if err:
             return _resolver_error_envelope(err)
@@ -1109,6 +1239,7 @@ def query_ifc_graph(
             prefix="System",
             class_name="IfcSystem",
             display_name="System",
+            enable_fuzzy=True,
         )
         if err:
             return _resolver_error_envelope(err)
@@ -1150,13 +1281,7 @@ def query_ifc_graph(
         if max_results is None:
             return _err("Invalid param: max_results must be an integer", "invalid")
 
-        resolved_classification, err = _resolve_context_node(
-            classification,
-            param_name="classification",
-            prefix="Classification",
-            class_name="IfcClassificationReference",
-            display_name="Classification",
-        )
+        resolved_classification, err = _resolve_classification_node(classification)
         if err:
             return _resolver_error_envelope(err)
         if resolved_classification is None:
@@ -1203,6 +1328,7 @@ def query_ifc_graph(
             prefix="Element",
             class_name="IfcSpace",
             display_name="IfcSpace",
+            enable_fuzzy=True,
         )
         if err:
             return _resolver_error_envelope(err)
