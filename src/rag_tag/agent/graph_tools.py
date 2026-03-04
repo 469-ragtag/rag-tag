@@ -268,7 +268,8 @@ def register_graph_tools(agent: Any) -> None:
         """Get topology neighbors for one relation.
 
         relation must be one of: above, below, overlaps_xy, intersects_bbox,
-        intersects_3d, touches_surface.
+        intersects_3d, touches_surface, space_bounded_by, bounds_space,
+        path_connected_to.
         """
         return query_ifc_graph(
             ctx.deps,
