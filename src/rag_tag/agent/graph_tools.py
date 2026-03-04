@@ -342,3 +342,89 @@ def register_graph_tools(agent: Any) -> None:
         return query_ifc_graph(
             ctx.deps, "get_element_properties", {"element_id": element_id}
         )
+
+    @agent.tool
+    def get_elements_in_zone(
+        ctx: RunContext[nx.DiGraph],
+        zone: str,
+        max_results: int | None = None,
+    ) -> dict[str, Any]:
+        """Get elements explicitly assigned to an IFC zone."""
+        params: dict[str, Any] = {"zone": zone}
+        if max_results is not None:
+            params["max_results"] = max_results
+        return query_ifc_graph(ctx.deps, "get_elements_in_zone", params)
+
+    @agent.tool
+    def get_elements_in_system(
+        ctx: RunContext[nx.DiGraph],
+        system: str,
+        max_results: int | None = None,
+    ) -> dict[str, Any]:
+        """Get elements explicitly assigned to an IFC system."""
+        params: dict[str, Any] = {"system": system}
+        if max_results is not None:
+            params["max_results"] = max_results
+        return query_ifc_graph(ctx.deps, "get_elements_in_system", params)
+
+    @agent.tool
+    def get_elements_in_space(
+        ctx: RunContext[nx.DiGraph],
+        space: str,
+        max_results: int | None = None,
+    ) -> dict[str, Any]:
+        """Get elements contained in a specific IfcSpace."""
+        params: dict[str, Any] = {"space": space}
+        if max_results is not None:
+            params["max_results"] = max_results
+        return query_ifc_graph(ctx.deps, "get_elements_in_space", params)
+
+    @agent.tool
+    def get_hosted_elements(
+        ctx: RunContext[nx.DiGraph],
+        element_id: str,
+        max_results: int | None = None,
+    ) -> dict[str, Any]:
+        """Get elements hosted by a given element."""
+        params: dict[str, Any] = {"element_id": element_id}
+        if max_results is not None:
+            params["max_results"] = max_results
+        return query_ifc_graph(ctx.deps, "get_hosted_elements", params)
+
+    @agent.tool
+    def get_host(
+        ctx: RunContext[nx.DiGraph],
+        element_id: str,
+    ) -> dict[str, Any]:
+        """Get the host element for a given hosted element."""
+        return query_ifc_graph(ctx.deps, "get_host", {"element_id": element_id})
+
+    @agent.tool
+    def trace_mep_network(
+        ctx: RunContext[nx.DiGraph],
+        element_id: str,
+        max_depth: int = 10,
+        max_results: int = 200,
+    ) -> dict[str, Any]:
+        """Trace explicit IFC MEP connectivity from a start element."""
+        return query_ifc_graph(
+            ctx.deps,
+            "trace_mep_network",
+            {
+                "element_id": element_id,
+                "max_depth": max_depth,
+                "max_results": max_results,
+            },
+        )
+
+    @agent.tool
+    def get_elements_by_classification(
+        ctx: RunContext[nx.DiGraph],
+        classification: str,
+        max_results: int | None = None,
+    ) -> dict[str, Any]:
+        """Get elements explicitly tagged with a classification."""
+        params: dict[str, Any] = {"classification": classification}
+        if max_results is not None:
+            params["max_results"] = max_results
+        return query_ifc_graph(ctx.deps, "get_elements_by_classification", params)

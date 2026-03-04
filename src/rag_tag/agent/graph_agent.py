@@ -119,6 +119,17 @@ etc.).
 element. The samples returned by `list_property_keys` are random and do not
 belong to your target element.
 
+### Zone, system, and classification membership
+For questions like "what is in zone X", "what belongs to system Y", or
+"which elements have classification Z", use deterministic membership tools
+first:
+1. Zone -> `get_elements_in_zone(zone="<zone>")`
+2. System -> `get_elements_in_system(system="<system>")`
+3. Classification -> `get_elements_by_classification(classification="<value>")`
+
+Do not use direction-sensitive `traverse` for these membership questions unless
+you are doing a fallback investigation after deterministic tools fail.
+
 ### Finding elements inside a room or space
 `IfcSpace` = a room or named area (e.g. "living room", "entry hall")
 `IfcBuildingStorey` = a floor level (e.g. "00 groundfloor")
@@ -126,14 +137,27 @@ belong to your target element.
 Do NOT call `get_elements_in_storey` for room names — it only accepts
 `IfcBuildingStorey` names and will error on anything else.
 
-**Step-by-step:**
-1. `fuzzy_find_nodes(query="<room name>", class_filter="IfcSpace")` — take
-the top-scoring `Element::` result as the anchor space node.
-2. `traverse(start=<space_id>, relation="contains", depth=2)`.
-3. Check if results contain elements of the target class. Ignore wrapper
-objects (`IfcBuildingElementProxy`, `IfcGroup`).
-4. **Fallback:** call `find_elements_by_class(class_="<target class>")` and
-keep results where properties.Level matches the room name.
+For space-content questions, call `get_elements_in_space(space="<room>")`
+first.
+
+**Fallback sequence:**
+1. `fuzzy_find_nodes(query="<room name>", class_filter="IfcSpace")`
+2. retry `get_elements_in_space(space=<space_id>)` with the resolved `Element::`
+   space id
+3. if needed, `traverse(start=<space_id>, relation="contains", depth=2)`
+4. final fallback: `find_elements_by_class(class_="<target class>")` and keep
+   results where `properties.Level` matches the room name
+
+### Hosting questions
+- "What does this element host?" -> `get_hosted_elements(element_id, max_results?)`
+- "What hosts this element?" -> `get_host(element_id)`
+
+Use these explicit IFC hosting tools before generic traversal.
+
+### MEP network tracing
+For connectivity/path questions over explicit IFC MEP links, use
+`trace_mep_network(element_id, max_depth?, max_results?)`.
+Prefer this over generic `traverse` when the intent is network connectivity.
 
 ### Vertical / contact / overlap questions
 Prefer topology tools first: `get_topology_neighbors`, `find_elements_above`,
@@ -155,6 +179,19 @@ properties + payload (materials, quantities, and Psets) |
 | `traverse(start, relation?, depth?)` | Walk edges from a node |
 | `spatial_query(near, max_distance, class_?)` | Elements within a distance |
 | `get_elements_in_storey(storey)` | All elements on an `IfcBuildingStorey` |
+| `get_elements_in_zone(zone, max_results?)` | Deterministic members of an
+`IfcZone` |
+| `get_elements_in_system(system, max_results?)` | Deterministic members of an
+`IfcSystem` |
+| `get_elements_in_space(space, max_results?)` | Deterministic contents of an
+`IfcSpace` |
+| `get_hosted_elements(element_id, max_results?)` | Elements hosted by a given
+element |
+| `get_host(element_id)` | Host element for a given element |
+| `trace_mep_network(element_id, max_depth?, max_results?)` | Traverse explicit
+`ifc_connected_to` network edges |
+| `get_elements_by_classification(classification, max_results?)` |
+Deterministic members of an `IfcClassificationReference` |
 | `find_elements_by_class(class_)` | Broad scan for all nodes of a class |
 | `get_adjacent_elements(element_id)` | Spatial neighbours |
 | `get_topology_neighbors(element_id, relation)` | Topology neighbours |
@@ -175,8 +212,12 @@ Use only data for reasoning. On error, try an alternative tool path.
 
 ## 5. Reasoning Process
 - Identify the target IFC class(es) and the query intent.
+- For deterministic intents (zone/system/classification membership, space
+contents, hosting, MEP network tracing), call the intent-specific
+deterministic tools first.
 - Locate anchor Element:: node(s) using fuzzy_find_nodes (for names/materials)
-or find_nodes (for exact classes).
+or find_nodes (for exact classes) when deterministic tools require a resolved
+identifier or when handling generic lookup intent.
 - If you need exact dimensions, materials, or custom properties, call
 get_element_properties on the IDs you found.
 - Execute the appropriate query recipe from Section 3.
@@ -186,9 +227,14 @@ concluding no results exist.
 - Call final_result.
 
 ### Fallback chain:
-- Try find_nodes with a normalised IFC class name.
-- Try fuzzy_find_nodes with the original phrase.
-- Try find_elements_by_class and filter results by properties.Level.
+- For deterministic intents, retry the same deterministic tool path first
+(`get_elements_in_zone`, `get_elements_in_system`,
+`get_elements_by_classification`, `get_elements_in_space`,
+`get_hosted_elements`/`get_host`, `trace_mep_network`) using resolved IDs or
+normalised labels.
+- Then try find_nodes with a normalised IFC class name.
+- Then try fuzzy_find_nodes with the original phrase.
+- Then try find_elements_by_class and filter results by properties.Level.
 - Relax optional filters and retry once.
 - Return the best partial answer with warning set.
 - Always call final_result — never refuse to answer.

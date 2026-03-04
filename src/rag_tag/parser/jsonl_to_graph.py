@@ -228,6 +228,17 @@ def _geom_from_record(rec: dict) -> tuple[tuple | None, tuple | None]:
 def _flat_properties(rec: dict) -> dict:
     # the graph tools still expect a flat "properties" dict on each node
     # so we pull the top-level fields here for backward compatibility
+    relationships = rec.get("Relationships")
+    if not isinstance(relationships, dict):
+        relationships = {}
+
+    def _top_level_or_relationship(top_level_key: str, relationship_key: str) -> object:
+        # Preserve explicit top-level fields exactly when present (including []).
+        if top_level_key in rec:
+            return rec.get(top_level_key)
+        fallback_value = relationships.get(relationship_key)
+        return fallback_value if isinstance(fallback_value, list) else []
+
     return {
         "GlobalId": rec.get("GlobalId"),
         "ExpressId": rec.get("ExpressId"),
@@ -242,6 +253,11 @@ def _flat_properties(rec: dict) -> dict:
         "PredefinedType": rec.get("PredefinedType"),
         # Materials is a list[str]; preserved as-is for membership filtering.
         "Materials": rec.get("Materials") or [],
+        "Systems": _top_level_or_relationship("Systems", "belongs_to_system"),
+        "Zones": _top_level_or_relationship("Zones", "in_zone"),
+        "Classifications": _top_level_or_relationship(
+            "Classifications", "classified_as"
+        ),
     }
 
 
