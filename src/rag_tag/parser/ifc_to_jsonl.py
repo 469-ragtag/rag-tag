@@ -18,8 +18,12 @@ import ifcopenshell.util.element as ifc_element
 from rag_tag.parser.ifc43_schema_registry import get_registry
 from rag_tag.parser.ifc_geometry_parse import (
     build_geom_settings,
+    compute_footprint_polygon_2d,
+    compute_oriented_bbox,
     get_element_bounding_box,
     get_element_centroid,
+    get_element_local_placement_matrix,
+    get_element_mesh,
 )
 from rag_tag.parser.ifc_relationships import (
     RelationBlock,
@@ -249,11 +253,35 @@ def extract_element(
     # Per-element geometry extraction (no model-wide preloading).
     centroid = get_element_centroid(element, geom_settings)
     bbox = get_element_bounding_box(element, geom_settings)
+    mesh_vertices, mesh_faces = get_element_mesh(element, geom_settings)
+    footprint_poly = compute_footprint_polygon_2d(mesh_vertices)
+    oriented_bbox = compute_oriented_bbox(mesh_vertices)
+    placement_matrix = get_element_local_placement_matrix(element)
     geometry = {
         "Centroid": centroid.tolist() if centroid is not None else None,
         "BoundingBox": (
             {"min": bbox[0].tolist(), "max": bbox[1].tolist()}
             if bbox is not None
+            else None
+        ),
+        "MeshVertices": (
+            mesh_vertices.tolist() if mesh_vertices is not None else None
+        ),
+        "MeshFaces": mesh_faces.tolist() if mesh_faces is not None else None,
+        "FootprintPolygon2D": (
+            footprint_poly.tolist() if footprint_poly is not None else None
+        ),
+        "LocalPlacementMatrix": (
+            placement_matrix.tolist() if placement_matrix is not None else None
+        ),
+        "OrientedBoundingBox": (
+            {
+                "center": oriented_bbox["center"].tolist(),
+                "axes": oriented_bbox["axes"].tolist(),
+                "extents": oriented_bbox["extents"].tolist(),
+                "corners_xy": oriented_bbox["corners_xy"].tolist(),
+            }
+            if oriented_bbox is not None
             else None
         ),
     }
