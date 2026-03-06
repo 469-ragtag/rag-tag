@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 
@@ -46,30 +47,38 @@ submit your final answer via the `final_result` tool.
 
 ## 2. Graph Schema
 
-**Node fields:** `id`, `label`, `class_`, `properties`
+**Node fields:** `id`, `label`, `class_`, `properties`, `payload`
 
 `properties` is allowlisted/redacted for safety. You will only see:
 `GlobalId`, `Name`, `TypeName`, `Level`, `PredefinedType`, `ObjectType`, `Zone`.
 Unknown keys are removed. Long values are truncated and complex values are
 redacted.
 
+`payload` is always present in tool node objects:
+- most tools return `payload: null` (safe/redacted mode)
+- `get_element_properties` returns full unredacted `properties` + `payload`
+
 **Node id prefixes:**
 - `Element::` — a physical element or space (use for all spatial/property queries)
-- `Type::` — a type definition (no spatial data; do not call spatial tools on these)
 - `Storey::` — a floor level container
+- `System::` / `Zone::` / `Classification::` — explicit IFC context nodes
 
-Always prefer `Element::` nodes over `Type::` nodes unless explicitly asked
-about type definitions.
+Always prefer `Element::` nodes for spatial/property questions.
 
-**Edge directions — do not reverse these:**
+**Canonical relation taxonomy:**
 
-| Edge | Direction | Meaning |
-|------|-----------|---------|
-| `contains` | Container → Child | Space/Storey to its contents |
-| `contained_in` | Child → Container | Element to its parent Space/Storey |
-| `has_material` | Element → Material | Material composition |
-| `typed_by` | Element → Type | Links instance to its type node |
-| `adjacent_to` | Element ↔ Element | Bidirectional spatial adjacency |
+- Hierarchy: `aggregates`, `contains`, `contained_in`
+- Spatial: `adjacent_to`, `connected_to`
+- Topology: `above`, `below`, `overlaps_xy`, `intersects_bbox`,
+  `intersects_3d`, `touches_surface`
+- Explicit IFC: `hosts`, `hosted_by`, `ifc_connected_to`,
+  `belongs_to_system`, `in_zone`, `classified_as`
+
+**Relation source semantics (`source` field on relation outputs):**
+- `ifc` = explicit IFC relationship
+- `heuristic` = geometry-distance heuristic
+- `topology` = geometry/topology derivation
+- hierarchy edges may have `source: null`
 
 **The `Level` property:** Many nodes carry a `properties.Level` string
 (e.g. `"living room"`, `"00 groundfloor"`). This is a denormalised fallback
@@ -97,13 +106,15 @@ automatically searches names, descriptions, object types, and materials to
 find the closest matches.
 
 ### Reading Detailed Properties (The 2-Step Process)
-To save context, graph traversal tools (`find_nodes`, `fuzzy_find_nodes`,
-`traverse`) return REDACTED nodes (only ID, Class, Level are visible). They do
-NOT return dimensions, materials, or PropertySets (Psets).
+To save context, graph traversal/search tools (`find_nodes`, `fuzzy_find_nodes`,
+`traverse`) return REDACTED nodes (`id`, `label`, `class_`, allowlisted
+`properties`, and `payload: null`). They do NOT return full dimensions,
+materials, or PropertySets (Psets).
 **To read specific properties for an element, you MUST use a 2-step process:**
 1. Find the element's ID using `fuzzy_find_nodes` or `find_nodes`.
-2. Pass that exact ID into `get_element_properties(element_id)` to reveal its
-full, unredacted data (Quantities, Materials, FireRating, etc.).
+2. Pass that exact ID into `get_element_properties(element_id)` to reveal full,
+unredacted `properties` and `payload` data (Quantities, Materials, FireRating,
+etc.).
 **WARNING:** NEVER use `list_property_keys` to read values for a specific
 element. The samples returned by `list_property_keys` are random and do not
 belong to your target element.
@@ -139,8 +150,8 @@ Use `spatial_query` as a distance-based fallback.
 description, and material |
 | `find_nodes(class_?, property_filters?)` | Exact class lookup (Do not use
 for text/materials) |
-| `get_element_properties(element_id)` | Read an element's unredacted
-materials, quantities, and Psets |
+| `get_element_properties(element_id)` | Read an element's full unredacted
+properties + payload (materials, quantities, and Psets) |
 | `traverse(start, relation?, depth?)` | Walk edges from a node |
 | `spatial_query(near, max_distance, class_?)` | Elements within a distance |
 | `get_elements_in_storey(storey)` | All elements on an `IfcBuildingStorey` |
@@ -155,7 +166,8 @@ use to read specific element values) |
 
 **Tool result envelope:**
 ```json
-{ "status": "ok|error", "data": <payload>, "error": null }
+{ "status": "ok|error", "data": <payload|null>, "error": <object|null> }
+```
 
 ---
 
@@ -329,6 +341,31 @@ class GraphAgent:
                 # attempts via the output_validator).  Return a safe fallback
                 # immediately — no extra run_sync call is made here.
                 raw = getattr(exc, "body", None) or str(exc)
+                recovered = _recover_graph_answer(raw)
+                if recovered is None:
+                    recovered = _recover_graph_answer(str(exc))
+                if recovered is not None:
+                    answer = _sanitize_model_text(recovered.answer) or ""
+                    warning = _sanitize_model_text(recovered.warning)
+
+                    response: dict[str, object] = {
+                        "answer": _polish_answer_with_data(answer, recovered.data)
+                    }
+                    if recovered.data:
+                        response["data"] = recovered.data
+                    recovery_warning = (
+                        "Recovered answer from malformed final_result output."
+                    )
+                    if warning:
+                        response["warning"] = f"{warning} {recovery_warning}"
+                    else:
+                        response["warning"] = recovery_warning
+
+                    _logger.warning(
+                        "Recovered answer from malformed output after retries: %s", exc
+                    )
+                    return response
+
                 raw_snippet = str(raw)[:400] if raw else ""
                 _logger.error(
                     "Output validation failed after all retries; "
@@ -443,3 +480,104 @@ def _extract_primary_list(data: dict[str, object]) -> list[str]:
         if values:
             return values
     return []
+
+
+def _recover_graph_answer(raw: object) -> GraphAnswer | None:
+    """Best-effort salvage path for malformed output payloads.
+
+    Attempts direct validation first, then extracts likely JSON payloads from
+    error wrappers and retries validation on those candidates.
+    """
+    for candidate in _iter_recovery_candidates(raw):
+        try:
+            output = GraphAnswer.model_validate(candidate)
+        except Exception:
+            continue
+        if output.answer and output.answer.strip():
+            return output
+    return None
+
+
+def _iter_recovery_candidates(raw: object) -> list[object]:
+    candidates: list[object] = []
+
+    def add(value: object) -> None:
+        if value is None:
+            return
+        candidates.append(value)
+
+    add(raw)
+
+    if isinstance(raw, dict):
+        for key in ("input", "error", "errors", "message", "messages"):
+            add(raw.get(key))
+        add(_extract_error_inputs(raw))
+
+    if isinstance(raw, list):
+        for item in raw:
+            add(item)
+            if isinstance(item, dict):
+                add(item.get("input"))
+        add(_extract_error_inputs(raw))
+
+    if isinstance(raw, str):
+        for payload in _extract_json_payloads(raw):
+            add(payload)
+            add(_extract_error_inputs(payload))
+
+    flattened: list[object] = []
+    for value in candidates:
+        if isinstance(value, list):
+            flattened.extend(value)
+        else:
+            flattened.append(value)
+    return flattened
+
+
+def _extract_json_payloads(text: str) -> list[object]:
+    payloads: list[object] = []
+    stripped = text.strip()
+    if not stripped:
+        return payloads
+
+    # Parse whole text when it is valid JSON.
+    try:
+        payloads.append(json.loads(stripped))
+    except json.JSONDecodeError:
+        pass
+
+    # Parse fenced JSON blocks.
+    fenced_blocks = re.findall(r"```(?:json)?\s*([\s\S]*?)\s*```", stripped)
+    for block in fenced_blocks:
+        try:
+            payloads.append(json.loads(block))
+        except json.JSONDecodeError:
+            continue
+
+    # Parse first object/array substring if surrounded by prose.
+    starts = [idx for idx in (stripped.find("{"), stripped.find("[")) if idx >= 0]
+    if starts:
+        start = min(starts)
+        end = max(stripped.rfind("}"), stripped.rfind("]"))
+        if end > start:
+            try:
+                payloads.append(json.loads(stripped[start : end + 1]))
+            except json.JSONDecodeError:
+                pass
+
+    return payloads
+
+
+def _extract_error_inputs(payload: object) -> list[object]:
+    inputs: list[object] = []
+
+    if isinstance(payload, dict):
+        if "input" in payload:
+            inputs.append(payload["input"])
+        for value in payload.values():
+            inputs.extend(_extract_error_inputs(value))
+    elif isinstance(payload, list):
+        for item in payload:
+            inputs.extend(_extract_error_inputs(item))
+
+    return inputs

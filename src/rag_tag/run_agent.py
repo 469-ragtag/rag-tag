@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import logging
+import os
 import sys
 from pathlib import Path
 
@@ -8,6 +10,28 @@ from rag_tag.observability import LogfireStatus, setup_logfire
 from rag_tag.query_service import execute_query, find_sqlite_dbs
 from rag_tag.router import route_question
 from rag_tag.tui import print_answer, print_question, print_welcome
+
+_logger = logging.getLogger(__name__)
+
+_VALID_PAYLOAD_MODES = frozenset({"full", "minimal"})
+
+
+def _resolve_payload_mode() -> str:
+    """Read and validate the ``GRAPH_PAYLOAD_MODE`` environment variable.
+
+    Returns ``'full'`` or ``'minimal'``.  Falls back to ``'full'`` with a
+    logged warning when the variable is set to an unrecognised value.
+    """
+    raw = os.environ.get("GRAPH_PAYLOAD_MODE", "full").strip().lower()
+    if raw not in _VALID_PAYLOAD_MODES:
+        _logger.warning(
+            "Unsupported GRAPH_PAYLOAD_MODE=%r; defaulting to 'full'. "
+            "Valid values: %s.",
+            raw,
+            ", ".join(sorted(_VALID_PAYLOAD_MODES)),
+        )
+        return "full"
+    return raw
 
 
 def _parse_dataset(value: str) -> str:
@@ -113,6 +137,10 @@ def main() -> int:
     )
     args = ap.parse_args()
 
+    # Validate GRAPH_PAYLOAD_MODE early so the user sees a clear warning
+    # rather than a silent fallback deep in the pipeline.
+    graph_payload_mode = _resolve_payload_mode()
+
     # Initialize Logfire if requested.
     # When --tui is used, suppress console output (print/warnings) from
     # setup_logfire so nothing is written to stderr before the TUI starts.
@@ -150,6 +178,8 @@ def main() -> int:
             trace_enabled=args.trace,
             logfire_url=logfire_status.url if logfire_status.enabled else None,
             graph_dataset=graph_dataset,
+            context_db=resolved_db_path,
+            graph_payload_mode=graph_payload_mode,
         )
         return 0
 
@@ -182,6 +212,8 @@ def main() -> int:
                 decision=decision,
                 debug_llm_io=args.input,
                 graph_dataset=graph_dataset,
+                context_db=resolved_db_path,
+                payload_mode=graph_payload_mode,
             )
 
             # Extract components

@@ -18,6 +18,7 @@ from rag_tag.paths import find_project_root
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
+_TYPED_JSON_PREFIX = "json:"
 
 
 def _coalesce(value: Any) -> str | None:
@@ -34,6 +35,20 @@ def _to_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _encode_typed_property_value(value: Any) -> str | None:
+    """Encode a property value with typed JSON storage.
+
+    Values are persisted as ``json:<JSON payload>`` so lookup can faithfully
+    reconstruct booleans, numbers, lists, dicts, and nulls.  If a value is not
+    JSON-serializable, we gracefully fall back to legacy string coercion.
+    """
+    try:
+        encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+        return f"{_TYPED_JSON_PREFIX}{encoded}"
+    except (TypeError, ValueError):
+        return _coalesce(value)
 
 
 def _insert_element(conn: sqlite3.Connection, rec: dict) -> None:
@@ -70,7 +85,13 @@ def _collect_property_rows(
             if prop_name == "id":
                 continue
             rows.append(
-                (express_id, pset_name, prop_name, _coalesce(value), is_official)
+                (
+                    express_id,
+                    pset_name,
+                    prop_name,
+                    _encode_typed_property_value(value),
+                    is_official,
+                )
             )
     return rows
 

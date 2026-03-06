@@ -120,9 +120,41 @@ src/rag_tag/
 - Graph nodes include both:
     - `properties` (flat compatibility view)
     - `payload` (full nested JSONL record)
-- Graph filtering supports:
-    - flat keys (e.g., `FireRating`)
-    - dotted keys (e.g., `Pset_WallCommon.FireRating`)
+
+### Canonical graph action contract
+
+- All graph actions return the stable envelope: `{status,data,error}`.
+- Canonical action names (allowlist):
+  `get_elements_in_storey`, `find_elements_by_class`, `get_adjacent_elements`,
+  `get_topology_neighbors`, `get_intersections_3d`, `find_nodes`, `traverse`,
+  `spatial_query`, `find_elements_above`, `find_elements_below`,
+  `get_element_properties`, `list_property_keys`.
+- Required `data` payload fields are stable per action (e.g.,
+  `find_nodes -> {class,elements}`, `traverse -> {start,relation,depth,results}`).
+
+### Canonical relation taxonomy + source semantics
+
+- Relation buckets:
+  - hierarchy: `aggregates`, `contains`, `contained_in`
+  - spatial: `adjacent_to`, `connected_to`
+  - topology: `above`, `below`, `overlaps_xy`, `intersects_bbox`,
+    `intersects_3d`, `touches_surface`
+  - explicit IFC: `hosts`, `hosted_by`, `ifc_connected_to`,
+    `belongs_to_system`, `in_zone`, `classified_as`
+- `source` semantics for relation-bearing outputs:
+  - `ifc` = explicit IFC relation extracted from model relationships
+  - `heuristic` = spatial proximity heuristic
+  - `topology` = topology/geometry-derived relation
+  - hierarchy edges may omit source (reported as null)
+
+### Property filtering and key discovery
+
+- Graph filtering supports both:
+  - flat keys (e.g., `FireRating`)
+  - dotted keys (e.g., `Pset_WallCommon.FireRating`)
+- Key discovery is exposed via the canonical `list_property_keys` action/tool.
+- In `GRAPH_PAYLOAD_MODE=minimal`, dotted key discovery falls back to SQLite
+  when a DB path is wired into graph context.
 
 ## Linting and checks
 

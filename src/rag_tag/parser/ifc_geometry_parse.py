@@ -6,6 +6,7 @@ from pathlib import Path
 
 import ifcopenshell
 import ifcopenshell.geom
+import ifcopenshell.util.placement as ifc_placement
 import numpy as np
 
 try:  # Optional dependency in some builds
@@ -61,6 +62,126 @@ def _extract_shape_mesh(
     return verts, faces
 
 
+def _cross_2d(o: np.ndarray, a: np.ndarray, b: np.ndarray) -> float:
+    return float((a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]))
+
+
+def _convex_hull_2d(points_xy: np.ndarray) -> np.ndarray | None:
+    """Return convex hull points in CCW order for Nx2 point array."""
+    if points_xy.ndim != 2 or points_xy.shape[1] != 2:
+        return None
+    if len(points_xy) < 3:
+        return None
+
+    # Deduplicate after rounding to reduce numeric noise from tessellation.
+    pts = np.unique(np.round(points_xy.astype(float), 6), axis=0)
+    if len(pts) < 3:
+        return None
+
+    # Monotonic chain needs lexicographic order.
+    pts = pts[np.lexsort((pts[:, 1], pts[:, 0]))]
+    lower: list[np.ndarray] = []
+    for p in pts:
+        while len(lower) >= 2 and _cross_2d(lower[-2], lower[-1], p) <= 0.0:
+            lower.pop()
+        lower.append(p)
+
+    upper: list[np.ndarray] = []
+    for p in pts[::-1]:
+        while len(upper) >= 2 and _cross_2d(upper[-2], upper[-1], p) <= 0.0:
+            upper.pop()
+        upper.append(p)
+
+    hull = np.vstack((lower[:-1], upper[:-1]))
+    if len(hull) < 3:
+        return None
+    return hull
+
+
+def compute_footprint_polygon_2d(vertices: np.ndarray | None) -> np.ndarray | None:
+    """Return an XY convex-hull footprint polygon from world-space vertices."""
+    if vertices is None or vertices.ndim != 2 or vertices.shape[1] != 3:
+        return None
+    return _convex_hull_2d(vertices[:, :2])
+
+
+def compute_oriented_bbox(vertices: np.ndarray | None) -> dict[str, np.ndarray] | None:
+    """Return PCA-based oriented XY bounding box plus vertical extent."""
+    if vertices is None or vertices.ndim != 2 or vertices.shape[1] != 3:
+        return None
+    if len(vertices) < 3:
+        return None
+
+    points_xy = vertices[:, :2].astype(float)
+    center_xy = points_xy.mean(axis=0)
+    centered = points_xy - center_xy
+    cov = np.cov(centered.T)
+    eigvals, eigvecs = np.linalg.eigh(cov)
+    order = np.argsort(eigvals)[::-1]
+    axis_u = eigvecs[:, order[0]]
+    axis_v = eigvecs[:, order[1]]
+    axis_u = axis_u / max(float(np.linalg.norm(axis_u)), 1e-12)
+    axis_v = axis_v / max(float(np.linalg.norm(axis_v)), 1e-12)
+
+    proj_u = centered @ axis_u
+    proj_v = centered @ axis_v
+    min_u, max_u = float(np.min(proj_u)), float(np.max(proj_u))
+    min_v, max_v = float(np.min(proj_v)), float(np.max(proj_v))
+    extent_u = (max_u - min_u) * 0.5
+    extent_v = (max_v - min_v) * 0.5
+
+    center_offset = axis_u * ((min_u + max_u) * 0.5) + axis_v * ((min_v + max_v) * 0.5)
+    obb_center_xy = center_xy + center_offset
+    z_min = float(np.min(vertices[:, 2]))
+    z_max = float(np.max(vertices[:, 2]))
+    center_z = (z_min + z_max) * 0.5
+    extent_z = (z_max - z_min) * 0.5
+
+    corners_local = np.array(
+        [
+            [max_u, max_v],
+            [max_u, min_v],
+            [min_u, min_v],
+            [min_u, max_v],
+        ],
+        dtype=float,
+    )
+    corners_xy = np.array(
+        [center_xy + axis_u * cu + axis_v * cv for cu, cv in corners_local],
+        dtype=float,
+    )
+
+    return {
+        "center": np.array([obb_center_xy[0], obb_center_xy[1], center_z], dtype=float),
+        "axes": np.array(
+            [
+                [axis_u[0], axis_u[1], 0.0],
+                [axis_v[0], axis_v[1], 0.0],
+                [0.0, 0.0, 1.0],
+            ],
+            dtype=float,
+        ),
+        "extents": np.array([extent_u, extent_v, extent_z], dtype=float),
+        "corners_xy": corners_xy,
+    }
+
+
+def get_element_local_placement_matrix(element) -> np.ndarray | None:
+    """Return element local placement as a 4x4 matrix when available."""
+    try:
+        placement = getattr(element, "ObjectPlacement", None)
+        if placement is None:
+            return None
+        matrix = ifc_placement.get_local_placement(placement)
+        arr = np.asarray(matrix, dtype=float)
+        if arr.shape != (4, 4):
+            return None
+        return arr
+    except Exception as exc:
+        LOG.debug("Placement extraction failed for %s: %s", element.is_a(), exc)
+        return None
+
+
 def get_element_centroid(
     element, settings: ifcopenshell.geom.settings
 ) -> np.ndarray | None:
@@ -97,6 +218,19 @@ def get_element_bounding_box(
     except Exception as exc:
         LOG.debug("BBox extraction failed for %s: %s", element.is_a(), exc)
         return None
+
+
+def get_element_mesh(
+    element, settings: ifcopenshell.geom.settings
+) -> tuple[np.ndarray | None, np.ndarray | None]:
+    """Return element mesh as ``(vertices, faces)`` arrays.
+
+    - ``vertices`` shape: ``(n, 3)`` float
+    - ``faces`` shape: ``(m, 3)`` int triangle indices
+
+    Returns ``(None, None)`` when mesh extraction fails.
+    """
+    return _extract_shape_mesh(element, settings)
 
 
 def build_geom_settings() -> ifcopenshell.geom.settings:

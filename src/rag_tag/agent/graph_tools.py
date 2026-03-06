@@ -1,16 +1,11 @@
 """PydanticAI tools for graph queries.
 
-Each tool wraps the existing graph query interface from ifc_graph_tool.py,
-preserving the envelope structure (status/data/error) for compatibility.
+Tools in this module call the backend-agnostic action interface in
+``rag_tag.ifc_graph_tool.query_ifc_graph`` and preserve the canonical
+``{status,data,error}`` envelope.
 
-Fuzzy normalisation is handled here (in the tool layer) so that ifc_graph_tool.py
-remains untouched. The key improvements are:
-
-- fuzzy_find_nodes: score-ranked text search across Name/ObjectType/Description.
-- find_nodes: normalises class_ via rapidfuzz before querying; treats multi-word
-  inputs as name searches; falls back to fuzzy_find_nodes when exact query is empty.
-- list_property_keys: discovers available property keys to aid filter selection.
-- traverse: docstring clarifies contains/contained_in semantics for location queries.
+The tool layer adds light UX helpers only (fuzzy matching / class normalization)
+without changing public action names or response contracts.
 """
 
 from __future__ import annotations
@@ -21,6 +16,7 @@ import networkx as nx
 from pydantic_ai import RunContext
 from rapidfuzz import fuzz, process
 
+from rag_tag.graph_contract import make_error_envelope
 from rag_tag.ifc_graph_tool import query_ifc_graph, sanitize_properties_for_llm
 
 # Minimum rapidfuzz WRatio score (0-100) to accept a fuzzy class normalisation.
@@ -105,6 +101,7 @@ def _fuzzy_find_nodes_impl(
                     "class_": data.get("class_"),
                     "score": round(best_score, 1),
                     "properties": sanitize_properties_for_llm(props),
+                    "payload": None,
                 }
             )
 
@@ -194,14 +191,14 @@ def register_graph_tools(agent: Any) -> None:
             and class_
         ):
             if property_filters:
-                return {
-                    "status": "error",
-                    "error": (
+                return make_error_envelope(
+                    (
                         f"Exact match for properties {property_filters} failed. "
                         "The value might be formatted differently in the raw "
                         "data. Try using 'fuzzy_find_nodes' instead."
                     ),
-                }
+                    "no_exact_property_match",
+                )
 
         return result
 
@@ -271,7 +268,8 @@ def register_graph_tools(agent: Any) -> None:
         """Get topology neighbors for one relation.
 
         relation must be one of: above, below, overlaps_xy, intersects_bbox,
-        intersects_3d, touches_surface.
+        intersects_3d, touches_surface, space_bounded_by, bounds_space,
+        path_connected_to.
         """
         return query_ifc_graph(
             ctx.deps,
@@ -319,95 +317,29 @@ def register_graph_tools(agent: Any) -> None:
         class_: str | None = None,
         sample_values: bool = False,
     ) -> dict[str, Any]:
-        """List property keys available in the graph, optionally scoped to one class.
+        """Discover filterable flat and dotted property keys.
 
-        Returns two kinds of keys:
-        - Flat keys (e.g. ``GlobalId``, ``Name``) sourced from the node's
-          ``properties`` dict.
-        - Dotted keys (e.g. ``Pset_WallCommon.FireRating``) sourced from nested
-          ``PropertySets.Official`` / ``PropertySets.Custom`` blocks in the node
-          payload.
-
-        Both key formats are accepted by ``find_nodes`` ``property_filters``.
-        Use this tool first to discover valid filter keys before calling
-        ``find_nodes`` with property constraints.
+        Delegates to the canonical ``list_property_keys`` graph action so key
+        discovery uses the same backend-agnostic contract path as filtering.
         """
-        G: nx.DiGraph = ctx.deps
-        key_samples: dict[str, list[Any]] = {}
-
-        def _record_key(key: str, value: Any) -> None:
-            if key not in key_samples:
-                key_samples[key] = []
-            if sample_values and len(key_samples[key]) < 3:
-                key_samples[key].append(value)
-
-        def _collect_pset_leaf_keys(
-            pset_name: str,
-            node: dict[str, Any],
-            path_prefix: str = "",
-        ) -> None:
-            for raw_key, raw_value in node.items():
-                key_part = str(raw_key)
-                path = f"{path_prefix}.{key_part}" if path_prefix else key_part
-                if isinstance(raw_value, dict):
-                    _collect_pset_leaf_keys(pset_name, raw_value, path)
-                else:
-                    _record_key(f"{pset_name}.{path}", raw_value)
-
-        for _, data in G.nodes(data=True):
-            if class_ is not None:
-                if str(data.get("class_", "")).lower() != class_.lower():
-                    continue
-            props = data.get("properties") or {}
-            if not isinstance(props, dict):
-                props = {}
-            for key, value in props.items():
-                _record_key(str(key), value)
-
-            # Also enumerate dotted keys from nested PropertySets in payload.
-            payload = data.get("payload") or {}
-            if not isinstance(payload, dict):
-                continue
-
-            pset_block = payload.get("PropertySets") or {}
-            if not isinstance(pset_block, dict):
-                continue
-
-            for section in ("Official", "Custom"):
-                section_block = pset_block.get(section) or {}
-                if not isinstance(section_block, dict):
-                    continue
-                for pset_name, pset_props in section_block.items():
-                    if not isinstance(pset_props, dict):
-                        continue
-                    _collect_pset_leaf_keys(str(pset_name), pset_props)
-
-            # Also enumerate dotted keys from the Quantities block in payload.
-            # Quantities (e.g. Qto_WallBaseQuantities) are stored at
-            # payload["Quantities"], not inside PropertySets.
-            quantities_block = payload.get("Quantities") or {}
-            if not isinstance(quantities_block, dict):
-                continue
-            for qto_name, qto_data in quantities_block.items():
-                if not isinstance(qto_data, dict):
-                    continue
-                _collect_pset_leaf_keys(str(qto_name), qto_data)
-
-        result: dict[str, Any] = {
-            "status": "ok",
-            "data": {"keys": sorted(key_samples.keys()), "class_filter": class_},
-            "error": None,
-        }
-        if sample_values:
-            result["data"]["samples"] = key_samples
-        return result
+        params: dict[str, Any] = {"sample_values": sample_values}
+        if class_ is not None:
+            params["class"] = class_
+        return query_ifc_graph(ctx.deps, "list_property_keys", params)
 
     @agent.tool
     def get_element_properties(
         ctx: RunContext[nx.DiGraph],
         element_id: str,
     ) -> dict[str, Any]:
-        """Fetch ALL raw, unredacted properties for a specific element."""
+        """Fetch ALL properties for a specific element (DB-backed when available).
+
+        Looks up *element_id* in the SQLite database wired into the graph
+        context (when available), then merges with the in-memory graph
+        payload.  Falls back to in-memory data only when no DB is configured.
+        Returns the full, unredacted property envelope including PropertySets,
+        Quantities, and flat properties.
+        """
         return query_ifc_graph(
             ctx.deps, "get_element_properties", {"element_id": element_id}
         )
