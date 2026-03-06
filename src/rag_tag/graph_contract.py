@@ -56,6 +56,9 @@ TOPOLOGY_RELATIONS: tuple[str, ...] = (
     "intersects_bbox",
     "intersects_3d",
     "touches_surface",
+    "space_bounded_by",
+    "bounds_space",
+    "path_connected_to",
 )
 
 EXPLICIT_IFC_RELATIONS: tuple[str, ...] = (

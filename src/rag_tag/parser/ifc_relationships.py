@@ -31,6 +31,9 @@ _BLOCK_KEYS: tuple[str, ...] = (
     "hosts",
     "hosted_by",
     "ifc_connected_to",
+    "path_connected_to",
+    "space_bounded_by",
+    "bounds_space",
     "belongs_to_system",
     "in_zone",
     "classified_as",
@@ -231,6 +234,46 @@ def _index_connects_elements(model: object, raw: dict) -> None:
             logger.debug("%s iteration skipped: %s", rel_class, exc)
 
 
+def _index_connects_path_elements(model: object, raw: dict) -> None:
+    """IfcRelConnectsPathElements -> ``path_connected_to`` (bidirectional)."""
+    try:
+        for rel in model.by_type("IfcRelConnectsPathElements"):  # type: ignore[union-attr]
+            try:
+                a = getattr(rel, "RelatingElement", None)
+                b = getattr(rel, "RelatedElement", None)
+                if a is None or b is None:
+                    continue
+                agid = _safe_gid(a)
+                bgid = _safe_gid(b)
+                if agid and bgid and agid != bgid:
+                    raw[agid]["path_connected_to"].append(bgid)
+                    raw[bgid]["path_connected_to"].append(agid)
+            except Exception as exc:
+                logger.debug("IfcRelConnectsPathElements record skipped: %s", exc)
+    except Exception as exc:
+        logger.debug("IfcRelConnectsPathElements iteration skipped: %s", exc)
+
+
+def _index_space_boundaries(model: object, raw: dict) -> None:
+    """IfcRelSpaceBoundary -> ``space_bounded_by`` / ``bounds_space``."""
+    try:
+        for rel in model.by_type("IfcRelSpaceBoundary"):  # type: ignore[union-attr]
+            try:
+                space = getattr(rel, "RelatingSpace", None)
+                element = getattr(rel, "RelatedBuildingElement", None)
+                if space is None or element is None:
+                    continue
+                sgid = _safe_gid(space)
+                egid = _safe_gid(element)
+                if sgid and egid and sgid != egid:
+                    raw[sgid]["space_bounded_by"].append(egid)
+                    raw[egid]["bounds_space"].append(sgid)
+            except Exception as exc:
+                logger.debug("IfcRelSpaceBoundary record skipped: %s", exc)
+    except Exception as exc:
+        logger.debug("IfcRelSpaceBoundary iteration skipped: %s", exc)
+
+
 def _index_groups(model: object, raw: dict) -> None:
     """
     IfcRelAssignsToGroup → ``belongs_to_system`` or ``in_zone``.
@@ -338,6 +381,8 @@ def build_relationship_index(model: object) -> dict[str, RelationBlock]:
     _index_voids(model, raw)
     _index_fills(model, raw)
     _index_connects_elements(model, raw)
+    _index_connects_path_elements(model, raw)
+    _index_space_boundaries(model, raw)
     _index_groups(model, raw)
     _index_classifications(model, raw)
 
