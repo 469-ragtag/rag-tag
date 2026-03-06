@@ -208,9 +208,7 @@ check(
     "A-4a  hosted_by edge Door1 → Wall1 created",
 )
 check(
-    _has_edge_with(
-        G_e2e, "Element::Door1", "Element::Wall1", relation="hosted_by"
-    ),
+    _has_edge_with(G_e2e, "Element::Door1", "Element::Wall1", relation="hosted_by"),
     "A-4b  hosted_by edge has correct relation attr",
 )
 check(
@@ -444,9 +442,7 @@ check(
     "B-2a  hosts edge Element::WALL001 → Element::DOOR001 present",
 )
 check(
-    _has_edge_with(
-        G, "Element::WALL001", "Element::DOOR001", relation="hosts"
-    ),
+    _has_edge_with(G, "Element::WALL001", "Element::DOOR001", relation="hosts"),
     "B-2b  hosts edge has relation='hosts'",
 )
 check(
@@ -462,9 +458,7 @@ check(
     "B-2d  hosted_by edge Element::DOOR001 → Element::WALL001 present",
 )
 check(
-    _has_edge_with(
-        G, "Element::DOOR001", "Element::WALL001", relation="hosted_by"
-    ),
+    _has_edge_with(G, "Element::DOOR001", "Element::WALL001", relation="hosted_by"),
     "B-2e  hosted_by edge has relation='hosted_by'",
 )
 check(
@@ -674,9 +668,7 @@ check(
     "B-10a  contains edge Storey → Wall still present",
 )
 check(
-    _has_edge_with(
-        G, "Storey::STOR001", "Element::WALL001", relation="contains"
-    ),
+    _has_edge_with(G, "Storey::STOR001", "Element::WALL001", relation="contains"),
     "B-10b  contains edge has correct relation attr",
 )
 check(

@@ -147,10 +147,7 @@ def compute_oriented_bbox(vertices: np.ndarray | None) -> dict[str, np.ndarray] 
         dtype=float,
     )
     corners_xy = np.array(
-        [
-            center_xy + axis_u * cu + axis_v * cv
-            for cu, cv in corners_local
-        ],
+        [center_xy + axis_u * cu + axis_v * cv for cu, cv in corners_local],
         dtype=float,
     )
 

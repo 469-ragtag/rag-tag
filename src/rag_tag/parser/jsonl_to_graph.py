@@ -1,4 +1,4 @@
-﻿# builds a NetworkX graph from the .jsonl files produced by ifc_to_jsonl.py
+# builds a NetworkX graph from the .jsonl files produced by ifc_to_jsonl.py
 # each node represents an IFC element with its geometry and properties attached
 # edges represent containment (which floor/space something is in),
 # spatial proximity (adjacent_to / connected_to), topology (above/below/overlaps),
@@ -1311,6 +1311,8 @@ def add_topology_facts(G: nx.DiGraph | nx.MultiDiGraph) -> None:
                 gap = b_min_z - a_max_z
                 _add_topology_edge(b, a, relation="above", vertical_gap=gap)
                 _add_topology_edge(a, b, relation="below", vertical_gap=gap)
+
+
 def plot_interactive_graph(G: nx.DiGraph | nx.MultiDiGraph, out_html: Path) -> None:
     # Build positions from node geometry where available.
     pos: dict[str, tuple[float, float, float] | None] = {}
@@ -1405,9 +1407,7 @@ def plot_interactive_graph(G: nx.DiGraph | nx.MultiDiGraph, out_html: Path) -> N
         group["y"].append(y)
         group["z"].append(z)
         group["hover"].append(
-            f"<b>{d.get('label', n)}</b><br>"
-            f"Class: {cls}<br>"
-            f"{hover_props}"
+            f"<b>{d.get('label', n)}</b><br>Class: {cls}<br>{hover_props}"
         )
 
     edge_groups: dict[str, dict[str, list]] = {}
@@ -1715,9 +1715,7 @@ def plot_interactive_graph(G: nx.DiGraph | nx.MultiDiGraph, out_html: Path) -> N
             "with_meshes": _mask("all", False, False, True),
             "with_annotations_and_meshes": _mask("all", True, False, True),
             "with_bboxes_and_meshes": _mask("all", False, True, True),
-            "with_annotations_and_bboxes_and_meshes": _mask(
-                "all", True, True, True
-            ),
+            "with_annotations_and_bboxes_and_meshes": _mask("all", True, True, True),
         },
         "nodes": {
             "base": _mask("nodes", False, False),
@@ -1727,9 +1725,7 @@ def plot_interactive_graph(G: nx.DiGraph | nx.MultiDiGraph, out_html: Path) -> N
             "with_meshes": _mask("nodes", False, False, True),
             "with_annotations_and_meshes": _mask("nodes", True, False, True),
             "with_bboxes_and_meshes": _mask("nodes", False, True, True),
-            "with_annotations_and_bboxes_and_meshes": _mask(
-                "nodes", True, True, True
-            ),
+            "with_annotations_and_bboxes_and_meshes": _mask("nodes", True, True, True),
         },
         "edges": {
             "base": _mask("edges", False, False),
@@ -1739,9 +1735,7 @@ def plot_interactive_graph(G: nx.DiGraph | nx.MultiDiGraph, out_html: Path) -> N
             "with_meshes": _mask("edges", False, False, True),
             "with_annotations_and_meshes": _mask("edges", True, False, True),
             "with_bboxes_and_meshes": _mask("edges", False, True, True),
-            "with_annotations_and_bboxes_and_meshes": _mask(
-                "edges", True, True, True
-            ),
+            "with_annotations_and_bboxes_and_meshes": _mask("edges", True, True, True),
         },
         "hierarchy": {
             "base": _mask("hierarchy", False, False),

@@ -264,9 +264,7 @@ def extract_element(
             if bbox is not None
             else None
         ),
-        "MeshVertices": (
-            mesh_vertices.tolist() if mesh_vertices is not None else None
-        ),
+        "MeshVertices": (mesh_vertices.tolist() if mesh_vertices is not None else None),
         "MeshFaces": mesh_faces.tolist() if mesh_faces is not None else None,
         "FootprintPolygon2D": (
             footprint_poly.tolist() if footprint_poly is not None else None
