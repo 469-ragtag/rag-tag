@@ -65,6 +65,7 @@ EXPLICIT_IFC_RELATIONS: tuple[str, ...] = (
     "hosts",
     "hosted_by",
     "ifc_connected_to",
+    "typed_by",
     "belongs_to_system",
     "in_zone",
     "classified_as",

@@ -109,9 +109,23 @@ def _resolve_context_db_path(
     return None
 
 
+def _sql_warning_details(
+    failed_db_paths: list[str],
+    db_errors: list[dict[str, str]],
+) -> dict[str, Any] | None:
+    if not failed_db_paths and not db_errors:
+        return None
+    return {
+        "failed_db_paths": failed_db_paths,
+        "db_errors": db_errors,
+    }
+
+
 def execute_sql_query(
     decision: RouteDecision,
     db_paths: list[Path],
+    *,
+    strict_sql: bool = False,
 ) -> dict[str, Any]:
     if decision.sql_request is None:
         return _sql_error(decision, "Router did not produce a SQL request.")
@@ -129,13 +143,40 @@ def execute_sql_query(
     combined_total = 0
     combined_items: list[Any] = []
     last_payload: dict[str, Any] = {}
+    failed_db_paths: list[str] = []
+    db_errors: list[dict[str, str]] = []
 
     for db_path in db_paths:
         try:
             envelope = query_ifc_sql(db_path, decision.sql_request)
-        except SqlQueryError:
+        except SqlQueryError as exc:
+            failed_db_paths.append(str(db_path))
+            db_errors.append({"db_path": str(db_path), "error": str(exc)})
+            if strict_sql:
+                return _sql_error(
+                    decision,
+                    (
+                        "Strict SQL mode aborted due to database query failure: "
+                        f"{db_path}: {exc}"
+                    ),
+                    warning=_sql_warning_details(failed_db_paths, db_errors),
+                )
             continue
         if envelope["status"] != "ok":
+            failed_db_paths.append(str(db_path))
+            db_error = envelope.get("error")
+            db_errors.append(
+                {"db_path": str(db_path), "error": str(db_error or "Unknown SQL error")}
+            )
+            if strict_sql:
+                return _sql_error(
+                    decision,
+                    (
+                        "Strict SQL mode aborted due to database query failure: "
+                        f"{db_path}: {db_error or 'Unknown SQL error'}"
+                    ),
+                    warning=_sql_warning_details(failed_db_paths, db_errors),
+                )
             continue
         payload = envelope["data"]
         last_payload = payload
@@ -144,7 +185,11 @@ def execute_sql_query(
         combined_items.extend(payload.get("items") or [])
 
     if not last_payload:
-        return _sql_error(decision, "All database queries failed.")
+        return _sql_error(
+            decision,
+            "All database queries failed.",
+            warning=_sql_warning_details(failed_db_paths, db_errors),
+        )
 
     # Enforce global list limit: merged items across all DBs must not exceed the
     # requested limit.  Each per-DB query already applies the same LIMIT clause,
@@ -174,7 +219,7 @@ def execute_sql_query(
             summary = f"Found {combined_total} {label}, showing {shown}."
         result_count = shown
 
-    return {
+    result = {
         "route": "sql",
         "decision": decision.reason,
         "db_paths": [str(p) for p in db_paths],
@@ -190,15 +235,27 @@ def execute_sql_query(
         },
         "sql": last_payload.get("sql"),
     }
+    warning = _sql_warning_details(failed_db_paths, db_errors)
+    if warning is not None:
+        result["warning"] = warning
+    return result
 
 
-def _sql_error(decision: RouteDecision, message: str) -> dict[str, Any]:
+def _sql_error(
+    decision: RouteDecision,
+    message: str,
+    *,
+    warning: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Build a SQL error result payload."""
-    return {
+    result: dict[str, Any] = {
         "route": "sql",
         "decision": decision.reason,
         "error": message,
     }
+    if warning is not None:
+        result["warning"] = warning
+    return result
 
 
 def execute_graph_query(
@@ -206,6 +263,8 @@ def execute_graph_query(
     graph: nx.DiGraph,
     agent: GraphAgent,
     decision: RouteDecision,
+    *,
+    max_steps: int = 10,
 ) -> dict[str, Any]:
     """Execute graph query via agent.
 
@@ -218,7 +277,7 @@ def execute_graph_query(
     Returns:
         Result dict with answer, data, or error
     """
-    agent_result = agent.run(question, graph, max_steps=6)
+    agent_result = agent.run(question, graph, max_steps=max_steps)
     return {
         "route": "graph",
         "decision": decision.reason,
@@ -237,6 +296,8 @@ def execute_query(
     graph_dataset: str | None = None,
     context_db: Path | None = None,
     payload_mode: str | None = None,
+    strict_sql: bool = False,
+    graph_max_steps: int = 15,
 ) -> dict[str, Any]:
     """Execute a query through the full pipeline (routing + execution).
 
@@ -268,7 +329,7 @@ def execute_query(
             decision = route_question(question, debug_llm_io=debug_llm_io)
 
         if decision.route == "sql":
-            result = execute_sql_query(decision, db_paths)
+            result = execute_sql_query(decision, db_paths, strict_sql=strict_sql)
             return {"result": result, "graph": graph, "agent": agent}
 
         _require_explicit_graph_dataset(graph, graph_dataset)
@@ -314,7 +375,13 @@ def execute_query(
                 resolved_context_db,
                 payload_mode=payload_mode,
             )
-        result = execute_graph_query(question, graph, agent, decision)
+        result = execute_graph_query(
+            question,
+            graph,
+            agent,
+            decision,
+            max_steps=graph_max_steps,
+        )
         return {"result": result, "graph": graph, "agent": agent}
 
     except Exception as exc:

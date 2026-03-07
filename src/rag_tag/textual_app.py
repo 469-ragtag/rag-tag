@@ -424,6 +424,7 @@ class QueryApp(App[None]):
                 graph_dataset=self.graph_dataset,
                 context_db=self.context_db,
                 payload_mode=self.graph_payload_mode,
+                strict_sql=False,
             )
 
             result: dict[str, Any] = result_bundle["result"]

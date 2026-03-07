@@ -131,6 +131,12 @@ def main() -> int:
         help="Enable Logfire observability for PydanticAI agents.",
     )
     ap.add_argument(
+        "--strict-sql",
+        action="store_true",
+        default=False,
+        help="Fail closed if any SQL database query fails during merged SQL execution.",
+    )
+    ap.add_argument(
         "--tui",
         action="store_true",
         default=False,
@@ -215,6 +221,7 @@ def main() -> int:
                 graph_dataset=graph_dataset,
                 context_db=resolved_db_path,
                 payload_mode=graph_payload_mode,
+                strict_sql=args.strict_sql,
             )
 
             # Extract components

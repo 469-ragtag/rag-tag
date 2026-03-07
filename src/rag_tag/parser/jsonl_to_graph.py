@@ -759,8 +759,9 @@ def _add_explicit_relationships(
     G: nx.DiGraph | nx.MultiDiGraph,
     node_id: str,
     rels: dict,
-    dataset_key: str,
     node_id_by_gid: dict[str, str],
+    *,
+    dataset_key: str | None = None,
     namespaced_ids: bool = False,
 ) -> None:
     """Materialise the explicit IFC relationships from a record's Relationships block.
@@ -780,6 +781,7 @@ def _add_explicit_relationships(
         return
     if not isinstance(rels, dict):
         return
+    dataset_label = dataset_key if isinstance(dataset_key, str) else ""
 
     def _iter_edge_attrs_between(u: str, v: str):
         edge_data = G.get_edge_data(u, v)
@@ -821,6 +823,12 @@ def _add_explicit_relationships(
             _add_ifc_edge_once(node_id, target, "ifc_connected_to")
             _add_ifc_edge_once(target, node_id, "ifc_connected_to")
 
+    # --- element-to-type: typed_by ---
+    for target_gid in rels.get("typed_by") or []:
+        target = node_id_by_gid.get(target_gid)
+        if target and target in G and target != node_id:
+            _add_ifc_edge_once(node_id, target, "typed_by")
+
     # --- element-to-element: path_connected_to ---
     for target_gid in rels.get("path_connected_to") or []:
         target = node_id_by_gid.get(target_gid)
@@ -845,7 +853,7 @@ def _add_explicit_relationships(
             continue
         system_nid = _context_node_id(
             "System",
-            dataset_key,
+            dataset_label,
             label,
             namespaced=namespaced_ids,
         )
@@ -856,7 +864,7 @@ def _add_explicit_relationships(
                 class_="IfcSystem",
                 node_kind="context",
                 geometry=None,
-                dataset=dataset_key,
+                dataset=dataset_label,
             )
         _add_ifc_edge_once(node_id, system_nid, "belongs_to_system")
 
@@ -867,7 +875,7 @@ def _add_explicit_relationships(
             continue
         zone_nid = _context_node_id(
             "Zone",
-            dataset_key,
+            dataset_label,
             label,
             namespaced=namespaced_ids,
         )
@@ -878,7 +886,7 @@ def _add_explicit_relationships(
                 class_="IfcZone",
                 node_kind="context",
                 geometry=None,
-                dataset=dataset_key,
+                dataset=dataset_label,
             )
         _add_ifc_edge_once(node_id, zone_nid, "in_zone")
 
@@ -889,7 +897,7 @@ def _add_explicit_relationships(
             continue
         cls_nid = _context_node_id(
             "Classification",
-            dataset_key,
+            dataset_label,
             label,
             namespaced=namespaced_ids,
         )
@@ -900,7 +908,7 @@ def _add_explicit_relationships(
                 class_="IfcClassificationReference",
                 node_kind="context",
                 geometry=None,
-                dataset=dataset_key,
+                dataset=dataset_label,
             )
         _add_ifc_edge_once(node_id, cls_nid, "classified_as")
 
@@ -948,6 +956,7 @@ def build_graph_from_jsonl(
             "hosts",
             "hosted_by",
             "ifc_connected_to",
+            "typed_by",
             "path_connected_to",
             "space_bounded_by",
             "bounds_space",
@@ -1123,8 +1132,8 @@ def build_graph_from_jsonl(
             G,
             node_id,
             rels,
-            dataset_key,
             node_id_by_gid_by_dataset.get(dataset_key, {}),
+            dataset_key=dataset_key,
             namespaced_ids=namespaced_ids,
         )
     explicit_edge_count = G.number_of_edges() - _before
@@ -1404,25 +1413,6 @@ def add_topology_facts(G: nx.DiGraph | nx.MultiDiGraph) -> None:
                             intersection_volume=intersection_volume,
                             contact_area=contact_area,
                         )
-            elif intersects_bbox:
-                # Fallback heuristic metric when exact OCC is unavailable.
-                fallback_volume = min(_bbox_volume(bbox_a), _bbox_volume(bbox_b))
-                if fallback_volume > 0.0:
-                    _add_topology_edge(
-                        a,
-                        b,
-                        relation="intersects_3d",
-                        intersection_volume=fallback_volume,
-                        contact_area=0.0,
-                    )
-                    _add_topology_edge(
-                        b,
-                        a,
-                        relation="intersects_3d",
-                        intersection_volume=fallback_volume,
-                        contact_area=0.0,
-                    )
-
             # Only check vertical order if footprints overlap.
             if overlap_area <= 0.0:
                 continue

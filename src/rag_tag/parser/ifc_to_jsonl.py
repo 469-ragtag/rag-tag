@@ -414,9 +414,9 @@ def convert_ifc_to_jsonl(ifc_path: Path, out_path: Path) -> int:
     relationship_index = build_relationship_index(model)
 
     # IfcProduct is the base class for physical building elements (walls, doors, etc.)
-    # but IfcProject/IfcSite/IfcBuilding don't inherit from it so we add them manually
+    # but IfcProject/IfcSite/IfcBuilding and type objects need explicit inclusion.
     elements: list = list(model.by_type("IfcProduct"))
-    for extra in ("IfcProject", "IfcSite", "IfcBuilding"):
+    for extra in ("IfcProject", "IfcSite", "IfcBuilding", "IfcTypeObject"):
         try:
             elements.extend(model.by_type(extra))
         except Exception:

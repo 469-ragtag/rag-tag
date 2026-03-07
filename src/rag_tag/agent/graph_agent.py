@@ -8,7 +8,8 @@ import re
 
 import networkx as nx
 from pydantic_ai import Agent, ModelRetry, RunContext, UnexpectedModelBehavior
-from pydantic_ai.exceptions import ModelHTTPError
+from pydantic_ai.exceptions import ModelHTTPError, UsageLimitExceeded
+from pydantic_ai.usage import UsageLimits
 
 from rag_tag.llm.pydantic_ai import get_agent_model
 
@@ -279,7 +280,7 @@ class GraphAgent:
         question: str,
         graph: nx.DiGraph,
         *,
-        max_steps: int = 6,
+        max_steps: int = 15,
         trace: object | None = None,
         run_id: str | None = None,
     ) -> dict[str, object]:
@@ -288,8 +289,7 @@ class GraphAgent:
         Args:
             question: User question.
             graph: NetworkX graph to query (passed as dependency).
-            max_steps: Kept for API compatibility; PydanticAI manages
-                iteration count internally.
+            max_steps: Maximum reasoning/tool-call budget for the agent run.
             trace: Ignored (legacy; Logfire used instead).
             run_id: Ignored (legacy; Logfire used instead).
 
@@ -298,10 +298,18 @@ class GraphAgent:
             'error' key if the agent run fails entirely.
         """
         last_invalid_tool_exc: ModelHTTPError | None = None
+        usage_limits = UsageLimits(
+            request_limit=max(max_steps, 1),
+            tool_calls_limit=max(max_steps, 1),
+        )
 
         for attempt in range(_MAX_INVALID_TOOL_RETRIES + 1):
             try:
-                result = self._agent.run_sync(question, deps=graph)
+                result = self._agent.run_sync(
+                    question,
+                    deps=graph,
+                    usage_limits=usage_limits,
+                )
                 output = result.output
                 answer = _sanitize_model_text(output.answer) or ""
                 warning = _sanitize_model_text(output.warning)
@@ -382,6 +390,17 @@ class GraphAgent:
                     "data": (
                         {"raw_response_snippet": raw_snippet} if raw_snippet else None
                     ),
+                }
+
+            except UsageLimitExceeded as exc:
+                _logger.warning("Graph agent step budget exceeded: %s", exc)
+                return {
+                    "answer": (
+                        "The graph agent hit its step budget before it could "
+                        "finish this query."
+                    ),
+                    "warning": f"Step budget exceeded (max_steps={max_steps}): {exc}",
+                    "data": {"max_steps": max_steps},
                 }
 
             except Exception as exc:

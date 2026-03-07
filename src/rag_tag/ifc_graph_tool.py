@@ -1089,20 +1089,20 @@ def query_ifc_graph(
                         continue
                     visited.add(nbr)
                     next_frontier.add(nbr)
-                    edge, edge_relation = matched_edges[0]
-                    results.append(
-                        {
-                            "from": node,
-                            "to": nbr,
-                            "relation": edge_relation,
-                            "source": _edge_source(edge, edge_relation),
-                            "node": build_node_payload(
-                                nbr,
-                                G.nodes[nbr],
-                                payload_mode=resolved_payload_mode,
-                            ),
-                        }
-                    )
+                    for edge, edge_relation in matched_edges:
+                        results.append(
+                            {
+                                "from": node,
+                                "to": nbr,
+                                "relation": edge_relation,
+                                "source": _edge_source(edge, edge_relation),
+                                "node": build_node_payload(
+                                    nbr,
+                                    G.nodes[nbr],
+                                    payload_mode=resolved_payload_mode,
+                                ),
+                            }
+                        )
             frontier = next_frontier
 
         return _ok_action(
