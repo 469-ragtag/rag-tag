@@ -264,7 +264,7 @@ def execute_graph_query(
     agent: GraphAgent,
     decision: RouteDecision,
     *,
-    max_steps: int = 10,
+    max_steps: int = 15,
 ) -> dict[str, Any]:
     """Execute graph query via agent.
 
