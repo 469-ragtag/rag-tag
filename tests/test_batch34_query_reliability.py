@@ -5,6 +5,7 @@ from pathlib import Path
 import networkx as nx
 import pytest
 from pydantic_ai.exceptions import UsageLimitExceeded
+from pydantic_ai.models.test import TestModel
 
 from rag_tag.agent.graph_agent import GraphAgent
 from rag_tag.query_service import execute_query, execute_sql_query
@@ -117,6 +118,7 @@ def test_execute_query_passes_strict_sql(monkeypatch: pytest.MonkeyPatch) -> Non
 
 
 def test_graph_agent_honors_usage_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("rag_tag.agent.graph_agent.get_agent_model", TestModel)
     agent = GraphAgent()
 
     def fake_run_sync(
@@ -128,6 +130,13 @@ def test_graph_agent_honors_usage_limit(monkeypatch: pytest.MonkeyPatch) -> None
 
     result = agent.run("question", nx.MultiDiGraph(), max_steps=1)
 
-    assert "step budget" in result["answer"].lower()
-    assert "max_steps=1" in result["warning"]
-    assert result["data"]["max_steps"] == 1
+    answer = result.get("answer")
+    warning = result.get("warning")
+    data = result.get("data")
+
+    assert isinstance(answer, str)
+    assert "step budget" in answer.lower()
+    assert isinstance(warning, str)
+    assert "max_steps=1" in warning
+    assert isinstance(data, dict)
+    assert data.get("max_steps") == 1
