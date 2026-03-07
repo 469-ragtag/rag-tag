@@ -41,7 +41,6 @@ import plotly.io as pio
 
 from rag_tag.paths import find_project_root
 
-logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 LOG = logging.getLogger(__name__)
 
 try:
@@ -2261,9 +2260,17 @@ def build_graph(
     return G
 
 
+def _configure_logging() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+
+
 def main() -> None:
+    _configure_logging()
     ap = argparse.ArgumentParser(
-        description="Build IFC graph from JSONL and generate 3D visualization."
+        description=(
+            "Build a NetworkX IFC graph from JSONL files, preserving full or "
+            "minimal payloads and using mesh-derived geometry when present."
+        )
     )
     ap.add_argument(
         "--jsonl-dir",

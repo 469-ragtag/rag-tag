@@ -83,7 +83,8 @@ Dataset selection behavior:
 
 - If `--graph-dataset` is set, that JSONL stem is used for graph routing.
 - Else, if exactly one DB is selected, that DB stem is used.
-- Else, graph routing loads all `.jsonl` files in `output/`.
+- Else, SQL queries can still merge across DBs, but graph queries require an
+  explicit dataset when multiple JSONL datasets are present.
 
 ## Key repository paths
 
@@ -112,7 +113,9 @@ src/rag_tag/
   using class-specific `ValidPsets` from the ontology map.
 - Unknown/unsupported schema families degrade gracefully (no crash):
   properties default to `Custom` and base-class expansion is empty.
-- Geometry stores centroid/bbox only; raw mesh arrays are not written to JSONL.
+- Geometry blocks may include centroid, bounding box, mesh vertices/faces, 2D
+  footprint polygon, local placement matrix, and oriented bounding box when IFC
+  geometry extraction succeeds.
 
 ## SQL and graph contracts
 
@@ -139,7 +142,7 @@ src/rag_tag/
   - spatial: `adjacent_to`, `connected_to`
   - topology: `above`, `below`, `overlaps_xy`, `intersects_bbox`,
     `intersects_3d`, `touches_surface`
-  - explicit IFC: `hosts`, `hosted_by`, `ifc_connected_to`,
+  - explicit IFC: `hosts`, `hosted_by`, `ifc_connected_to`, `typed_by`,
     `belongs_to_system`, `in_zone`, `classified_as`
 - `source` semantics for relation-bearing outputs:
   - `ifc` = explicit IFC relation extracted from model relationships
@@ -161,7 +164,14 @@ src/rag_tag/
 ```bash
 uv run ruff format --check .
 uv run ruff check .
+uv run pytest
 ```
 
-There is no full pytest suite yet; targeted verification scripts under
-`scripts/` are used during migration hardening.
+## Reliability notes
+
+- SQL merge mode reports partial database failures in `warning.failed_db_paths`
+  and `warning.db_errors` rather than silently dropping them.
+- `uv run rag-tag --strict-sql` makes SQL count/list queries fail closed when
+  any selected database errors.
+- Graph queries support explicit IFC `typed_by` relationships when type objects
+  are present in the exported JSONL.

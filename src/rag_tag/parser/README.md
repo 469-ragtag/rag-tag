@@ -15,7 +15,7 @@ IFC files  -->  ifc_to_jsonl.py  -->  JSONL  -->  jsonl_to_sql.py    --> SQLite 
 
 | Module | Input | Output | Purpose |
 |---|---|---|---|
-| `ifc_to_jsonl.py` | `.ifc` | `.jsonl` | Extract element identity, hierarchy, geometry, psets, and quantities |
+| `ifc_to_jsonl.py` | `.ifc` | `.jsonl` | Extract element/type identity, hierarchy, geometry, explicit relationships, psets, and quantities |
 | `jsonl_to_sql.py` | `.jsonl` | `.db` | Build normalized SQLite tables for deterministic SQL |
 | `jsonl_to_graph.py` | `.jsonl` | `networkx` (+ HTML viz) | Build hierarchy + spatial/topology graph with payload on nodes |
 | `parse_bsdd_to_map.py` | optional `.ttl` RDF | `ifc_ontology_map.json` | Build offline ontology map (`BaseClasses`, `ValidPsets`) |
@@ -54,15 +54,34 @@ Each line is one element record. Key blocks:
 
 - Top-level identity/class fields: `GlobalId`, `ExpressId`, `IfcType`, `ClassRaw`, `Name`
 - `Hierarchy`: `ParentId`, `ParentType`, `Level`, `Path`
-- `Geometry`: `Centroid`, `BoundingBox` (`min`/`max`)
+- `Geometry`: `Centroid`, `BoundingBox` (`min`/`max`), optional mesh arrays and
+  derived geometry helpers (`FootprintPolygon2D`, `LocalPlacementMatrix`,
+  `OrientedBoundingBox`)
 - `PropertySets`: split into `Official` and `Custom`
 - `Quantities`: quantity sets extracted from IFC
+- `Relationships`: explicit IFC relations such as `hosts`, `ifc_connected_to`,
+  `typed_by`, system/zone/classification assignments
 
 Notes:
 
-- Geometry stores only derived centroid/bbox, never raw mesh arrays.
+- Geometry output includes mesh arrays by default when extraction succeeds; the
+  graph builder can later retain full payloads or use minimal payload mode.
 - For unsupported schema families or missing ontology data, extraction degrades
   gracefully: properties default to `Custom` and base-class expansion is empty.
+
+## Multi-dataset graph selection
+
+- A single selected DB still implies the matching graph dataset stem.
+- When multiple graph datasets are available and no dataset can be inferred,
+  graph-query paths require an explicit dataset selection (`--graph-dataset` or
+  `--db output/<stem>.db`). SQL queries may still merge across DBs.
+
+## SQL reliability controls
+
+- SQL merge warnings report partial DB failures via `failed_db_paths` and
+  per-DB error details.
+- `uv run rag-tag --strict-sql` makes merged SQL execution fail closed instead
+  of returning a partial result.
 
 ## SQLite schema notes
 

@@ -17,7 +17,6 @@ from rag_tag.level_normalization import canonicalize_level
 from rag_tag.parser.sql_schema import SCHEMA_SQL
 from rag_tag.paths import find_project_root
 
-logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
 _TYPED_JSON_PREFIX = "json:"
 
@@ -202,7 +201,12 @@ def jsonl_to_sql(jsonl_path: Path, db_path: Path) -> tuple[int, int, int]:
     return elem_count, len(all_props), len(all_qties)
 
 
+def _configure_logging() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+
+
 def main() -> None:
+    _configure_logging()
     ap = argparse.ArgumentParser(
         description="Convert IFC JSONL exports to normalised SQLite databases."
     )
