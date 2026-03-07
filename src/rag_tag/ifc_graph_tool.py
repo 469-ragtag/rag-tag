@@ -463,23 +463,40 @@ def query_ifc_graph(
     def _resolve_element_id(
         element_id: str,
     ) -> tuple[str | None, Dict[str, Any] | None]:
+        def _element_candidates_by_global_id(global_id: str) -> list[str]:
+            matches: list[str] = []
+            for n, d in G.nodes(data=True):
+                if not str(n).startswith("Element::"):
+                    continue
+                gid = d.get("properties", {}).get("GlobalId")
+                if gid == global_id:
+                    matches.append(n)
+            return matches
+
+        def _element_candidates_by_legacy_id(raw_id: str) -> list[str]:
+            suffix = raw_id.strip()
+            if not suffix:
+                return []
+            if suffix.startswith("Element::"):
+                suffix = suffix.split("::", 1)[1]
+            matches: list[str] = []
+            for n in G.nodes:
+                node_id = str(n)
+                if not node_id.startswith("Element::"):
+                    continue
+                if node_id.endswith(f"::{suffix}"):
+                    matches.append(node_id)
+            return matches
+
         if not isinstance(element_id, str):
             return None, {"error": "Invalid element_id: element_id must be a string"}
         if element_id in G:
             if str(element_id).startswith("Element::"):
                 return element_id, None
             return None, {"error": f"Invalid element_id (not an element): {element_id}"}
-        if not element_id.startswith("Element::"):
-            candidate = f"Element::{element_id}"
-            if candidate in G:
-                return candidate, None
-        matches = []
-        for n, d in G.nodes(data=True):
-            if not str(n).startswith("Element::"):
-                continue
-            gid = d.get("properties", {}).get("GlobalId")
-            if gid == element_id:
-                matches.append(n)
+        matches = _element_candidates_by_legacy_id(element_id)
+        if not matches:
+            matches = _element_candidates_by_global_id(element_id)
         if len(matches) == 1:
             return matches[0], None
         if len(matches) > 1:
@@ -499,6 +516,23 @@ def query_ifc_graph(
             str(G.nodes[direct].get("class_", "")).lower() == "ifcbuildingstorey"
         ):
             return direct, None
+
+        legacy_suffix = (
+            query.split("::", 1)[1] if query.startswith("Storey::") else query
+        )
+        legacy_matches: list[str] = []
+        for n, d in G.nodes(data=True):
+            node_id = str(n)
+            if not node_id.startswith("Storey::"):
+                continue
+            if str(d.get("class_", "")).lower() != "ifcbuildingstorey":
+                continue
+            if node_id.endswith(f"::{legacy_suffix}"):
+                legacy_matches.append(node_id)
+        if len(legacy_matches) == 1:
+            return legacy_matches[0], None
+        if len(legacy_matches) > 1:
+            return None, {"error": "Ambiguous storey", "candidates": legacy_matches}
 
         # Exact label match (legacy/user-friendly).
         exact = _find_nodes_by_label(query, class_filter="IfcBuildingStorey")

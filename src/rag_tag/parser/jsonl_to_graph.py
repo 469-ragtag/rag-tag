@@ -266,8 +266,10 @@ def _compute_shape_min_distance(shape_a, shape_b) -> float | None:
         return None
 
 
-def _build_occ_shape_index(element_gids: list[str]) -> dict[str, object]:
-    """Build ``GlobalId -> OCC shape`` index from IFC files when available."""
+def _build_occ_shape_index(
+    element_refs: list[tuple[str, str, str]],
+) -> dict[str, object]:
+    """Build ``node_id -> OCC shape`` index from IFC files when available."""
     if not IFC_GEOM_AVAILABLE or not OCC_AVAILABLE:
         return {}
 
@@ -290,46 +292,62 @@ def _build_occ_shape_index(element_gids: list[str]) -> dict[str, object]:
         LOG.debug("OCC settings unavailable: %s", exc)
         return {}
 
-    target_gids = set(element_gids)
-    shape_by_gid: dict[str, object] = {}
-    for ifc_file in ifc_files:
-        if not target_gids:
-            break
+    models_by_path: dict[Path, object | None] = {}
+    ifc_file_by_stem = {ifc_file.stem: ifc_file for ifc_file in ifc_files}
+    shape_by_node_id: dict[str, object] = {}
+
+    def _open_model(ifc_file: Path) -> object | None:
+        if ifc_file in models_by_path:
+            return models_by_path[ifc_file]
         try:
             model = ifcopenshell.open(str(ifc_file))
         except Exception as exc:
             LOG.debug("Skipping IFC file %s: %s", ifc_file, exc)
-            continue
+            models_by_path[ifc_file] = None
+            return None
+        models_by_path[ifc_file] = model
+        return model
 
-        resolved_in_file: set[str] = set()
-        for gid in target_gids:
+    for node_id, dataset_key, gid in element_refs:
+        preferred_file = ifc_file_by_stem.get(dataset_key)
+        candidate_files: list[Path] = []
+        if preferred_file is not None:
+            candidate_files.append(preferred_file)
+        candidate_files.extend(
+            ifc_file for ifc_file in ifc_files if ifc_file != preferred_file
+        )
+
+        for ifc_file in candidate_files:
+            model = _open_model(ifc_file)
+            if model is None:
+                continue
             try:
                 elem = model.by_guid(gid)
                 if elem is None:
                     continue
                 shape = ifcopenshell.geom.create_shape(occ_settings, elem)
-                shape_by_gid[gid] = shape.geometry
-                resolved_in_file.add(gid)
+                shape_by_node_id[node_id] = shape.geometry
+                break
             except Exception:
                 continue
-        target_gids -= resolved_in_file
 
-    if shape_by_gid:
+    if shape_by_node_id:
         LOG.info(
             "Loaded OCC shapes for %d/%d graph elements",
-            len(shape_by_gid),
-            len(element_gids),
+            len(shape_by_node_id),
+            len(element_refs),
         )
-    return shape_by_gid
+    return shape_by_node_id
 
 
 def _get_occ_shape_index(
-    G: nx.DiGraph | nx.MultiDiGraph, element_gids: list[str]
+    G: nx.DiGraph | nx.MultiDiGraph,
+    element_refs: list[tuple[str, str, str]],
 ) -> dict[str, object]:
     """Return cached OCC shape index for the graph, building it if needed."""
     cached = G.graph.get("_occ_shape_index")
     cached_gids = G.graph.get("_occ_shape_index_gids")
-    wanted = frozenset(element_gids)
+    wanted = frozenset(node_id for node_id, _dataset_key, _gid in element_refs)
     if (
         isinstance(cached, dict)
         and isinstance(cached_gids, frozenset)
@@ -337,7 +355,7 @@ def _get_occ_shape_index(
     ):
         return cached
 
-    built = _build_occ_shape_index(element_gids)
+    built = _build_occ_shape_index(element_refs)
     G.graph["_occ_shape_index"] = built
     G.graph["_occ_shape_index_gids"] = frozenset(built.keys())
     return built
@@ -697,11 +715,53 @@ def _normalize_context_label(label: str) -> str:
     return " ".join(label.split())
 
 
+def _dataset_key_from_path(jsonl_path: Path) -> str:
+    return jsonl_path.stem
+
+
+def _project_node_id(dataset_key: str, *, namespaced: bool) -> str:
+    if namespaced:
+        return f"IfcProject::{dataset_key}"
+    return "IfcProject"
+
+
+def _building_node_id(dataset_key: str, *, namespaced: bool) -> str:
+    if namespaced:
+        return f"IfcBuilding::{dataset_key}"
+    return "IfcBuilding"
+
+
+def _storey_node_id(dataset_key: str, gid: str, *, namespaced: bool) -> str:
+    if namespaced:
+        return f"Storey::{dataset_key}::{gid}"
+    return f"Storey::{gid}"
+
+
+def _element_node_id(dataset_key: str, gid: str, *, namespaced: bool) -> str:
+    if namespaced:
+        return f"Element::{dataset_key}::{gid}"
+    return f"Element::{gid}"
+
+
+def _context_node_id(
+    kind: str,
+    dataset_key: str,
+    label: str,
+    *,
+    namespaced: bool,
+) -> str:
+    if namespaced:
+        return f"{kind}::{dataset_key}::{label}"
+    return f"{kind}::{label}"
+
+
 def _add_explicit_relationships(
     G: nx.DiGraph | nx.MultiDiGraph,
     node_id: str,
     rels: dict,
+    dataset_key: str,
     node_id_by_gid: dict[str, str],
+    namespaced_ids: bool = False,
 ) -> None:
     """Materialise the explicit IFC relationships from a record's Relationships block.
 
@@ -783,7 +843,12 @@ def _add_explicit_relationships(
         label = _normalize_context_label(raw_label)
         if not label:
             continue
-        system_nid = f"System::{label}"
+        system_nid = _context_node_id(
+            "System",
+            dataset_key,
+            label,
+            namespaced=namespaced_ids,
+        )
         if system_nid not in G:
             G.add_node(
                 system_nid,
@@ -791,6 +856,7 @@ def _add_explicit_relationships(
                 class_="IfcSystem",
                 node_kind="context",
                 geometry=None,
+                dataset=dataset_key,
             )
         _add_ifc_edge_once(node_id, system_nid, "belongs_to_system")
 
@@ -799,7 +865,12 @@ def _add_explicit_relationships(
         label = _normalize_context_label(raw_label)
         if not label:
             continue
-        zone_nid = f"Zone::{label}"
+        zone_nid = _context_node_id(
+            "Zone",
+            dataset_key,
+            label,
+            namespaced=namespaced_ids,
+        )
         if zone_nid not in G:
             G.add_node(
                 zone_nid,
@@ -807,6 +878,7 @@ def _add_explicit_relationships(
                 class_="IfcZone",
                 node_kind="context",
                 geometry=None,
+                dataset=dataset_key,
             )
         _add_ifc_edge_once(node_id, zone_nid, "in_zone")
 
@@ -815,7 +887,12 @@ def _add_explicit_relationships(
         label = _normalize_context_label(raw_label)
         if not label:
             continue
-        cls_nid = f"Classification::{label}"
+        cls_nid = _context_node_id(
+            "Classification",
+            dataset_key,
+            label,
+            namespaced=namespaced_ids,
+        )
         if cls_nid not in G:
             G.add_node(
                 cls_nid,
@@ -823,6 +900,7 @@ def _add_explicit_relationships(
                 class_="IfcClassificationReference",
                 node_kind="context",
                 geometry=None,
+                dataset=dataset_key,
             )
         _add_ifc_edge_once(node_id, cls_nid, "classified_as")
 
@@ -847,11 +925,8 @@ def build_graph_from_jsonl(
     _resolved_mode = _resolve_graph_payload_mode(payload_mode)
 
     G = nx.MultiDiGraph()
-
-    # these two root nodes always exist even if the JSONL doesn't mention them
-    G.add_node("IfcProject", label="Project", class_="IfcProject", geometry=None)
-    G.add_node("IfcBuilding", label="Building", class_="IfcBuilding", geometry=None)
-    G.add_edge("IfcProject", "IfcBuilding", relation="aggregates")
+    dataset_keys: list[str] = []
+    namespaced_ids = len({_dataset_key_from_path(path) for path in jsonl_paths}) > 1
 
     G.graph["_payload_mode"] = _resolved_mode
     G.graph["edge_categories"] = {
@@ -881,18 +956,41 @@ def build_graph_from_jsonl(
             "classified_as",
         ],
     }
+    G.graph["namespaced_ids"] = namespaced_ids
 
-    node_id_by_gid: dict[str, str] = {}
+    node_id_by_gid_by_dataset: dict[str, dict[str, str]] = {}
 
     # we defer containment edges to a second pass because when we read element A,
     # its parent (element B) might not have been added to the graph yet
-    deferred_containment: list[tuple[str, str]] = []  # (parent_gid, child_node_id)
+    deferred_containment: list[tuple[str, str, str]] = []
 
     # we also defer explicit relationships: all primary nodes must exist first so
     # that target GlobalIds can be resolved to their graph node IDs
-    deferred_relationships: list[tuple[str, dict]] = []  # (node_id, relationships)
+    deferred_relationships: list[tuple[str, str, dict]] = []
 
     for jsonl_path in jsonl_paths:
+        dataset_key = _dataset_key_from_path(jsonl_path)
+        dataset_keys.append(dataset_key)
+        node_id_by_gid = node_id_by_gid_by_dataset.setdefault(dataset_key, {})
+        project_node_id = _project_node_id(dataset_key, namespaced=namespaced_ids)
+        building_node_id = _building_node_id(dataset_key, namespaced=namespaced_ids)
+
+        G.add_node(
+            project_node_id,
+            label="Project",
+            class_="IfcProject",
+            geometry=None,
+            dataset=dataset_key,
+        )
+        G.add_node(
+            building_node_id,
+            label="Building",
+            class_="IfcBuilding",
+            geometry=None,
+            dataset=dataset_key,
+        )
+        G.add_edge(project_node_id, building_node_id, relation="aggregates")
+
         LOG.info("Reading %s", jsonl_path)
         with jsonl_path.open(encoding="utf-8") as fh:
             for line_no, line in enumerate(fh, 1):
@@ -918,8 +1016,8 @@ def build_graph_from_jsonl(
                 footprint_poly, obb, placement = _oriented_geom_from_record(rec)
 
                 if ifc_type == "IfcProject":
-                    node_id = "IfcProject"
-                    G.nodes["IfcProject"].update(
+                    node_id = project_node_id
+                    G.nodes[project_node_id].update(
                         label=name,
                         class_=ifc_type,
                         payload=_make_payload(rec, _resolved_mode),
@@ -929,10 +1027,11 @@ def build_graph_from_jsonl(
                         footprint_polygon=footprint_poly,
                         obb=obb,
                         local_placement_matrix=placement,
+                        dataset=dataset_key,
                     )
                 elif ifc_type == "IfcBuilding":
-                    node_id = "IfcBuilding"
-                    G.nodes["IfcBuilding"].update(
+                    node_id = building_node_id
+                    G.nodes[building_node_id].update(
                         label=name,
                         class_=ifc_type,
                         payload=_make_payload(rec, _resolved_mode),
@@ -943,9 +1042,14 @@ def build_graph_from_jsonl(
                         footprint_polygon=footprint_poly,
                         obb=obb,
                         local_placement_matrix=placement,
+                        dataset=dataset_key,
                     )
                 elif ifc_type == "IfcBuildingStorey":
-                    node_id = f"Storey::{gid}"
+                    node_id = _storey_node_id(
+                        dataset_key,
+                        gid,
+                        namespaced=namespaced_ids,
+                    )
                     G.add_node(
                         node_id,
                         label=name,
@@ -961,10 +1065,15 @@ def build_graph_from_jsonl(
                         z_max=(bbox[1][2] if bbox else None),
                         height=((bbox[1][2] - bbox[0][2]) if bbox else None),
                         payload=_make_payload(rec, _resolved_mode),
+                        dataset=dataset_key,
                     )
-                    G.add_edge("IfcBuilding", node_id, relation="aggregates")
+                    G.add_edge(building_node_id, node_id, relation="aggregates")
                 else:
-                    node_id = f"Element::{gid}"
+                    node_id = _element_node_id(
+                        dataset_key,
+                        gid,
+                        namespaced=namespaced_ids,
+                    )
                     G.add_node(
                         node_id,
                         label=name,
@@ -985,22 +1094,23 @@ def build_graph_from_jsonl(
                             else None
                         ),
                         payload=_make_payload(rec, _resolved_mode),
+                        dataset=dataset_key,
                     )
 
                 node_id_by_gid[gid] = node_id
 
                 parent_gid = (rec.get("Hierarchy") or {}).get("ParentId")
                 if parent_gid:
-                    deferred_containment.append((parent_gid, node_id))
+                    deferred_containment.append((dataset_key, parent_gid, node_id))
 
                 # collect non-empty Relationships blocks for the third pass
                 rels = rec.get("Relationships")
                 if isinstance(rels, dict) and any(rels.values()):
-                    deferred_relationships.append((node_id, rels))
+                    deferred_relationships.append((dataset_key, node_id, rels))
 
     # second pass â€” now all nodes exist so we can safely add containment edges
-    for parent_gid, child_node_id in deferred_containment:
-        parent_node_id = node_id_by_gid.get(parent_gid)
+    for dataset_key, parent_gid, child_node_id in deferred_containment:
+        parent_node_id = node_id_by_gid_by_dataset.get(dataset_key, {}).get(parent_gid)
         if parent_node_id is None:
             continue
         _add_containment_edge(G, parent_node_id, child_node_id)
@@ -1008,11 +1118,20 @@ def build_graph_from_jsonl(
     # third pass â€” materialise explicit IFC relationships from Relationships blocks
     explicit_edge_count = 0
     _before = G.number_of_edges()
-    for node_id, rels in deferred_relationships:
-        _add_explicit_relationships(G, node_id, rels, node_id_by_gid)
+    for dataset_key, node_id, rels in deferred_relationships:
+        _add_explicit_relationships(
+            G,
+            node_id,
+            rels,
+            dataset_key,
+            node_id_by_gid_by_dataset.get(dataset_key, {}),
+            namespaced_ids=namespaced_ids,
+        )
     explicit_edge_count = G.number_of_edges() - _before
     if explicit_edge_count:
         LOG.info("Added %d explicit IFC relationship edge(s)", explicit_edge_count)
+
+    G.graph["datasets"] = sorted(set(dataset_keys))
 
     LOG.info(
         "Graph built: %d nodes, %d edges", G.number_of_nodes(), G.number_of_edges()
@@ -1029,7 +1148,7 @@ def add_spatial_adjacency(
     meshes: list[
         tuple[list[tuple[float, float, float]], list[tuple[int, int, int]]] | None
     ] = []
-    element_gids: list[str | None] = []
+    element_refs: list[tuple[str, str, str] | None] = []
 
     for n, d in G.nodes(data=True):
         if d.get("class_") in {"IfcBuilding", "IfcProject", "IfcBuildingStorey"}:
@@ -1049,7 +1168,11 @@ def add_spatial_adjacency(
         bboxes.append(bbox)
         meshes.append(d.get("mesh"))
         gid = (d.get("properties") or {}).get("GlobalId")
-        element_gids.append(gid if isinstance(gid, str) else None)
+        dataset_key = d.get("dataset")
+        if isinstance(gid, str) and isinstance(dataset_key, str):
+            element_refs.append((n, dataset_key, gid))
+        else:
+            element_refs.append(None)
 
     if threshold is None:
         threshold = compute_adjacency_threshold(positions)
@@ -1078,8 +1201,9 @@ def add_spatial_adjacency(
                         seen_pairs.add(pair)
         candidate_pairs = sorted(seen_pairs)
 
-    occ_shape_by_gid = _get_occ_shape_index(
-        G, [gid for gid in element_gids if isinstance(gid, str)]
+    occ_shape_by_node_id = _get_occ_shape_index(
+        G,
+        [ref for ref in element_refs if ref is not None],
     )
 
     for i, j in candidate_pairs:
@@ -1091,8 +1215,8 @@ def add_spatial_adjacency(
         bbox_b = bboxes[j]
         mesh_a = meshes[i]
         mesh_b = meshes[j]
-        gid_a = element_gids[i]
-        gid_b = element_gids[j]
+        element_ref_a = element_refs[i]
+        element_ref_b = element_refs[j]
 
         distance_method = "centroid"
         d: float
@@ -1101,9 +1225,9 @@ def add_spatial_adjacency(
         shape_distance: float | None = None
         shape_a = None
         shape_b = None
-        if isinstance(gid_a, str) and isinstance(gid_b, str):
-            shape_a = occ_shape_by_gid.get(gid_a)
-            shape_b = occ_shape_by_gid.get(gid_b)
+        if element_ref_a is not None and element_ref_b is not None:
+            shape_a = occ_shape_by_node_id.get(node_a)
+            shape_b = occ_shape_by_node_id.get(node_b)
             if shape_a is not None and shape_b is not None:
                 shape_distance = _compute_shape_min_distance(
                     shape_a,
@@ -1134,7 +1258,7 @@ def add_spatial_adjacency(
                 "distance_method": distance_method,
                 "source": "heuristic",
             }
-            if isinstance(gid_a, str) and isinstance(gid_b, str):
+            if element_ref_a is not None and element_ref_b is not None:
                 if shape_a is not None and shape_b is not None:
                     metrics = _compute_common_metrics(shape_a, shape_b)
                     if metrics is not None:
@@ -1177,7 +1301,7 @@ def add_topology_facts(G: nx.DiGraph | nx.MultiDiGraph) -> None:
 
     element_nodes: list[str] = []
     element_bboxes: list[tuple] = []
-    element_gids: list[str] = []
+    element_refs: list[tuple[str, str, str]] = []
     element_footprints: list[list[tuple[float, float]] | None] = []
 
     for n, d in G.nodes(data=True):
@@ -1187,11 +1311,12 @@ def add_topology_facts(G: nx.DiGraph | nx.MultiDiGraph) -> None:
         if bbox is None:
             continue
         gid = (d.get("properties") or {}).get("GlobalId")
-        if not isinstance(gid, str) or not gid:
+        dataset_key = d.get("dataset")
+        if not isinstance(gid, str) or not gid or not isinstance(dataset_key, str):
             continue
         element_nodes.append(n)
         element_bboxes.append(bbox)
-        element_gids.append(gid)
+        element_refs.append((n, dataset_key, gid))
         footprint = d.get("footprint_polygon")
         if isinstance(footprint, list) and len(footprint) >= 3:
             parsed = []
@@ -1204,15 +1329,15 @@ def add_topology_facts(G: nx.DiGraph | nx.MultiDiGraph) -> None:
         else:
             element_footprints.append(None)
 
-    occ_shape_by_gid = _get_occ_shape_index(G, element_gids)
+    occ_shape_by_node_id = _get_occ_shape_index(G, element_refs)
 
     for i, a in enumerate(element_nodes):
         bbox_a = element_bboxes[i]
-        gid_a = element_gids[i]
+        node_ref_a = element_refs[i]
         for j in range(i + 1, len(element_nodes)):
             b = element_nodes[j]
             bbox_b = element_bboxes[j]
-            gid_b = element_gids[j]
+            node_ref_b = element_refs[j]
             footprint_a = element_footprints[i]
             footprint_b = element_footprints[j]
 
@@ -1243,8 +1368,8 @@ def add_topology_facts(G: nx.DiGraph | nx.MultiDiGraph) -> None:
                 )
 
             # Prefer exact OCC mesh boolean metrics when available.
-            shape_a = occ_shape_by_gid.get(gid_a)
-            shape_b = occ_shape_by_gid.get(gid_b)
+            shape_a = occ_shape_by_node_id.get(node_ref_a[0])
+            shape_b = occ_shape_by_node_id.get(node_ref_b[0])
             if shape_a is not None and shape_b is not None:
                 metrics = _compute_common_metrics(shape_a, shape_b)
                 if metrics is not None:

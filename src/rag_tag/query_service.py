@@ -29,6 +29,16 @@ def find_sqlite_dbs() -> list[Path]:
     return candidates
 
 
+def find_graph_datasets() -> list[str]:
+    project_root = find_project_root(Path(__file__).resolve().parent)
+    if project_root is None:
+        return []
+    out_dir = project_root / "output"
+    if not out_dir.exists():
+        return []
+    return sorted(path.stem for path in out_dir.glob("*.jsonl"))
+
+
 def load_graph(
     dataset: str | None = None,
     payload_mode: str | None = None,
@@ -45,6 +55,30 @@ def load_graph(
     from rag_tag.parser.jsonl_to_graph import build_graph  # noqa: PLC0415
 
     return build_graph(dataset=dataset, payload_mode=payload_mode)
+
+
+def _available_graph_datasets(graph: nx.DiGraph | None) -> list[str]:
+    if graph is not None:
+        raw = graph.graph.get("datasets")
+        if isinstance(raw, list) and all(isinstance(item, str) for item in raw):
+            return sorted(raw)
+    return find_graph_datasets()
+
+
+def _require_explicit_graph_dataset(
+    graph: nx.DiGraph | None,
+    graph_dataset: str | None,
+) -> None:
+    if graph_dataset:
+        return
+    datasets = _available_graph_datasets(graph)
+    if len(datasets) <= 1:
+        return
+    raise ValueError(
+        "Multiple graph datasets are available "
+        f"({', '.join(datasets)}). Pass --graph-dataset <stem> "
+        "or --db output/<stem>.db."
+    )
 
 
 def _resolve_context_db_path(
@@ -236,6 +270,8 @@ def execute_query(
         if decision.route == "sql":
             result = execute_sql_query(decision, db_paths)
             return {"result": result, "graph": graph, "agent": agent}
+
+        _require_explicit_graph_dataset(graph, graph_dataset)
 
         # Resolve the DB path for graph context if not provided by the caller.
         resolved_context_db = context_db or _resolve_context_db_path(

@@ -87,6 +87,9 @@ _LEVEL_STOP_WORDS = re.compile(
     r"|on|in|of|the|a|an"
     r"|structure|building|house|model|project)\b"
 )
+_BUILDING_CONTEXT_RE = re.compile(
+    r"\b(?:in|inside|within|of)\s+the\s+(?:building|house|structure|model|project)\b"
+)
 
 
 def route_question_rule(question: str) -> RouteDecision:
@@ -103,12 +106,13 @@ def route_question_rule(question: str) -> RouteDecision:
     if _has_property_cues(q_lower):
         return RouteDecision("graph", "Property/constraint cue detected", None)
 
-    ifc_classes = _detect_ifc_classes(q)
+    level_like = _detect_level_like(q_lower)
+    suppressed_spans = _suppressed_class_alias_spans(q_lower)
+    ifc_classes = _detect_ifc_classes(q, ignored_spans=suppressed_spans)
     if len(ifc_classes) > 1:
         return RouteDecision("graph", "Multiple IFC classes mentioned", None)
 
     ifc_class = ifc_classes[0] if ifc_classes else None
-    level_like = _detect_level_like(q_lower)
 
     if ifc_class is None and not _mentions_generic_elements(q_lower):
         return RouteDecision("graph", "SQL intent without class", None)
@@ -152,7 +156,11 @@ def _detect_ifc_class(question: str) -> str | None:
     return classes[0] if classes else None
 
 
-def _detect_ifc_classes(question: str) -> list[str]:
+def _detect_ifc_classes(
+    question: str,
+    *,
+    ignored_spans: list[tuple[int, int]] | None = None,
+) -> list[str]:
     matches: list[tuple[int, str]] = []
     for match in _IFC_CLASS_RE.finditer(question):
         matches.append((match.start(), normalize_ifc_class(match.group(0))))
@@ -160,6 +168,8 @@ def _detect_ifc_classes(question: str) -> list[str]:
     question_lower = question.lower()
     for term, ifc_class in CLASS_ALIASES.items():
         for match in re.finditer(rf"\b{re.escape(term)}\b", question_lower):
+            if _span_is_ignored(match.span(), ignored_spans):
+                continue
             matches.append((match.start(), ifc_class))
 
     matches.sort(key=lambda item: item[0])
@@ -170,32 +180,61 @@ def _detect_ifc_classes(question: str) -> list[str]:
     return ordered
 
 
-def _detect_level_like(question_lower: str) -> str | None:
-    if any(
-        p in question_lower
-        for p in (
-            "on the structure",
-            "in the structure",
-            "in the building",
-            "in the house",
-            "of the building",
-            "of the house",
-        )
+def _span_is_ignored(
+    span: tuple[int, int], ignored_spans: list[tuple[int, int]] | None
+) -> bool:
+    if not ignored_spans:
+        return False
+    start, end = span
+    return any(
+        ignore_start <= start and end <= ignore_end
+        for ignore_start, ignore_end in ignored_spans
+    )
+
+
+def _suppressed_class_alias_spans(question_lower: str) -> list[tuple[int, int]]:
+    spans: list[tuple[int, int]] = []
+
+    for pattern in (
+        re.compile(r"\bground\s+floor\b"),
+        re.compile(r"\bground\s+level\b"),
+        re.compile(r"\bbasement(?:\s+[a-z0-9._-]+)?\b"),
+        _BUILDING_CONTEXT_RE,
     ):
+        spans.extend(match.span() for match in pattern.finditer(question_lower))
+
+    match = _LEVEL_RE.search(question_lower)
+    if match:
+        raw = match.group(2).strip()
+        trimmed = _LEVEL_STOP_WORDS.split(raw)[0].strip()
+        if trimmed:
+            spans.append((match.start(1), match.start(2) + len(trimmed)))
+
+    spans.sort()
+    return spans
+
+
+def _detect_level_like(question_lower: str) -> str | None:
+    if _BUILDING_CONTEXT_RE.search(question_lower):
         return None
     if "ground floor" in question_lower:
         return "ground floor"
     if "ground level" in question_lower:
-        return "ground level"
+        return "ground floor"
     if "basement" in question_lower:
         return "basement"
 
     match = _LEVEL_RE.search(question_lower)
     if not match:
         return None
+    level_kind = match.group(1).strip().lower()
     raw = match.group(2).strip()
     raw = _LEVEL_STOP_WORDS.split(raw)[0].strip()
-    return raw or None
+    if not raw:
+        return None
+    if level_kind in {"storey", "story", "floor"}:
+        return f"level {raw}"
+    return f"{level_kind} {raw}"
 
 
 def _mentions_generic_elements(question_lower: str) -> bool:

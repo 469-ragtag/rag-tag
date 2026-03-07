@@ -41,6 +41,7 @@ rag-tag-refresh-ifc43-rdf = "rag_tag.cli.refresh_bsdd_ifc43_rdf:main"
 [dependency-groups]
 dev = [
     "pre-commit>=3.7",
+    "pytest>=8.3",
     "ruff>=0.9",
 ]
 
