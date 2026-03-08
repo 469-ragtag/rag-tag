@@ -264,7 +264,7 @@ def execute_graph_query(
     agent: GraphAgent,
     decision: RouteDecision,
     *,
-    max_steps: int = 15,
+    max_steps: int = 20,
 ) -> dict[str, Any]:
     """Execute graph query via agent.
 
@@ -297,7 +297,7 @@ def execute_query(
     context_db: Path | None = None,
     payload_mode: str | None = None,
     strict_sql: bool = False,
-    graph_max_steps: int = 15,
+    graph_max_steps: int = 20,
 ) -> dict[str, Any]:
     """Execute a query through the full pipeline (routing + execution).
 

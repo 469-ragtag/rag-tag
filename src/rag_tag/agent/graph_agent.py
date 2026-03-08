@@ -386,7 +386,7 @@ class GraphAgent:
         question: str,
         graph: nx.DiGraph,
         *,
-        max_steps: int = 15,
+        max_steps: int = 20,
         trace: object | None = None,
         run_id: str | None = None,
     ) -> dict[str, object]:
