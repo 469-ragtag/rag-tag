@@ -9,12 +9,18 @@ import re
 import networkx as nx
 from pydantic_ai import Agent, ModelRetry, RunContext, UnexpectedModelBehavior
 from pydantic_ai.exceptions import ModelHTTPError, UsageLimitExceeded
+from pydantic_ai.output import ToolOutput
 from pydantic_ai.usage import UsageLimits
 
 from rag_tag.llm.pydantic_ai import get_agent_model
 
 from .graph_tools import register_graph_tools
-from .models import GraphAnswer, was_normalized_from_plain_text
+from .models import (
+    GraphAnswer,
+    RecoveryKind,
+    recovery_kind,
+    was_normalized_from_plain_text,
+)
 
 _logger = logging.getLogger(__name__)
 
@@ -359,6 +365,15 @@ _SCHEMA_CORRECTION_HINT = (
     'Example: {"answer": "There are 5 walls.", "data": null, "warning": null}'
 )
 
+_FINAL_RESULT_TOOL = ToolOutput(
+    GraphAnswer,
+    name="final_result",
+    description=(
+        "Return the final graph answer as one JSON object with answer, optional "
+        "data, and optional warning."
+    ),
+)
+
 
 class GraphAgent:
     """Graph agent using PydanticAI with tool calling."""
@@ -376,7 +391,7 @@ class GraphAgent:
         self._agent: Agent[nx.DiGraph, GraphAnswer] = Agent(
             model,
             deps_type=nx.DiGraph,
-            output_type=GraphAnswer,
+            output_type=_FINAL_RESULT_TOOL,
             system_prompt=SYSTEM_PROMPT,
             retries=2,
             # Extra retries specifically for output schema validation.
@@ -418,6 +433,17 @@ class GraphAgent:
                     "Validation error: you replied with plain assistant text "
                     "instead of calling final_result. Re-emit the same answer "
                     "through the final_result tool with a single JSON object."
+                )
+            if recovery_kind(output) in {
+                RecoveryKind.LIST_WRAPPER,
+                RecoveryKind.TOOL_ENVELOPE,
+                RecoveryKind.TOOL_CALLS_WRAPPER,
+            }:
+                raise ModelRetry(
+                    f"{_SCHEMA_CORRECTION_HINT}\n"
+                    "Validation error: you returned a wrapped tool payload. "
+                    "Call final_result directly with the JSON object only, not a "
+                    "list or tool-call envelope."
                 )
             return output
 
