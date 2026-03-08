@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from rag_tag.ifc_class_taxonomy import expand_ifc_class_filter
+from rag_tag.level_normalization import canonicalize_level
 from rag_tag.router import SqlRequest
 
 
@@ -13,30 +14,49 @@ class SqlQueryError(RuntimeError):
     """Raised when SQL execution or configuration fails."""
 
 
+def _has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    for row in rows:
+        if isinstance(row, sqlite3.Row):
+            if str(row["name"]).lower() == column.lower():
+                return True
+            continue
+        if len(row) > 1 and str(row[1]).lower() == column.lower():
+            return True
+    return False
+
+
 def query_ifc_sql(db_path: Path, request: SqlRequest) -> dict[str, Any]:
     if not db_path.exists():
         raise SqlQueryError(f"SQLite database not found: {db_path}")
-
-    where_clauses: list[str] = []
-    params: list[object] = []
-    resolved_ifc_classes = expand_ifc_class_filter(request.ifc_class)
-
-    if resolved_ifc_classes:
-        placeholders = ", ".join("?" for _ in resolved_ifc_classes)
-        where_clauses.append(f"ifc_class IN ({placeholders})")
-        params.extend(resolved_ifc_classes)
-    if request.level_like:
-        where_clauses.append("LOWER(level) LIKE ?")
-        params.append(f"%{request.level_like.lower()}%")
-
-    where_sql = ""
-    if where_clauses:
-        where_sql = " WHERE " + " AND ".join(where_clauses)
 
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
 
     try:
+        where_clauses: list[str] = []
+        params: list[object] = []
+        resolved_ifc_classes = expand_ifc_class_filter(request.ifc_class)
+        resolved_level = canonicalize_level(request.level_like)
+        has_level_key = _has_column(conn, "elements", "level_key")
+
+        if resolved_ifc_classes:
+            placeholders = ", ".join("?" for _ in resolved_ifc_classes)
+            where_clauses.append(f"ifc_class IN ({placeholders})")
+            params.extend(resolved_ifc_classes)
+        if resolved_level:
+            if not has_level_key:
+                raise SqlQueryError(
+                    "Database schema missing 'level_key' column. "
+                    "Rebuild SQLite files with: uv run rag-tag-jsonl-to-sql"
+                )
+            where_clauses.append("level_key = ?")
+            params.append(resolved_level)
+
+        where_sql = ""
+        if where_clauses:
+            where_sql = " WHERE " + " AND ".join(where_clauses)
+
         if request.intent == "count":
             query = f"SELECT COUNT(*) AS count FROM elements{where_sql}"
             row = conn.execute(query, params).fetchone()
@@ -88,6 +108,8 @@ def query_ifc_sql(db_path: Path, request: SqlRequest) -> dict[str, Any]:
             }
 
         raise SqlQueryError(f"Unsupported SQL intent: {request.intent}")
+    except sqlite3.Error as exc:
+        raise SqlQueryError(f"SQL execution failed for {db_path.name}: {exc}") from exc
     finally:
         conn.close()
 
@@ -99,6 +121,9 @@ def _filters_payload(
     payload.pop("limit", None)
     if resolved_ifc_classes:
         payload["resolved_ifc_classes"] = list(resolved_ifc_classes)
+    resolved_level = canonicalize_level(request.level_like)
+    if resolved_level:
+        payload["resolved_level"] = resolved_level
     return payload
 
 
