@@ -145,7 +145,8 @@ def _print_sql_result(decision: RouteDecision, db_path: Path | None) -> None:
         print(f"SQL error: {exc}")
         return
 
-    summary = payload.get("summary")
+    data = payload.get("data") if isinstance(payload, dict) else None
+    summary = data.get("summary") if isinstance(data, dict) else None
     if summary:
         print(f"SQL summary: {summary}")
     else:

@@ -72,8 +72,8 @@ def _resolve_graph_dataset(
     1. Explicit ``--graph-dataset`` flag  → return as-is.
     2. Single ``--db`` / auto-detected DB → use the DB file stem so the graph
        file matches the loaded SQL database.
-    3. No constraint at all              → return None so ``build_graph``
-       loads **all** .jsonl files in output/ (the safe, inclusive default).
+    3. No constraint at all              → return None so graph-query execution
+       can require an explicit dataset when multiple datasets are present.
     """
     if graph_dataset:
         return graph_dataset
@@ -119,8 +119,9 @@ def main() -> int:
         help=(
             "Dataset stem for graph files (<project>/output/<stem>.jsonl). "
             "Overrides --db stem inference. "
-            "When omitted and no single DB is selected, all .jsonl files "
-            "in output/ are loaded."
+            "When omitted, the selected DB stem is used if available. "
+            "If multiple graph datasets exist, graph queries require either "
+            "--graph-dataset or --db output/<stem>.db."
         ),
     )
     ap.add_argument(
@@ -128,6 +129,12 @@ def main() -> int:
         action="store_true",
         default=False,
         help="Enable Logfire observability for PydanticAI agents.",
+    )
+    ap.add_argument(
+        "--strict-sql",
+        action="store_true",
+        default=False,
+        help="Fail closed if any SQL database query fails during merged SQL execution.",
     )
     ap.add_argument(
         "--tui",
@@ -214,6 +221,7 @@ def main() -> int:
                 graph_dataset=graph_dataset,
                 context_db=resolved_db_path,
                 payload_mode=graph_payload_mode,
+                strict_sql=args.strict_sql,
             )
 
             # Extract components

@@ -21,6 +21,7 @@ from rag_tag.ifc_graph_tool import query_ifc_graph, sanitize_properties_for_llm
 
 # Minimum rapidfuzz WRatio score (0-100) to accept a fuzzy class normalisation.
 _CLASS_FUZZY_THRESHOLD = 72
+_TYPE_INTENT_TERMS = ("type", "family", "template", "style", "kind")
 
 
 # ---------------------------------------------------------------------------
@@ -54,6 +55,19 @@ def _normalize_class_fuzzy(class_input: str, G: nx.DiGraph) -> tuple[str | None,
     )
 
 
+def _class_is_type_like(class_name: str | None) -> bool:
+    """Return True when *class_name* denotes an IFC type object."""
+    if not class_name:
+        return False
+    return class_name.endswith("Type") or class_name == "IfcTypeObject"
+
+
+def _query_has_type_intent(query: str) -> bool:
+    """Return True when the user text explicitly asks about a type/family."""
+    query_terms = {term for term in query.lower().replace("-", " ").split() if term}
+    return any(term in query_terms for term in _TYPE_INTENT_TERMS)
+
+
 def _fuzzy_find_nodes_impl(
     G: nx.DiGraph,
     query: str,
@@ -66,6 +80,8 @@ def _fuzzy_find_nodes_impl(
     Returns a standard envelope dict (status/data/error).
     """
     results: list[dict[str, Any]] = []
+    query_has_type_intent = _query_has_type_intent(query)
+
     for node_id, data in G.nodes(data=True):
         if class_filter is not None:
             if str(data.get("class_", "")).lower() != class_filter.lower():
@@ -92,14 +108,22 @@ def _fuzzy_find_nodes_impl(
             (fuzz.WRatio(query, c) for c in candidates if c and c != "None"),
             default=0.0,
         )
+        adjusted_score = best_score
+        class_name = str(data.get("class_", ""))
 
-        if best_score >= min_score:
+        if class_filter is None and _class_is_type_like(class_name):
+            if query_has_type_intent:
+                adjusted_score += 8.0
+            else:
+                adjusted_score -= 8.0
+
+        if adjusted_score >= min_score:
             results.append(
                 {
                     "id": node_id,
                     "label": data.get("label"),
                     "class_": data.get("class_"),
-                    "score": round(best_score, 1),
+                    "score": round(adjusted_score, 1),
                     "properties": sanitize_properties_for_llm(props),
                     "payload": None,
                 }
