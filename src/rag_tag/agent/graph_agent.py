@@ -14,7 +14,7 @@ from pydantic_ai.usage import UsageLimits
 from rag_tag.llm.pydantic_ai import get_agent_model
 
 from .graph_tools import register_graph_tools
-from .models import GraphAnswer
+from .models import GraphAnswer, was_normalized_from_plain_text
 
 _logger = logging.getLogger(__name__)
 
@@ -38,6 +38,10 @@ You do not know facts unless a tool returns them. Never invent IFC classes,
 IDs, properties, counts, paths, or relationships. For complex questions, do
 multi-hop reasoning explicitly: identify anchors, inspect evidence, branch to
 follow-up tools, verify ambiguous results, then synthesize.
+
+CRITICAL: your final response must be a `final_result` tool call, not plain
+assistant text. Do not output markdown, prose paragraphs, bullet lists, or a
+JSON code block directly to the user channel.
 
 ---
 
@@ -136,6 +140,8 @@ Tool node payloads use:
     and natural-language phrases
   - use first when the user mentions a named place/object rather than an exact
     IFC class
+  - when the query does not explicitly ask for a type/family, occurrence
+    elements are usually the better primary anchor than `...Type` nodes
 
 - `find_nodes(class_?, property_filters?)`
   - exact class/property lookup
@@ -248,6 +254,8 @@ Examples: "What type is this door?", "Which doors share the same type?"
 2. Use `traverse(..., relation="typed_by")` to reach the type object.
 3. Use `get_element_properties` on the occurrence and/or type if you need type
    details or `TypeName` verification.
+4. If the user asked for the physical object itself, keep the occurrence as the
+   main subject and use the type only as supporting evidence.
 
 ### D. System/zone/classification questions
 
@@ -312,6 +320,24 @@ when the question is clearly answerable in principle.
 
 Never output a list wrapper, markdown code block, XML, or a raw tool-call
 envelope.
+
+## 9. Final Result Tool Contract
+
+When you are done reasoning, your next step is to call `final_result`.
+
+Correct pattern:
+- call `final_result` with a single JSON object like:
+  `{"answer": "The plumbing wall length is 3800 mm.",`
+  ` "data": {"element_id": "Element::..."}, "warning": null}`
+
+Incorrect patterns:
+- plain assistant text such as `The answer is ...`
+- fenced JSON like ```json {...} ```
+- a list wrapper like `[{...}]`
+- a tool-call envelope containing `tool_name`, `tool_call_id`, or `parameters`
+
+If you have enough evidence, stop reasoning and call `final_result`
+immediately. Do not restate the answer outside the tool call first.
 """.strip()
 
 # ---------------------------------------------------------------------------
@@ -321,6 +347,8 @@ envelope.
 # Precise schema reminder embedded in ModelRetry messages so the model
 # receives actionable correction guidance within the same run_sync call.
 _SCHEMA_CORRECTION_HINT = (
+    "Do NOT reply with plain assistant text. Your next response must be the "
+    "final_result tool call only.\n"
     "final_result MUST be called with a single JSON object — "
     "NO list/array wrapper, NO tool-call envelope "
     "(tool_call_id / tool_name / parameters are NOT output fields).\n"
@@ -363,21 +391,33 @@ class GraphAgent:
         def _validate_answer_shape(
             ctx: RunContext[nx.DiGraph], output: GraphAnswer
         ) -> GraphAnswer:
-            """Raise ModelRetry with precise schema guidance for empty answers.
+            """Raise ModelRetry with precise schema guidance for malformed final output.
 
             By the time this validator runs, ``GraphAnswer._normalize_tool_wrapper``
-            has already unwrapped any list/envelope malformed shapes.  This
-            validator catches the residual case where the model produced a
-            technically-valid ``GraphAnswer`` but left ``answer`` empty (which
-            Pydantic itself allows for ``str`` fields).  Raising ``ModelRetry``
-            here keeps the correction entirely within the current ``run_sync``
-            call — no external second call is ever made for output-shape repair.
+            has already unwrapped any list/envelope malformed shapes and can also
+            coerce plain assistant prose into a temporary ``GraphAnswer`` shape.
+            This validator catches two residual cases:
+            - the model produced a technically-valid ``GraphAnswer`` but left
+              ``answer`` empty
+            - the model replied with plain assistant text instead of using the
+              `final_result` output tool
+
+            Raising ``ModelRetry`` here keeps the correction entirely within the
+            current ``run_sync`` call — no external second call is ever made for
+            output-shape repair.
             """
             if not (output.answer and output.answer.strip()):
                 raise ModelRetry(
                     f"{_SCHEMA_CORRECTION_HINT}\n"
                     "Validation error: 'answer' field is empty or absent. "
                     "Provide a non-empty plain-text answer string."
+                )
+            if was_normalized_from_plain_text(output):
+                raise ModelRetry(
+                    f"{_SCHEMA_CORRECTION_HINT}\n"
+                    "Validation error: you replied with plain assistant text "
+                    "instead of calling final_result. Re-emit the same answer "
+                    "through the final_result tool with a single JSON object."
                 )
             return output
 

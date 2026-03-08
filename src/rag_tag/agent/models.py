@@ -6,7 +6,7 @@ import json
 import re
 from typing import Any
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 _JSON_CODE_BLOCK_RE = re.compile(
     r"^```(?:json)?\s*(?P<body>[\s\S]*?)\s*```$",
@@ -18,11 +18,24 @@ _FRAMEWORK_ERROR_MARKERS = (
     "invalid json",
     "fix the errors and try again",
 )
+_PLAIN_TEXT_RECOVERY_MARKER = "__normalized_from_plain_text__"
 
 
 def _looks_like_framework_error(text: str) -> bool:
     lowered = text.lower()
     return any(marker in lowered for marker in _FRAMEWORK_ERROR_MARKERS)
+
+
+def _looks_like_natural_language_answer(text: str) -> bool:
+    stripped = text.strip()
+    if not stripped:
+        return False
+    if "\n" in stripped:
+        return True
+    sentence_markers = (". ", "? ", "! ", ": ")
+    if any(marker in stripped for marker in sentence_markers):
+        return True
+    return stripped.startswith(("-", "*"))
 
 
 def _strip_json_code_block(text: str) -> str:
@@ -72,9 +85,12 @@ def _normalize_graph_answer_input(data: Any, *, depth: int = 0) -> Any:
         if _looks_like_framework_error(text):
             return data
 
+        if _looks_like_natural_language_answer(text):
+            return {"answer": text, _PLAIN_TEXT_RECOVERY_MARKER: True}
+
         # Last-resort compatibility path for providers that output plain text
         # instead of a final_result tool-call object.
-        return {"answer": text}
+        return {"answer": text, _PLAIN_TEXT_RECOVERY_MARKER: True}
 
     if isinstance(data, list):
         if len(data) == 1:
@@ -102,6 +118,8 @@ def _normalize_graph_answer_input(data: Any, *, depth: int = 0) -> Any:
 
 class GraphAnswer(BaseModel):
     """Final answer from graph agent with optional data sample."""
+
+    model_config = ConfigDict(extra="allow")
 
     answer: str = Field(description="Natural language answer to the user's question")
     data: dict[str, object] | None = Field(
@@ -137,3 +155,9 @@ class GraphAnswer(BaseModel):
         that Pydantic raises an informative type error.
         """
         return _normalize_graph_answer_input(data)
+
+
+def was_normalized_from_plain_text(answer: GraphAnswer) -> bool:
+    """Return True when a GraphAnswer originated from coerced plain text."""
+    extra = answer.model_extra or {}
+    return bool(extra.get(_PLAIN_TEXT_RECOVERY_MARKER))
