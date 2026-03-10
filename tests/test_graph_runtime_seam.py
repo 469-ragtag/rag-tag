@@ -77,7 +77,9 @@ def test_networkx_backend_query_preserves_parallel_edge_order() -> None:
 
 def test_ensure_graph_context_uses_runtime_state_not_graph_attrs(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr("rag_tag.agent.graph_agent.get_agent_model", TestModel)
     graph = nx.MultiDiGraph()
     runtime = wrap_networkx_graph(graph)
     db_a = tmp_path / "a.db"
