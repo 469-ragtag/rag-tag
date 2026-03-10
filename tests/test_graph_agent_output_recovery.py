@@ -9,6 +9,7 @@ from pydantic_ai.models.test import TestModel
 
 from rag_tag.agent.graph_agent import GraphAgent
 from rag_tag.agent.models import GraphAnswer
+from rag_tag.graph import GraphRuntime, wrap_networkx_graph
 
 
 def _validator(agent: GraphAgent):
@@ -57,7 +58,7 @@ def test_unexpected_model_behavior_salvages_nested_tool_envelope(
             self.body = body
 
     def fake_run_sync(
-        question: str, *, deps: nx.DiGraph, usage_limits: object
+        question: str, *, deps: GraphRuntime, usage_limits: object
     ) -> object:
         raise FakeUnexpectedModelBehavior(
             {
@@ -81,7 +82,7 @@ def test_unexpected_model_behavior_salvages_nested_tool_envelope(
         FakeUnexpectedModelBehavior,
     )
 
-    result = agent.run("question", nx.MultiDiGraph())
+    result = agent.run("question", wrap_networkx_graph(nx.MultiDiGraph()))
 
     assert result["answer"] == "Recovered final answer."
     assert result["data"] == {"length": 3800}

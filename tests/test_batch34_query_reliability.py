@@ -8,6 +8,7 @@ from pydantic_ai.exceptions import UsageLimitExceeded
 from pydantic_ai.models.test import TestModel
 
 from rag_tag.agent.graph_agent import GraphAgent
+from rag_tag.graph import GraphRuntime, wrap_networkx_graph
 from rag_tag.query_service import execute_query, execute_sql_query
 from rag_tag.router.models import RouteDecision, SqlRequest
 
@@ -107,7 +108,7 @@ def test_execute_query_passes_strict_sql(monkeypatch: pytest.MonkeyPatch) -> Non
     bundle = execute_query(
         "Count doors",
         db_paths=[],
-        graph=None,
+        runtime=None,
         agent=None,
         decision=_sql_decision(),
         strict_sql=True,
@@ -122,13 +123,17 @@ def test_graph_agent_honors_usage_limit(monkeypatch: pytest.MonkeyPatch) -> None
     agent = GraphAgent()
 
     def fake_run_sync(
-        question: str, *, deps: nx.DiGraph, usage_limits: object
+        question: str, *, deps: GraphRuntime, usage_limits: object
     ) -> object:
         raise UsageLimitExceeded("tool_calls_limit exceeded")
 
     monkeypatch.setattr(agent._agent, "run_sync", fake_run_sync)
 
-    result = agent.run("question", nx.MultiDiGraph(), max_steps=1)
+    result = agent.run(
+        "question",
+        wrap_networkx_graph(nx.MultiDiGraph()),
+        max_steps=1,
+    )
 
     answer = result.get("answer")
     warning = result.get("warning")

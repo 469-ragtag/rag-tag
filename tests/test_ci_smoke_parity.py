@@ -6,6 +6,7 @@ from typing import Any
 
 import networkx as nx
 
+from rag_tag.graph import GraphRuntime, wrap_networkx_graph
 from rag_tag.graph_contract import (
     CANONICAL_RELATION_SET,
     EXPLICIT_IFC_RELATIONS,
@@ -88,25 +89,25 @@ def test_batch6_dataset_resolution_priority_and_query_propagation(monkeypatch) -
 
     def fake_execute_graph_query(
         question: str,
-        graph: nx.DiGraph,
+        runtime: GraphRuntime,
         agent: object,
         decision: RouteDecision,
         *,
         max_steps: int = 6,
     ) -> dict[str, Any]:
-        captured["graph"] = graph
+        captured["runtime"] = runtime
         return {"route": "graph", "answer": "ok"}
 
     def fake_ensure_graph_context(
-        graph: nx.DiGraph | None,
+        runtime: GraphRuntime | nx.DiGraph | None,
         agent: object | None,
         debug_llm_io: bool,
         graph_dataset: str | None = None,
         db_path: Path | None = None,
         payload_mode: str | None = None,
-    ) -> tuple[nx.DiGraph, object]:
+    ) -> tuple[GraphRuntime, object]:
         captured["graph_dataset"] = graph_dataset
-        return nx.DiGraph(), object()
+        return wrap_networkx_graph(nx.DiGraph()), object()
 
     monkeypatch.setattr(
         "rag_tag.query_service.execute_graph_query", fake_execute_graph_query

@@ -8,6 +8,7 @@ from typing import Any
 import networkx as nx
 
 from rag_tag.agent import GraphAgent
+from rag_tag.graph import GraphRuntime, ensure_graph_runtime, load_graph_runtime
 from rag_tag.ifc_sql_tool import SqlQueryError, query_ifc_sql
 from rag_tag.paths import find_project_root
 from rag_tag.router import RouteDecision, route_question
@@ -42,8 +43,8 @@ def find_graph_datasets() -> list[str]:
 def load_graph(
     dataset: str | None = None,
     payload_mode: str | None = None,
-) -> nx.DiGraph:
-    """Build the NetworkX graph from JSONL output files.
+) -> GraphRuntime:
+    """Build the graph runtime from JSONL output files.
 
     Args:
         dataset: JSONL stem to load (e.g. ``"Building-Architecture"``).
@@ -52,26 +53,28 @@ def load_graph(
             When ``None``, the ``GRAPH_PAYLOAD_MODE`` env var is used,
             defaulting to ``"full"`` if unset.
     """
-    from rag_tag.parser.jsonl_to_graph import build_graph  # noqa: PLC0415
-
-    return build_graph(dataset=dataset, payload_mode=payload_mode)
+    return load_graph_runtime(dataset, payload_mode=payload_mode)
 
 
-def _available_graph_datasets(graph: nx.DiGraph | None) -> list[str]:
-    if graph is not None:
-        raw = graph.graph.get("datasets")
+def _available_graph_datasets(
+    runtime: GraphRuntime | nx.DiGraph | nx.MultiDiGraph | None,
+) -> list[str]:
+    if isinstance(runtime, GraphRuntime):
+        return sorted(runtime.selected_datasets)
+    if runtime is not None:
+        raw = runtime.graph.get("datasets")
         if isinstance(raw, list) and all(isinstance(item, str) for item in raw):
             return sorted(raw)
     return find_graph_datasets()
 
 
 def _require_explicit_graph_dataset(
-    graph: nx.DiGraph | None,
+    runtime: GraphRuntime | nx.DiGraph | nx.MultiDiGraph | None,
     graph_dataset: str | None,
 ) -> None:
     if graph_dataset:
         return
-    datasets = _available_graph_datasets(graph)
+    datasets = _available_graph_datasets(runtime)
     if len(datasets) <= 1:
         return
     raise ValueError(
@@ -260,7 +263,7 @@ def _sql_error(
 
 def execute_graph_query(
     question: str,
-    graph: nx.DiGraph,
+    runtime: GraphRuntime,
     agent: GraphAgent,
     decision: RouteDecision,
     *,
@@ -270,14 +273,14 @@ def execute_graph_query(
 
     Args:
         question: User question
-        graph: NetworkX graph
+        runtime: Graph runtime
         agent: Graph agent instance
         decision: Routing decision
 
     Returns:
         Result dict with answer, data, or error
     """
-    agent_result = agent.run(question, graph, max_steps=max_steps)
+    agent_result = agent.run(question, runtime, max_steps=max_steps)
     return {
         "route": "graph",
         "decision": decision.reason,
@@ -288,7 +291,7 @@ def execute_graph_query(
 def execute_query(
     question: str,
     db_paths: list[Path],
-    graph: nx.DiGraph | None,
+    runtime: GraphRuntime | nx.DiGraph | nx.MultiDiGraph | None,
     agent: GraphAgent | None,
     *,
     decision: RouteDecision | None = None,
@@ -322,7 +325,7 @@ def execute_query(
 
     Returns:
         Result dict with answer, route, decision, data, or error.
-        Also returns updated graph and agent if they were loaded/created.
+        Also returns updated runtime and agent if they were loaded/created.
     """
     try:
         if decision is None:
@@ -330,119 +333,64 @@ def execute_query(
 
         if decision.route == "sql":
             result = execute_sql_query(decision, db_paths, strict_sql=strict_sql)
-            return {"result": result, "graph": graph, "agent": agent}
+            return {"result": result, "runtime": runtime, "agent": agent}
 
-        _require_explicit_graph_dataset(graph, graph_dataset)
+        _require_explicit_graph_dataset(runtime, graph_dataset)
 
         # Resolve the DB path for graph context if not provided by the caller.
         resolved_context_db = context_db or _resolve_context_db_path(
             db_paths, graph_dataset
         )
 
-        # Graph route
-        # Keep backward compatibility with existing helper call sites and
-        # lightweight monkeypatched checks: only pass db_path when we actually
-        # resolved one.
-        if resolved_context_db is None and payload_mode is None:
-            graph, agent = _ensure_graph_context(
-                graph,
-                agent,
-                debug_llm_io,
-                graph_dataset,
-            )
-        elif resolved_context_db is None:
-            graph, agent = _ensure_graph_context(
-                graph,
-                agent,
-                debug_llm_io,
-                graph_dataset,
-                payload_mode=payload_mode,
-            )
-        elif payload_mode is None:
-            graph, agent = _ensure_graph_context(
-                graph,
-                agent,
-                debug_llm_io,
-                graph_dataset,
-                resolved_context_db,
-            )
-        else:
-            graph, agent = _ensure_graph_context(
-                graph,
-                agent,
-                debug_llm_io,
-                graph_dataset,
-                resolved_context_db,
-                payload_mode=payload_mode,
-            )
+        runtime, agent = _ensure_graph_context(
+            runtime,
+            agent,
+            debug_llm_io,
+            graph_dataset,
+            resolved_context_db,
+            payload_mode=payload_mode,
+        )
         result = execute_graph_query(
             question,
-            graph,
+            runtime,
             agent,
             decision,
             max_steps=graph_max_steps,
         )
-        return {"result": result, "graph": graph, "agent": agent}
+        return {"result": result, "runtime": runtime, "agent": agent}
 
     except Exception as exc:
         error_result = _routing_error(decision, str(exc))
-        return {"result": error_result, "graph": graph, "agent": agent}
-
-
-def _normalize_db_path(raw_path: Path | str | None) -> str | None:
-    if raw_path is None:
-        return None
-    return str(Path(raw_path).expanduser().resolve())
-
-
-def _clear_graph_db_caches(graph: nx.DiGraph) -> None:
-    """Clear graph-scoped DB caches after context DB changes."""
-    graph.graph.pop("_property_cache", None)
-    graph.graph.pop("_property_key_cache", None)
-
-    cached_conn = graph.graph.pop("_db_lookup_conn", None)
-    if cached_conn is not None:
-        try:
-            cached_conn.close()
-        except Exception:  # noqa: BLE001
-            pass
+        return {"result": error_result, "runtime": runtime, "agent": agent}
 
 
 def _ensure_graph_context(
-    graph: nx.DiGraph | None,
+    runtime: GraphRuntime | nx.DiGraph | nx.MultiDiGraph | None,
     agent: GraphAgent | None,
     debug_llm_io: bool,
     graph_dataset: str | None = None,
     db_path: Path | None = None,
     payload_mode: str | None = None,
-) -> tuple[nx.DiGraph, GraphAgent]:
-    """Load graph and agent instances when missing; wire DB path into graph context.
+) -> tuple[GraphRuntime, GraphAgent]:
+    """Load runtime and agent instances when missing; wire DB path into runtime context.
 
     Args:
-        graph: Existing graph or None to trigger loading.
+        runtime: Existing runtime or None to trigger loading.
         agent: Existing agent or None to trigger creation.
         debug_llm_io: Passed through to GraphAgent constructor.
-        graph_dataset: JSONL stem for ``build_graph`` (None = all datasets).
-        db_path: DB path to store on ``graph.graph["_db_path"]`` so that
-            ``get_element_properties`` can perform DB-backed lookups.
-            When None, any previously wired context is preserved.
+        graph_dataset: JSONL stem for graph loading.
+        db_path: DB path stored on the runtime for DB-backed lookups.
         payload_mode: Optional graph payload mode override for graph loading.
     """
-    if graph is None:
-        graph = load_graph(graph_dataset, payload_mode=payload_mode)
-    if db_path is not None:
-        # Wire the active DB path into the graph for tool-level property lookup.
-        # When the DB context changes on an existing graph instance, clear
-        # graph-scoped property caches to avoid stale cross-DB reads.
-        resolved_db_path = db_path.expanduser().resolve()
-        previous_db_path = _normalize_db_path(graph.graph.get("_db_path"))
-        current_db_path = str(resolved_db_path)
-        if previous_db_path != current_db_path:
-            _clear_graph_db_caches(graph)
-        graph.graph["_db_path"] = resolved_db_path
+    runtime = ensure_graph_runtime(
+        runtime,
+        graph_dataset=graph_dataset,
+        context_db_path=db_path,
+        payload_mode=payload_mode,
+    )
     if agent is None:
         agent = GraphAgent(debug_llm_io=debug_llm_io)
-    return graph, agent
+    return runtime, agent
 
 
 def _routing_error(decision: RouteDecision | None, message: str) -> dict[str, Any]:

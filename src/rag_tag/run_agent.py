@@ -191,7 +191,7 @@ def main() -> int:
         return 0
 
     # CLI mode (stdin loop)
-    graph = None
+    runtime = None
     agent = None
 
     db_label = ", ".join(p.name for p in db_paths) if db_paths else None
@@ -214,7 +214,7 @@ def main() -> int:
             result_bundle = execute_query(
                 question,
                 db_paths,
-                graph,
+                runtime,
                 agent,
                 decision=decision,
                 debug_llm_io=args.input,
@@ -226,7 +226,7 @@ def main() -> int:
 
             # Extract components
             result = result_bundle["result"]
-            graph = result_bundle.get("graph") or graph
+            runtime = result_bundle.get("runtime") or runtime
             agent = result_bundle.get("agent") or agent
 
         except Exception as exc:
