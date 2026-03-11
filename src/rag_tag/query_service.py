@@ -301,13 +301,15 @@ def execute_query(
     payload_mode: str | None = None,
     strict_sql: bool = False,
     graph_max_steps: int = 20,
+    graph: GraphRuntime | nx.DiGraph | nx.MultiDiGraph | None = None,
 ) -> dict[str, Any]:
     """Execute a query through the full pipeline (routing + execution).
 
     Args:
         question: User question
         db_paths: All SQLite databases to query
-        graph: NetworkX graph (or None, will be loaded if needed)
+        runtime: Graph runtime or raw NetworkX graph (or None, will be loaded if
+            needed)
         agent: Graph agent (or None, will be created if needed)
         decision: Optional precomputed routing decision
         debug_llm_io: Enable debug printing
@@ -322,18 +324,31 @@ def execute_query(
         payload_mode: Optional graph payload mode override (``"full"`` or
             ``"minimal"``).  When None, graph construction uses the
             ``GRAPH_PAYLOAD_MODE`` env var defaulting to ``"full"``.
+        graph: Legacy alias for ``runtime`` preserved for compatibility with
+            older callers.
 
     Returns:
         Result dict with answer, route, decision, data, or error.
         Also returns updated runtime and agent if they were loaded/created.
+        The returned bundle includes both ``runtime`` and legacy ``graph`` keys.
     """
+    if runtime is not None and graph is not None and runtime is not graph:
+        raise ValueError("Pass either runtime or graph, not both.")
+    if runtime is None and graph is not None:
+        runtime = graph
+
     try:
         if decision is None:
             decision = route_question(question, debug_llm_io=debug_llm_io)
 
         if decision.route == "sql":
             result = execute_sql_query(decision, db_paths, strict_sql=strict_sql)
-            return {"result": result, "runtime": runtime, "agent": agent}
+            return {
+                "result": result,
+                "runtime": runtime,
+                "graph": runtime,
+                "agent": agent,
+            }
 
         _require_explicit_graph_dataset(runtime, graph_dataset)
 
@@ -357,11 +372,21 @@ def execute_query(
             decision,
             max_steps=graph_max_steps,
         )
-        return {"result": result, "runtime": runtime, "agent": agent}
+        return {
+            "result": result,
+            "runtime": runtime,
+            "graph": runtime,
+            "agent": agent,
+        }
 
     except Exception as exc:
         error_result = _routing_error(decision, str(exc))
-        return {"result": error_result, "runtime": runtime, "agent": agent}
+        return {
+            "result": error_result,
+            "runtime": runtime,
+            "graph": runtime,
+            "agent": agent,
+        }
 
 
 def _ensure_graph_context(
