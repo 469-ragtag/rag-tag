@@ -129,7 +129,7 @@ def test_graph_query_requires_explicit_dataset_when_multiple_models_present() ->
     bundle = execute_query(
         "Which rooms are adjacent to the kitchen?",
         db_paths=[],
-        graph=graph,
+        runtime=graph,
         agent=None,
         decision=decision,
         graph_dataset=None,

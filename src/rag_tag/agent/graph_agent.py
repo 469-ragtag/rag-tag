@@ -6,12 +6,12 @@ import json
 import logging
 import re
 
-import networkx as nx
 from pydantic_ai import Agent, ModelRetry, RunContext, UnexpectedModelBehavior
 from pydantic_ai.exceptions import ModelHTTPError, UsageLimitExceeded
 from pydantic_ai.output import ToolOutput
 from pydantic_ai.usage import UsageLimits
 
+from rag_tag.graph import GraphRuntime
 from rag_tag.llm.pydantic_ai import get_agent_model
 
 from .graph_tools import register_graph_tools
@@ -388,9 +388,9 @@ class GraphAgent:
         self._debug_llm_io = debug_llm_io
 
         model = get_agent_model()
-        self._agent: Agent[nx.DiGraph, GraphAnswer] = Agent(
+        self._agent: Agent[GraphRuntime, GraphAnswer] = Agent(
             model,
-            deps_type=nx.DiGraph,
+            deps_type=GraphRuntime,
             output_type=_FINAL_RESULT_TOOL,
             system_prompt=SYSTEM_PROMPT,
             retries=2,
@@ -404,7 +404,7 @@ class GraphAgent:
 
         @self._agent.output_validator
         def _validate_answer_shape(
-            ctx: RunContext[nx.DiGraph], output: GraphAnswer
+            ctx: RunContext[GraphRuntime], output: GraphAnswer
         ) -> GraphAnswer:
             """Raise ModelRetry with precise schema guidance for malformed final output.
 
@@ -450,7 +450,7 @@ class GraphAgent:
     def run(
         self,
         question: str,
-        graph: nx.DiGraph,
+        runtime: GraphRuntime,
         *,
         max_steps: int = 20,
         trace: object | None = None,
@@ -460,7 +460,7 @@ class GraphAgent:
 
         Args:
             question: User question.
-            graph: NetworkX graph to query (passed as dependency).
+            runtime: Graph runtime to query (passed as dependency).
             max_steps: Maximum reasoning/tool-call budget for the agent run.
             trace: Ignored (legacy; Logfire used instead).
             run_id: Ignored (legacy; Logfire used instead).
@@ -479,7 +479,7 @@ class GraphAgent:
             try:
                 result = self._agent.run_sync(
                     question,
-                    deps=graph,
+                    deps=runtime,
                     usage_limits=usage_limits,
                 )
                 output = result.output

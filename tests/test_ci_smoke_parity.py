@@ -5,7 +5,9 @@ from pathlib import Path
 from typing import Any
 
 import networkx as nx
+import pytest
 
+from rag_tag.graph import GraphRuntime, wrap_networkx_graph
 from rag_tag.graph_contract import (
     CANONICAL_RELATION_SET,
     EXPLICIT_IFC_RELATIONS,
@@ -88,25 +90,25 @@ def test_batch6_dataset_resolution_priority_and_query_propagation(monkeypatch) -
 
     def fake_execute_graph_query(
         question: str,
-        graph: nx.DiGraph,
+        runtime: GraphRuntime,
         agent: object,
         decision: RouteDecision,
         *,
         max_steps: int = 6,
     ) -> dict[str, Any]:
-        captured["graph"] = graph
+        captured["runtime"] = runtime
         return {"route": "graph", "answer": "ok"}
 
     def fake_ensure_graph_context(
-        graph: nx.DiGraph | None,
+        runtime: GraphRuntime | nx.DiGraph | None,
         agent: object | None,
         debug_llm_io: bool,
         graph_dataset: str | None = None,
         db_path: Path | None = None,
         payload_mode: str | None = None,
-    ) -> tuple[nx.DiGraph, object]:
+    ) -> tuple[GraphRuntime, object]:
         captured["graph_dataset"] = graph_dataset
-        return nx.DiGraph(), object()
+        return wrap_networkx_graph(nx.DiGraph()), object()
 
     monkeypatch.setattr(
         "rag_tag.query_service.execute_graph_query", fake_execute_graph_query
@@ -127,6 +129,77 @@ def test_batch6_dataset_resolution_priority_and_query_propagation(monkeypatch) -
     )
 
     assert captured["graph_dataset"] == "TestDataset"
+
+
+def test_execute_query_accepts_legacy_graph_keyword_and_returns_graph_bundle(
+    monkeypatch,
+) -> None:
+    captured: dict[str, Any] = {}
+    legacy_graph = nx.DiGraph()
+
+    def fake_execute_graph_query(
+        question: str,
+        runtime: GraphRuntime,
+        agent: object,
+        decision: RouteDecision,
+        *,
+        max_steps: int = 20,
+    ) -> dict[str, Any]:
+        captured["runtime"] = runtime
+        return {"route": "graph", "answer": "ok"}
+
+    def fake_ensure_graph_context(
+        runtime: GraphRuntime | nx.DiGraph | None,
+        agent: object | None,
+        debug_llm_io: bool,
+        graph_dataset: str | None = None,
+        db_path: Path | None = None,
+        payload_mode: str | None = None,
+    ) -> tuple[GraphRuntime, object]:
+        resolved_runtime = (
+            runtime
+            if isinstance(runtime, GraphRuntime)
+            else wrap_networkx_graph(runtime or nx.DiGraph())
+        )
+        captured["ensure_runtime"] = resolved_runtime
+        return resolved_runtime, object()
+
+    monkeypatch.setattr(
+        "rag_tag.query_service.execute_graph_query", fake_execute_graph_query
+    )
+    monkeypatch.setattr(
+        "rag_tag.query_service._ensure_graph_context",
+        fake_ensure_graph_context,
+    )
+
+    decision = RouteDecision(route="graph", reason="test", sql_request=None)
+    bundle = execute_query(
+        "dummy question",
+        [],
+        None,
+        None,
+        decision=decision,
+        graph_dataset="TestDataset",
+        graph=legacy_graph,
+    )
+
+    assert captured["runtime"] is captured["ensure_runtime"]
+    assert bundle["runtime"] is captured["ensure_runtime"]
+    assert bundle["graph"] is bundle["runtime"]
+
+
+def test_execute_query_rejects_conflicting_graph_and_runtime_inputs() -> None:
+    decision = RouteDecision(route="graph", reason="test", sql_request=None)
+
+    with pytest.raises(ValueError, match="Pass either runtime or graph, not both."):
+        execute_query(
+            "dummy question",
+            [],
+            wrap_networkx_graph(nx.DiGraph()),
+            None,
+            decision=decision,
+            graph=nx.DiGraph(),
+        )
 
 
 def test_batch6_graph_payload_and_hierarchy_parity(tmp_path: Path) -> None:
