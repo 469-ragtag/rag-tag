@@ -300,8 +300,9 @@ def register_graph_tools(agent: Any) -> None:
         top_k: int = 10,
     ) -> dict[str, Any]:
         """Fuzzy-search for graph nodes by matching query against common text fields."""
+        graph = ctx.deps.get_networkx_graph()
         return _fuzzy_find_nodes_impl(
-            ctx.deps, query, class_filter=class_filter, top_k=top_k
+            graph, query, class_filter=class_filter, top_k=top_k
         )
 
     @agent.tool
@@ -378,7 +379,7 @@ def register_graph_tools(agent: Any) -> None:
         params: dict[str, Any] = {"start": start, "depth": depth}
         if relation:
             params["relation"] = relation
-        return query_ifc_graph(ctx.deps, "traverse", params)
+        return ctx.deps.query("traverse", params)
 
     @agent.tool
     def spatial_query(
@@ -391,7 +392,7 @@ def register_graph_tools(agent: Any) -> None:
         params: dict[str, Any] = {"near": near, "max_distance": max_distance}
         if class_:
             params["class"] = class_
-        return query_ifc_graph(ctx.deps, "spatial_query", params)
+        return ctx.deps.query("spatial_query", params)
 
     @agent.tool
     def get_elements_in_storey(
@@ -427,7 +428,7 @@ def register_graph_tools(agent: Any) -> None:
         class_: str,
     ) -> dict[str, Any]:
         """Find all elements of a specific IFC class."""
-        return query_ifc_graph(ctx.deps, "find_elements_by_class", {"class": class_})
+        return ctx.deps.query("find_elements_by_class", {"class": class_})
 
     @agent.tool
     def get_adjacent_elements(
@@ -435,9 +436,7 @@ def register_graph_tools(agent: Any) -> None:
         element_id: str,
     ) -> dict[str, Any]:
         """Get elements spatially adjacent to a given element."""
-        return query_ifc_graph(
-            ctx.deps, "get_adjacent_elements", {"element_id": element_id}
-        )
+        return ctx.deps.query("get_adjacent_elements", {"element_id": element_id})
 
     @agent.tool
     def get_topology_neighbors(
@@ -451,8 +450,7 @@ def register_graph_tools(agent: Any) -> None:
         intersects_3d, touches_surface, space_bounded_by, bounds_space,
         path_connected_to.
         """
-        return query_ifc_graph(
-            ctx.deps,
+        return ctx.deps.query(
             "get_topology_neighbors",
             {"element_id": element_id, "relation": relation},
         )
@@ -463,9 +461,7 @@ def register_graph_tools(agent: Any) -> None:
         element_id: str,
     ) -> dict[str, Any]:
         """Get mesh-informed 3D intersection neighbors for an element."""
-        return query_ifc_graph(
-            ctx.deps, "get_intersections_3d", {"element_id": element_id}
-        )
+        return ctx.deps.query("get_intersections_3d", {"element_id": element_id})
 
     @agent.tool
     def find_elements_above(
@@ -477,7 +473,7 @@ def register_graph_tools(agent: Any) -> None:
         params: dict[str, Any] = {"element_id": element_id}
         if max_gap is not None:
             params["max_gap"] = max_gap
-        return query_ifc_graph(ctx.deps, "find_elements_above", params)
+        return ctx.deps.query("find_elements_above", params)
 
     @agent.tool
     def find_elements_below(
@@ -489,7 +485,7 @@ def register_graph_tools(agent: Any) -> None:
         params: dict[str, Any] = {"element_id": element_id}
         if max_gap is not None:
             params["max_gap"] = max_gap
-        return query_ifc_graph(ctx.deps, "find_elements_below", params)
+        return ctx.deps.query("find_elements_below", params)
 
     @agent.tool
     def list_property_keys(
@@ -505,7 +501,7 @@ def register_graph_tools(agent: Any) -> None:
         params: dict[str, Any] = {"sample_values": sample_values}
         if class_ is not None:
             params["class"] = class_
-        return query_ifc_graph(ctx.deps, "list_property_keys", params)
+        return ctx.deps.query("list_property_keys", params)
 
     @agent.tool
     def get_element_properties(
@@ -520,6 +516,4 @@ def register_graph_tools(agent: Any) -> None:
         Returns the full, unredacted property envelope including PropertySets,
         Quantities, and flat properties.
         """
-        return query_ifc_graph(
-            ctx.deps, "get_element_properties", {"element_id": element_id}
-        )
+        return ctx.deps.query("get_element_properties", {"element_id": element_id})

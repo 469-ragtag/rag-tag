@@ -284,6 +284,7 @@ def execute_graph_query(
     return {
         "route": "graph",
         "decision": decision.reason,
+        "runtime": runtime.backend_name,
         **agent_result,
     }
 
@@ -293,6 +294,7 @@ def execute_query(
     db_paths: list[Path],
     runtime: GraphRuntime | nx.DiGraph | nx.MultiDiGraph | None,
     agent: GraphAgent | None,
+    runtime: GraphRuntime | None = None,
     *,
     decision: RouteDecision | None = None,
     debug_llm_io: bool = False,
