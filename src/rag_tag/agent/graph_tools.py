@@ -10,32 +10,17 @@ without changing public action names or response contracts.
 
 from __future__ import annotations
 
-from collections import deque
 from typing import Any
 
 from pydantic_ai import RunContext
 from rapidfuzz import fuzz, process
 
-from rag_tag.graph import GraphRuntime, get_networkx_graph
-from rag_tag.graph.payloads import sanitize_properties_for_llm
-from rag_tag.graph_contract import make_error_envelope, normalize_relation_name
-from rag_tag.ifc_graph_tool import query_ifc_graph
+from rag_tag.graph import GraphRuntime
+from rag_tag.graph_contract import make_error_envelope
+from rag_tag.ifc_graph_tool import sanitize_properties_for_llm
 
 # Minimum rapidfuzz WRatio score (0-100) to accept a fuzzy class normalisation.
 _CLASS_FUZZY_THRESHOLD = 72
-_TYPE_INTENT_TERMS = ("type", "family", "template", "style", "kind")
-_CONTAINER_CLASSES = {
-    "IfcProject",
-    "IfcSite",
-    "IfcBuilding",
-    "IfcBuildingStorey",
-    "IfcSpace",
-    "IfcZone",
-    "IfcSpatialZone",
-    "IfcTypeObject",
-}
-_ZONE_CONTAINER_CLASSES = {"IfcZone", "IfcSpatialZone"}
-_CONTAINER_EDGE_RELATIONS = {"contains", "aggregates"}
 
 
 # ---------------------------------------------------------------------------
@@ -43,25 +28,19 @@ _CONTAINER_EDGE_RELATIONS = {"contains", "aggregates"}
 # ---------------------------------------------------------------------------
 
 
-def _all_class_values(runtime: GraphRuntime) -> list[str]:
+def _all_class_values(G) -> list[str]:
     """Return sorted unique IFC class_ values present in the graph."""
-    graph = get_networkx_graph(runtime)
-    return sorted(
-        {str(d["class_"]) for _, d in graph.nodes(data=True) if d.get("class_")}
-    )
+    return sorted({str(d["class_"]) for _, d in G.nodes(data=True) if d.get("class_")})
 
 
-def _normalize_class_fuzzy(
-    class_input: str,
-    runtime: GraphRuntime,
-) -> tuple[str | None, float]:
+def _normalize_class_fuzzy(class_input: str, G) -> tuple[str | None, float]:
     """Match a user-supplied class name against actual class_ values in the graph.
 
     Returns:
         (best_match, score) where best_match is None if no match exceeds the
         threshold.
     """
-    known = _all_class_values(runtime)
+    known = _all_class_values(G)
     if not known:
         return None, 0.0
     result = process.extractOne(class_input, known, scorer=fuzz.WRatio)
@@ -75,21 +54,8 @@ def _normalize_class_fuzzy(
     )
 
 
-def _class_is_type_like(class_name: str | None) -> bool:
-    """Return True when *class_name* denotes an IFC type object."""
-    if not class_name:
-        return False
-    return class_name.endswith("Type") or class_name == "IfcTypeObject"
-
-
-def _query_has_type_intent(query: str) -> bool:
-    """Return True when the user text explicitly asks about a type/family."""
-    query_terms = {term for term in query.lower().replace("-", " ").split() if term}
-    return any(term in query_terms for term in _TYPE_INTENT_TERMS)
-
-
 def _fuzzy_find_nodes_impl(
-    runtime: GraphRuntime,
+    G,
     query: str,
     class_filter: str | None = None,
     top_k: int = 10,
@@ -99,10 +65,7 @@ def _fuzzy_find_nodes_impl(
 
     Returns a standard envelope dict (status/data/error).
     """
-    G = get_networkx_graph(runtime)
     results: list[dict[str, Any]] = []
-    query_has_type_intent = _query_has_type_intent(query)
-
     for node_id, data in G.nodes(data=True):
         if class_filter is not None:
             if str(data.get("class_", "")).lower() != class_filter.lower():
@@ -129,22 +92,14 @@ def _fuzzy_find_nodes_impl(
             (fuzz.WRatio(query, c) for c in candidates if c and c != "None"),
             default=0.0,
         )
-        adjusted_score = best_score
-        class_name = str(data.get("class_", ""))
 
-        if class_filter is None and _class_is_type_like(class_name):
-            if query_has_type_intent:
-                adjusted_score += 8.0
-            else:
-                adjusted_score -= 8.0
-
-        if adjusted_score >= min_score:
+        if best_score >= min_score:
             results.append(
                 {
                     "id": node_id,
                     "label": data.get("label"),
                     "class_": data.get("class_"),
-                    "score": round(adjusted_score, 1),
+                    "score": round(best_score, 1),
                     "properties": sanitize_properties_for_llm(props),
                     "payload": None,
                 }
@@ -161,123 +116,6 @@ def _fuzzy_find_nodes_impl(
         },
         "error": None,
     }
-
-
-def _find_container_elements_excluding_impl(
-    runtime: GraphRuntime,
-    container_id: str,
-    exclude_container_ids: list[str] | None = None,
-    depth: int = 4,
-) -> dict[str, Any]:
-    """Return non-container members of one container minus excluded containers."""
-    graph = get_networkx_graph(runtime)
-
-    if container_id not in graph:
-        return make_error_envelope(
-            f"Container not found: {container_id}",
-            "not_found",
-        )
-
-    exclude_container_ids = exclude_container_ids or []
-    missing = [node_id for node_id in exclude_container_ids if node_id not in graph]
-    if missing:
-        return make_error_envelope(
-            f"Excluded container not found: {missing[0]}",
-            "not_found",
-        )
-
-    if depth < 1:
-        return make_error_envelope(
-            "Depth must be at least 1.",
-            "invalid",
-        )
-
-    included = _collect_container_descendants(graph, [container_id], depth=depth)
-    excluded = _collect_container_descendants(
-        graph,
-        exclude_container_ids,
-        depth=depth,
-    )
-    element_ids = sorted(
-        included - excluded,
-        key=lambda node_id: (
-            str(graph.nodes[node_id].get("label") or ""),
-            str(node_id),
-        ),
-    )
-
-    return {
-        "status": "ok",
-        "data": {
-            "container_id": container_id,
-            "exclude_container_ids": exclude_container_ids,
-            "count": len(element_ids),
-            "elements": [
-                {
-                    "id": node_id,
-                    "label": graph.nodes[node_id].get("label"),
-                    "class_": graph.nodes[node_id].get("class_"),
-                    "properties": sanitize_properties_for_llm(
-                        graph.nodes[node_id].get("properties") or {}
-                    ),
-                    "payload": None,
-                }
-                for node_id in element_ids
-            ],
-        },
-        "error": None,
-    }
-
-
-def _collect_container_descendants(
-    graph: Any,
-    start_ids: list[str],
-    *,
-    depth: int,
-) -> set[str]:
-    """Collect non-container descendants reachable via container membership edges."""
-    if not start_ids:
-        return set()
-
-    seen = set(start_ids)
-    descendants: set[str] = set()
-    queue: deque[tuple[str, int]] = deque((node_id, 0) for node_id in start_ids)
-
-    while queue:
-        node_id, node_depth = queue.popleft()
-        if node_depth >= depth:
-            continue
-
-        if graph.nodes[node_id].get("class_") in _ZONE_CONTAINER_CLASSES:
-            for source_id, _target, edge_data in graph.in_edges(node_id, data=True):
-                relation = normalize_relation_name(edge_data.get("relation"))
-                if relation != "in_zone":
-                    continue
-                if source_id in seen:
-                    continue
-
-                seen.add(source_id)
-                queue.append((source_id, node_depth + 1))
-
-                if graph.nodes[source_id].get("class_") in _CONTAINER_CLASSES:
-                    continue
-                descendants.add(source_id)
-
-        for _src, target_id, edge_data in graph.out_edges(node_id, data=True):
-            relation = normalize_relation_name(edge_data.get("relation"))
-            if relation not in _CONTAINER_EDGE_RELATIONS:
-                continue
-            if target_id in seen:
-                continue
-
-            seen.add(target_id)
-            queue.append((target_id, node_depth + 1))
-
-            if graph.nodes[target_id].get("class_") in _CONTAINER_CLASSES:
-                continue
-            descendants.add(target_id)
-
-    return descendants
 
 
 # ---------------------------------------------------------------------------
@@ -300,8 +138,9 @@ def register_graph_tools(agent: Any) -> None:
         top_k: int = 10,
     ) -> dict[str, Any]:
         """Fuzzy-search for graph nodes by matching query against common text fields."""
+        graph = ctx.deps.get_networkx_graph()
         return _fuzzy_find_nodes_impl(
-            ctx.deps, query, class_filter=class_filter, top_k=top_k
+            graph, query, class_filter=class_filter, top_k=top_k
         )
 
     @agent.tool
@@ -326,13 +165,15 @@ def register_graph_tools(agent: Any) -> None:
         A missing key never matches an expected value of ``None``; filters only
         pass when the key is explicitly present with the expected value.
         """
+        G = ctx.deps.get_networkx_graph()
+
         # Multi-word input means descriptive name, not IFC class.
         if class_ and " " in class_.strip():
-            return _fuzzy_find_nodes_impl(ctx.deps, class_, top_k=20)
+            return _fuzzy_find_nodes_impl(G, class_, top_k=20)
 
         normalized_class = class_
         if class_:
-            best, _score = _normalize_class_fuzzy(class_, ctx.deps)
+            best, _score = _normalize_class_fuzzy(class_, G)
             if best is not None:
                 normalized_class = best
 
@@ -342,7 +183,7 @@ def register_graph_tools(agent: Any) -> None:
         if property_filters:
             params["property_filters"] = property_filters
 
-        result = query_ifc_graph(ctx.deps, "find_nodes", params)
+        result = ctx.deps.query("find_nodes", params)
 
         # Exact match empty -> fuzzy fallback over names/descriptions.
         if (
@@ -378,7 +219,7 @@ def register_graph_tools(agent: Any) -> None:
         params: dict[str, Any] = {"start": start, "depth": depth}
         if relation:
             params["relation"] = relation
-        return query_ifc_graph(ctx.deps, "traverse", params)
+        return ctx.deps.query("traverse", params)
 
     @agent.tool
     def spatial_query(
@@ -391,7 +232,7 @@ def register_graph_tools(agent: Any) -> None:
         params: dict[str, Any] = {"near": near, "max_distance": max_distance}
         if class_:
             params["class"] = class_
-        return query_ifc_graph(ctx.deps, "spatial_query", params)
+        return ctx.deps.query("spatial_query", params)
 
     @agent.tool
     def get_elements_in_storey(
@@ -399,27 +240,7 @@ def register_graph_tools(agent: Any) -> None:
         storey: str,
     ) -> dict[str, Any]:
         """Get all non-container elements in a specific storey/level."""
-        return query_ifc_graph(ctx.deps, "get_elements_in_storey", {"storey": storey})
-
-    @agent.tool
-    def find_container_elements_excluding(
-        ctx: RunContext[GraphRuntime],
-        container_id: str,
-        exclude_container_ids: list[str] | None = None,
-        depth: int = 4,
-    ) -> dict[str, Any]:
-        """List elements inside one container while excluding other containers.
-
-        Use this for questions like:
-        - elements in a building but not in a given storey
-        - elements in a space/zone/building excluding another container subset
-        """
-        return _find_container_elements_excluding_impl(
-            ctx.deps,
-            container_id,
-            exclude_container_ids=exclude_container_ids,
-            depth=depth,
-        )
+        return ctx.deps.query("get_elements_in_storey", {"storey": storey})
 
     @agent.tool
     def find_elements_by_class(
@@ -427,7 +248,7 @@ def register_graph_tools(agent: Any) -> None:
         class_: str,
     ) -> dict[str, Any]:
         """Find all elements of a specific IFC class."""
-        return query_ifc_graph(ctx.deps, "find_elements_by_class", {"class": class_})
+        return ctx.deps.query("find_elements_by_class", {"class": class_})
 
     @agent.tool
     def get_adjacent_elements(
@@ -435,9 +256,7 @@ def register_graph_tools(agent: Any) -> None:
         element_id: str,
     ) -> dict[str, Any]:
         """Get elements spatially adjacent to a given element."""
-        return query_ifc_graph(
-            ctx.deps, "get_adjacent_elements", {"element_id": element_id}
-        )
+        return ctx.deps.query("get_adjacent_elements", {"element_id": element_id})
 
     @agent.tool
     def get_topology_neighbors(
@@ -451,8 +270,7 @@ def register_graph_tools(agent: Any) -> None:
         intersects_3d, touches_surface, space_bounded_by, bounds_space,
         path_connected_to.
         """
-        return query_ifc_graph(
-            ctx.deps,
+        return ctx.deps.query(
             "get_topology_neighbors",
             {"element_id": element_id, "relation": relation},
         )
@@ -463,9 +281,7 @@ def register_graph_tools(agent: Any) -> None:
         element_id: str,
     ) -> dict[str, Any]:
         """Get mesh-informed 3D intersection neighbors for an element."""
-        return query_ifc_graph(
-            ctx.deps, "get_intersections_3d", {"element_id": element_id}
-        )
+        return ctx.deps.query("get_intersections_3d", {"element_id": element_id})
 
     @agent.tool
     def find_elements_above(
@@ -477,7 +293,7 @@ def register_graph_tools(agent: Any) -> None:
         params: dict[str, Any] = {"element_id": element_id}
         if max_gap is not None:
             params["max_gap"] = max_gap
-        return query_ifc_graph(ctx.deps, "find_elements_above", params)
+        return ctx.deps.query("find_elements_above", params)
 
     @agent.tool
     def find_elements_below(
@@ -489,7 +305,7 @@ def register_graph_tools(agent: Any) -> None:
         params: dict[str, Any] = {"element_id": element_id}
         if max_gap is not None:
             params["max_gap"] = max_gap
-        return query_ifc_graph(ctx.deps, "find_elements_below", params)
+        return ctx.deps.query("find_elements_below", params)
 
     @agent.tool
     def list_property_keys(
@@ -505,7 +321,7 @@ def register_graph_tools(agent: Any) -> None:
         params: dict[str, Any] = {"sample_values": sample_values}
         if class_ is not None:
             params["class"] = class_
-        return query_ifc_graph(ctx.deps, "list_property_keys", params)
+        return ctx.deps.query("list_property_keys", params)
 
     @agent.tool
     def get_element_properties(
@@ -520,6 +336,4 @@ def register_graph_tools(agent: Any) -> None:
         Returns the full, unredacted property envelope including PropertySets,
         Quantities, and flat properties.
         """
-        return query_ifc_graph(
-            ctx.deps, "get_element_properties", {"element_id": element_id}
-        )
+        return ctx.deps.query("get_element_properties", {"element_id": element_id})

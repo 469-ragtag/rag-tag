@@ -1,5 +1,5 @@
 """Graph backend implementations."""
 
-from .networkx_backend import NetworkXGraphBackend
+from __future__ import annotations
 
-__all__ = ["NetworkXGraphBackend"]
+__all__ = []

@@ -18,13 +18,13 @@ dependencies = [
     "cohere>=5.20.4",
     "google-genai>=1.3.0",
     "ifcopenshell>=0.8.4.post1",
+    "neo4j>=6.1.0",
     "networkx>=3.6.1",
     "numpy>=2.4.1",
     "pydantic>=2.7.0",
     "plotly>=6.5.2",
-    "PyYAML>=6.0.2",
     "python-dotenv>=1.2.1",
-    "pydantic-ai-slim[google,cohere,openai]>=0.0.1",
+    "pydantic-ai-slim[google,cohere]>=0.0.1",
     "rapidfuzz>=3.0.0",
     "logfire>=2.0.0",
     "textual>=1.0.0",
@@ -36,13 +36,14 @@ rag-tag = "rag_tag.run_agent:main"
 rag-tag-ifc-to-jsonl = "rag_tag.parser.ifc_to_jsonl:main"
 rag-tag-jsonl-to-sql = "rag_tag.parser.jsonl_to_sql:main"
 rag-tag-jsonl-to-graph = "rag_tag.parser.jsonl_to_graph:main"
+rag-tag-jsonl-to-neo4j = "rag_tag.parser.jsonl_to_neo4j:main"
 rag-tag-generate-ontology-map = "rag_tag.cli.generate_ontology_map:main"
 rag-tag-refresh-ifc43-rdf = "rag_tag.cli.refresh_bsdd_ifc43_rdf:main"
 
 [dependency-groups]
 dev = [
     "pre-commit>=3.7",
-    "pytest>=8.3",
+    "pytest>=8.0",
     "ruff>=0.9",
 ]
 

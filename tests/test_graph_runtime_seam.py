@@ -1,151 +1,82 @@
 from __future__ import annotations
 
-from pathlib import Path
-from types import SimpleNamespace
-
 import networkx as nx
-import pytest
-from pydantic_ai.models.test import TestModel
 
-from rag_tag.agent.graph_agent import GraphAgent
-from rag_tag.agent.graph_tools import _fuzzy_find_nodes_impl
-from rag_tag.agent.models import GraphAnswer
-from rag_tag.graph import GraphRuntime, wrap_networkx_graph
-from rag_tag.ifc_graph_tool import query_ifc_graph
-from rag_tag.query_service import _ensure_graph_context
+from rag_tag.graph import GraphRuntime
 
 
-def _runtime_graph() -> nx.MultiDiGraph:
-    graph = nx.MultiDiGraph()
-    graph.graph["datasets"] = ["model-a"]
-    graph.graph["_payload_mode"] = "minimal"
-    graph.add_node(
-        "Element::wall-occ",
-        label="plumbing wall",
+def _build_graph() -> nx.MultiDiGraph:
+    G = nx.MultiDiGraph()
+    G.add_node(
+        "IfcBuilding",
+        label="Building A",
+        class_="IfcBuilding",
+        properties={"GlobalId": "BLDG1", "Name": "Building A"},
+        payload={},
+    )
+    G.add_node(
+        "Storey::S1",
+        label="Level 0",
+        class_="IfcBuildingStorey",
+        properties={"GlobalId": "S1", "Name": "Level 0"},
+        payload={},
+    )
+    G.add_node(
+        "Element::W1",
+        label="Wall 1",
         class_="IfcWall",
-        properties={"Name": "plumbing wall", "GlobalId": "wall-occ"},
-        payload={"Name": "plumbing wall", "IfcType": "IfcWall", "ClassRaw": "IfcWall"},
+        properties={"GlobalId": "W1", "Name": "Wall 1"},
+        payload={"PropertySets": {"Official": {}, "Custom": {}}},
     )
-    graph.add_node(
-        "Element::wall-type",
-        label="plumbing wall",
-        class_="IfcWallType",
-        properties={"Name": "plumbing wall", "GlobalId": "wall-type"},
-        payload={
-            "Name": "plumbing wall",
-            "IfcType": "IfcWallType",
-            "ClassRaw": "IfcWallType",
-        },
-    )
-    return graph
-
-
-def test_query_ifc_graph_keeps_raw_networkx_compatibility() -> None:
-    graph = nx.MultiDiGraph()
-    graph.add_node("Element::A", label="A", class_="IfcWall", properties={})
-    graph.add_node("Element::B", label="B", class_="IfcDoor", properties={})
-    graph.add_edge("Element::A", "Element::B", relation="hosts", source="ifc")
-    graph.add_edge("Element::A", "Element::B", relation="typed_by", source="ifc")
-
-    result = query_ifc_graph(graph, "traverse", {"start": "Element::A", "depth": 1})
-
-    assert result["status"] == "ok"
-    assert [item["relation"] for item in result["data"]["results"]] == [
-        "hosts",
-        "typed_by",
-    ]
-
-
-def test_networkx_backend_query_preserves_parallel_edge_order() -> None:
-    graph = nx.MultiDiGraph()
-    graph.add_node("Element::A", label="A", class_="IfcWall", properties={})
-    graph.add_node("Element::B", label="B", class_="IfcDoor", properties={})
-    graph.add_edge("Element::A", "Element::B", relation="hosts", source="ifc")
-    graph.add_edge("Element::A", "Element::B", relation="typed_by", source="ifc")
-    runtime = wrap_networkx_graph(graph)
-
-    result = runtime.backend.query(
-        runtime, "traverse", {"start": "Element::A", "depth": 1}, "llm"
+    G.add_node(
+        "Element::D1",
+        label="Door 1",
+        class_="IfcDoor",
+        properties={"GlobalId": "D1", "Name": "Door 1"},
+        payload={"PropertySets": {"Official": {}, "Custom": {}}},
     )
 
-    assert result["status"] == "ok"
-    assert [item["relation"] for item in result["data"]["results"]] == [
-        "hosts",
-        "typed_by",
-    ]
-
-
-def test_ensure_graph_context_uses_runtime_state_not_graph_attrs(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr("rag_tag.agent.graph_agent.get_agent_model", TestModel)
-    graph = nx.MultiDiGraph()
-    runtime = wrap_networkx_graph(graph)
-    db_a = tmp_path / "a.db"
-    db_b = tmp_path / "b.db"
-    db_a.write_text("", encoding="utf-8")
-    db_b.write_text("", encoding="utf-8")
-
-    runtime, agent = _ensure_graph_context(
-        runtime,
-        agent=None,
-        debug_llm_io=False,
-        graph_dataset="model-a",
-        db_path=db_a,
-        payload_mode="minimal",
+    G.add_edge("IfcBuilding", "Storey::S1", relation="contains")
+    G.add_edge("Storey::S1", "IfcBuilding", relation="contained_in")
+    G.add_edge("Storey::S1", "Element::W1", relation="contains")
+    G.add_edge("Element::W1", "Storey::S1", relation="contained_in")
+    G.add_edge("Storey::S1", "Element::D1", relation="contains")
+    G.add_edge("Element::D1", "Storey::S1", relation="contained_in")
+    G.add_edge(
+        "Element::W1",
+        "Element::D1",
+        relation="adjacent_to",
+        distance=0.5,
+        source="heuristic",
     )
-
-    assert agent is not None
-    assert runtime.context_db_path == db_a.resolve()
-    assert runtime.payload_mode == "minimal"
-    assert runtime.selected_datasets == ["model-a"]
-    assert "_db_path" not in graph.graph
-
-    runtime.caches["property_cache"] = {("db", "node"): {"payload": {}}}
-    runtime.caches["property_key_cache"] = {("db", ""): {"Name": ["Wall"]}}
-
-    runtime, _ = _ensure_graph_context(
-        runtime,
-        agent=agent,
-        debug_llm_io=False,
-        graph_dataset="model-a",
-        db_path=db_b,
+    G.add_edge(
+        "Element::D1",
+        "Element::W1",
+        relation="adjacent_to",
+        distance=0.5,
+        source="heuristic",
     )
-
-    assert runtime.context_db_path == db_b.resolve()
-    assert "property_cache" not in runtime.caches
-    assert "property_key_cache" not in runtime.caches
-    assert "_db_path" not in graph.graph
+    return G
 
 
-def test_graph_agent_deps_and_tool_helpers_use_graph_runtime(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr("rag_tag.agent.graph_agent.get_agent_model", TestModel)
-    agent = GraphAgent()
-    runtime = wrap_networkx_graph(_runtime_graph())
+def test_graph_runtime_networkx_smoke() -> None:
+    G = _build_graph()
+    runtime = GraphRuntime.from_env(graph=G)
 
-    captured: dict[str, object] = {}
+    res_storey = runtime.query("get_elements_in_storey", {"storey": "Level 0"})
+    assert res_storey["status"] == "ok"
+    assert len(res_storey["data"]["elements"]) == 2
 
-    def fake_run_sync(
-        question: str,
-        *,
-        deps: GraphRuntime,
-        usage_limits: object,
-    ) -> object:
-        captured["deps"] = deps
-        return SimpleNamespace(
-            output=GraphAnswer(answer="Recovered.", data={"ok": True}, warning=None)
-        )
+    res_class = runtime.query("find_elements_by_class", {"class": "IfcWall"})
+    assert res_class["status"] == "ok"
+    assert len(res_class["data"]["elements"]) == 1
 
-    monkeypatch.setattr(agent._agent, "run_sync", fake_run_sync)
+    res_adj = runtime.query("get_adjacent_elements", {"element_id": "Element::W1"})
+    assert res_adj["status"] == "ok"
+    assert len(res_adj["data"]["adjacent"]) >= 1
 
-    result = agent.run("question", runtime)
-
-    assert captured["deps"] is runtime
-    assert result["answer"] == "Recovered."
-
-    fuzzy = _fuzzy_find_nodes_impl(runtime, "plumbing wall")
-    assert fuzzy["status"] == "ok"
-    assert fuzzy["data"]["matches"][0]["id"] == "Element::wall-occ"
+    res_traverse = runtime.query(
+        "traverse", {"start": "Storey::S1", "relation": "contains", "depth": 1}
+    )
+    assert res_traverse["status"] == "ok"
+    assert len(res_traverse["data"]["results"]) == 2
