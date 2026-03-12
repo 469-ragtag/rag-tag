@@ -8,6 +8,7 @@ from typing import Any
 import networkx as nx
 
 from rag_tag.agent import GraphAgent
+from rag_tag.graph import GraphRuntime
 from rag_tag.ifc_sql_tool import SqlQueryError, query_ifc_sql
 from rag_tag.paths import find_project_root
 from rag_tag.router import RouteDecision, route_question
@@ -172,6 +173,7 @@ def execute_graph_query(
     graph: nx.DiGraph,
     agent: GraphAgent,
     decision: RouteDecision,
+    runtime: GraphRuntime,
 ) -> dict[str, Any]:
     """Execute graph query via agent.
 
@@ -184,10 +186,11 @@ def execute_graph_query(
     Returns:
         Result dict with answer, data, or error
     """
-    agent_result = agent.run(question, graph, max_steps=6)
+    agent_result = agent.run(question, runtime, max_steps=6)
     return {
         "route": "graph",
         "decision": decision.reason,
+        "runtime": runtime.backend_name,
         **agent_result,
     }
 
@@ -197,6 +200,7 @@ def execute_query(
     db_paths: list[Path],
     graph: nx.DiGraph | None,
     agent: GraphAgent | None,
+    runtime: GraphRuntime | None = None,
     *,
     decision: RouteDecision | None = None,
     debug_llm_io: bool = False,
@@ -235,7 +239,12 @@ def execute_query(
 
         if decision.route == "sql":
             result = execute_sql_query(decision, db_paths)
-            return {"result": result, "graph": graph, "agent": agent}
+            return {
+                "result": result,
+                "graph": graph,
+                "agent": agent,
+                "runtime": runtime,
+            }
 
         # Resolve the DB path for graph context if not provided by the caller.
         resolved_context_db = context_db or _resolve_context_db_path(
@@ -278,12 +287,24 @@ def execute_query(
                 resolved_context_db,
                 payload_mode=payload_mode,
             )
-        result = execute_graph_query(question, graph, agent, decision)
-        return {"result": result, "graph": graph, "agent": agent}
+        if runtime is None:
+            runtime = GraphRuntime.from_env(graph=graph, db_path=resolved_context_db)
+        result = execute_graph_query(question, graph, agent, decision, runtime)
+        return {
+            "result": result,
+            "graph": graph,
+            "agent": agent,
+            "runtime": runtime,
+        }
 
     except Exception as exc:
         error_result = _routing_error(decision, str(exc))
-        return {"result": error_result, "graph": graph, "agent": agent}
+        return {
+            "result": error_result,
+            "graph": graph,
+            "agent": agent,
+            "runtime": runtime,
+        }
 
 
 def _normalize_db_path(raw_path: Path | str | None) -> str | None:

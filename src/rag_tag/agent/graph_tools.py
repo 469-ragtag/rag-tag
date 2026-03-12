@@ -12,12 +12,12 @@ from __future__ import annotations
 
 from typing import Any
 
-import networkx as nx
 from pydantic_ai import RunContext
 from rapidfuzz import fuzz, process
 
+from rag_tag.graph import GraphRuntime
 from rag_tag.graph_contract import make_error_envelope
-from rag_tag.ifc_graph_tool import query_ifc_graph, sanitize_properties_for_llm
+from rag_tag.ifc_graph_tool import sanitize_properties_for_llm
 
 # Minimum rapidfuzz WRatio score (0-100) to accept a fuzzy class normalisation.
 _CLASS_FUZZY_THRESHOLD = 72
@@ -28,12 +28,12 @@ _CLASS_FUZZY_THRESHOLD = 72
 # ---------------------------------------------------------------------------
 
 
-def _all_class_values(G: nx.DiGraph) -> list[str]:
+def _all_class_values(G) -> list[str]:
     """Return sorted unique IFC class_ values present in the graph."""
     return sorted({str(d["class_"]) for _, d in G.nodes(data=True) if d.get("class_")})
 
 
-def _normalize_class_fuzzy(class_input: str, G: nx.DiGraph) -> tuple[str | None, float]:
+def _normalize_class_fuzzy(class_input: str, G) -> tuple[str | None, float]:
     """Match a user-supplied class name against actual class_ values in the graph.
 
     Returns:
@@ -55,7 +55,7 @@ def _normalize_class_fuzzy(class_input: str, G: nx.DiGraph) -> tuple[str | None,
 
 
 def _fuzzy_find_nodes_impl(
-    G: nx.DiGraph,
+    G,
     query: str,
     class_filter: str | None = None,
     top_k: int = 10,
@@ -132,19 +132,20 @@ def register_graph_tools(agent: Any) -> None:
 
     @agent.tool
     def fuzzy_find_nodes(
-        ctx: RunContext[nx.DiGraph],
+        ctx: RunContext[GraphRuntime],
         query: str,
         class_filter: str | None = None,
         top_k: int = 10,
     ) -> dict[str, Any]:
         """Fuzzy-search for graph nodes by matching query against common text fields."""
+        graph = ctx.deps.get_networkx_graph()
         return _fuzzy_find_nodes_impl(
-            ctx.deps, query, class_filter=class_filter, top_k=top_k
+            graph, query, class_filter=class_filter, top_k=top_k
         )
 
     @agent.tool
     def find_nodes(
-        ctx: RunContext[nx.DiGraph],
+        ctx: RunContext[GraphRuntime],
         class_: str | None = None,
         property_filters: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
@@ -164,7 +165,7 @@ def register_graph_tools(agent: Any) -> None:
         A missing key never matches an expected value of ``None``; filters only
         pass when the key is explicitly present with the expected value.
         """
-        G: nx.DiGraph = ctx.deps
+        G = ctx.deps.get_networkx_graph()
 
         # Multi-word input means descriptive name, not IFC class.
         if class_ and " " in class_.strip():
@@ -182,7 +183,7 @@ def register_graph_tools(agent: Any) -> None:
         if property_filters:
             params["property_filters"] = property_filters
 
-        result = query_ifc_graph(G, "find_nodes", params)
+        result = ctx.deps.query("find_nodes", params)
 
         # Exact match empty -> fuzzy fallback over names/descriptions.
         if (
@@ -204,7 +205,7 @@ def register_graph_tools(agent: Any) -> None:
 
     @agent.tool
     def traverse(
-        ctx: RunContext[nx.DiGraph],
+        ctx: RunContext[GraphRuntime],
         start: str,
         relation: str | None = None,
         depth: int = 1,
@@ -218,11 +219,11 @@ def register_graph_tools(agent: Any) -> None:
         params: dict[str, Any] = {"start": start, "depth": depth}
         if relation:
             params["relation"] = relation
-        return query_ifc_graph(ctx.deps, "traverse", params)
+        return ctx.deps.query("traverse", params)
 
     @agent.tool
     def spatial_query(
-        ctx: RunContext[nx.DiGraph],
+        ctx: RunContext[GraphRuntime],
         near: str,
         max_distance: float,
         class_: str | None = None,
@@ -231,37 +232,35 @@ def register_graph_tools(agent: Any) -> None:
         params: dict[str, Any] = {"near": near, "max_distance": max_distance}
         if class_:
             params["class"] = class_
-        return query_ifc_graph(ctx.deps, "spatial_query", params)
+        return ctx.deps.query("spatial_query", params)
 
     @agent.tool
     def get_elements_in_storey(
-        ctx: RunContext[nx.DiGraph],
+        ctx: RunContext[GraphRuntime],
         storey: str,
     ) -> dict[str, Any]:
         """Get all non-container elements in a specific storey/level."""
-        return query_ifc_graph(ctx.deps, "get_elements_in_storey", {"storey": storey})
+        return ctx.deps.query("get_elements_in_storey", {"storey": storey})
 
     @agent.tool
     def find_elements_by_class(
-        ctx: RunContext[nx.DiGraph],
+        ctx: RunContext[GraphRuntime],
         class_: str,
     ) -> dict[str, Any]:
         """Find all elements of a specific IFC class."""
-        return query_ifc_graph(ctx.deps, "find_elements_by_class", {"class": class_})
+        return ctx.deps.query("find_elements_by_class", {"class": class_})
 
     @agent.tool
     def get_adjacent_elements(
-        ctx: RunContext[nx.DiGraph],
+        ctx: RunContext[GraphRuntime],
         element_id: str,
     ) -> dict[str, Any]:
         """Get elements spatially adjacent to a given element."""
-        return query_ifc_graph(
-            ctx.deps, "get_adjacent_elements", {"element_id": element_id}
-        )
+        return ctx.deps.query("get_adjacent_elements", {"element_id": element_id})
 
     @agent.tool
     def get_topology_neighbors(
-        ctx: RunContext[nx.DiGraph],
+        ctx: RunContext[GraphRuntime],
         element_id: str,
         relation: str,
     ) -> dict[str, Any]:
@@ -271,25 +270,22 @@ def register_graph_tools(agent: Any) -> None:
         intersects_3d, touches_surface, space_bounded_by, bounds_space,
         path_connected_to.
         """
-        return query_ifc_graph(
-            ctx.deps,
+        return ctx.deps.query(
             "get_topology_neighbors",
             {"element_id": element_id, "relation": relation},
         )
 
     @agent.tool
     def get_intersections_3d(
-        ctx: RunContext[nx.DiGraph],
+        ctx: RunContext[GraphRuntime],
         element_id: str,
     ) -> dict[str, Any]:
         """Get mesh-informed 3D intersection neighbors for an element."""
-        return query_ifc_graph(
-            ctx.deps, "get_intersections_3d", {"element_id": element_id}
-        )
+        return ctx.deps.query("get_intersections_3d", {"element_id": element_id})
 
     @agent.tool
     def find_elements_above(
-        ctx: RunContext[nx.DiGraph],
+        ctx: RunContext[GraphRuntime],
         element_id: str,
         max_gap: float | None = None,
     ) -> dict[str, Any]:
@@ -297,11 +293,11 @@ def register_graph_tools(agent: Any) -> None:
         params: dict[str, Any] = {"element_id": element_id}
         if max_gap is not None:
             params["max_gap"] = max_gap
-        return query_ifc_graph(ctx.deps, "find_elements_above", params)
+        return ctx.deps.query("find_elements_above", params)
 
     @agent.tool
     def find_elements_below(
-        ctx: RunContext[nx.DiGraph],
+        ctx: RunContext[GraphRuntime],
         element_id: str,
         max_gap: float | None = None,
     ) -> dict[str, Any]:
@@ -309,11 +305,11 @@ def register_graph_tools(agent: Any) -> None:
         params: dict[str, Any] = {"element_id": element_id}
         if max_gap is not None:
             params["max_gap"] = max_gap
-        return query_ifc_graph(ctx.deps, "find_elements_below", params)
+        return ctx.deps.query("find_elements_below", params)
 
     @agent.tool
     def list_property_keys(
-        ctx: RunContext[nx.DiGraph],
+        ctx: RunContext[GraphRuntime],
         class_: str | None = None,
         sample_values: bool = False,
     ) -> dict[str, Any]:
@@ -325,11 +321,11 @@ def register_graph_tools(agent: Any) -> None:
         params: dict[str, Any] = {"sample_values": sample_values}
         if class_ is not None:
             params["class"] = class_
-        return query_ifc_graph(ctx.deps, "list_property_keys", params)
+        return ctx.deps.query("list_property_keys", params)
 
     @agent.tool
     def get_element_properties(
-        ctx: RunContext[nx.DiGraph],
+        ctx: RunContext[GraphRuntime],
         element_id: str,
     ) -> dict[str, Any]:
         """Fetch ALL properties for a specific element (DB-backed when available).
@@ -340,6 +336,4 @@ def register_graph_tools(agent: Any) -> None:
         Returns the full, unredacted property envelope including PropertySets,
         Quantities, and flat properties.
         """
-        return query_ifc_graph(
-            ctx.deps, "get_element_properties", {"element_id": element_id}
-        )
+        return ctx.deps.query("get_element_properties", {"element_id": element_id})

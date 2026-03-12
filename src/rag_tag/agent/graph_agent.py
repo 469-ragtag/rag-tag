@@ -6,10 +6,10 @@ import json
 import logging
 import re
 
-import networkx as nx
 from pydantic_ai import Agent, ModelRetry, RunContext, UnexpectedModelBehavior
 from pydantic_ai.exceptions import ModelHTTPError
 
+from rag_tag.graph import GraphRuntime
 from rag_tag.llm.pydantic_ai import get_agent_model
 
 from .graph_tools import register_graph_tools
@@ -238,9 +238,9 @@ class GraphAgent:
         self._debug_llm_io = debug_llm_io
 
         model = get_agent_model()
-        self._agent: Agent[nx.DiGraph, GraphAnswer] = Agent(
+        self._agent: Agent[GraphRuntime, GraphAnswer] = Agent(
             model,
-            deps_type=nx.DiGraph,
+            deps_type=GraphRuntime,
             output_type=GraphAnswer,
             system_prompt=SYSTEM_PROMPT,
             retries=2,
@@ -254,7 +254,7 @@ class GraphAgent:
 
         @self._agent.output_validator
         def _validate_answer_shape(
-            ctx: RunContext[nx.DiGraph], output: GraphAnswer
+            ctx: RunContext[GraphRuntime], output: GraphAnswer
         ) -> GraphAnswer:
             """Raise ModelRetry with precise schema guidance for empty answers.
 
@@ -277,7 +277,7 @@ class GraphAgent:
     def run(
         self,
         question: str,
-        graph: nx.DiGraph,
+        runtime: GraphRuntime,
         *,
         max_steps: int = 6,
         trace: object | None = None,
@@ -301,7 +301,7 @@ class GraphAgent:
 
         for attempt in range(_MAX_INVALID_TOOL_RETRIES + 1):
             try:
-                result = self._agent.run_sync(question, deps=graph)
+                result = self._agent.run_sync(question, deps=runtime)
                 output = result.output
                 answer = _sanitize_model_text(output.answer) or ""
                 warning = _sanitize_model_text(output.warning)

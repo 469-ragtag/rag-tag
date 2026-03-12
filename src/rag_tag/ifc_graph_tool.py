@@ -2,12 +2,24 @@ from __future__ import annotations
 
 import logging
 import re
-from collections import OrderedDict, deque
+from collections import deque
 from pathlib import Path
 from typing import Any, Dict, Iterable
 
 import networkx as nx
 
+from rag_tag.graph.properties import (
+    apply_property_filters,
+)
+from rag_tag.graph.properties import (
+    cached_db_lookup as _cached_db_lookup_shared,
+)
+from rag_tag.graph.properties import (
+    collect_dotted_keys_from_sqlite as _collect_dotted_keys_from_sqlite_shared,
+)
+from rag_tag.graph.properties import (
+    merge_db_element_data as _merge_db_element_data_shared,
+)
 from rag_tag.graph_contract import (
     CANONICAL_ACTIONS,
     CANONICAL_RELATION_SET,
@@ -24,10 +36,6 @@ from rag_tag.graph_contract import (
 )
 
 _logger = logging.getLogger(__name__)
-
-# Sentinel: distinguishes "not yet cached" from "cached, result was None".
-_CACHE_MISS = object()
-_PROPERTY_CACHE_MAX_ENTRIES = 2048
 
 LLM_PAYLOAD_MODE = "llm"
 INTERNAL_PAYLOAD_MODE = "internal"
@@ -119,96 +127,8 @@ def _merge_db_element_data(
     node_data: dict[str, Any],
     db_data: dict[str, Any],
 ) -> dict[str, Any]:
-    """Merge DB-sourced element data into in-memory node data.
-
-    DB data is used as a *fill-missing* enrichment source. Existing in-memory
-    values are preserved to avoid degrading richer payload structures.
-
-    Args:
-        node_data: Raw ``G.nodes[node_id]`` dict from the NetworkX graph.
-        db_data: Structured result from ``sql_element_lookup`` with
-            ``properties`` and ``payload`` keys.
-
-    Returns:
-        New dict with merged data (the input dicts are not mutated).
-    """
-
-    def _merge_fill_missing(
-        current: dict[str, Any],
-        incoming: dict[str, Any],
-    ) -> dict[str, Any]:
-        """Recursively merge *incoming* into *current* without clobbering values."""
-        merged_dict: dict[str, Any] = dict(current)
-        for key, incoming_value in incoming.items():
-            if key not in merged_dict or merged_dict[key] is None:
-                merged_dict[key] = incoming_value
-                continue
-
-            existing_value = merged_dict[key]
-            if isinstance(existing_value, dict) and isinstance(incoming_value, dict):
-                merged_dict[key] = _merge_fill_missing(existing_value, incoming_value)
-
-        return merged_dict
-
-    merged: dict[str, Any] = dict(node_data)
-
-    # Merge flat properties without overriding existing non-null graph values.
-    db_props = db_data.get("properties") or {}
-    if isinstance(db_props, dict) and db_props:
-        existing_props: dict[str, Any] = dict(node_data.get("properties") or {})
-        merged["properties"] = _merge_fill_missing(existing_props, db_props)
-
-    # Merge payload sections; DB fills holes but never overwrites richer in-memory
-    # nested content.
-    db_payload = db_data.get("payload") or {}
-    if isinstance(db_payload, dict) and db_payload:
-        existing_payload: dict[str, Any] = dict(node_data.get("payload") or {})
-
-        if "PropertySets" in db_payload:
-            existing_psets: dict[str, Any] = dict(
-                existing_payload.get("PropertySets") or {}
-            )
-            db_psets: dict[str, Any] = db_payload["PropertySets"]
-            if isinstance(db_psets, dict):
-                existing_psets = _merge_fill_missing(existing_psets, db_psets)
-            existing_payload["PropertySets"] = existing_psets
-
-        if "Quantities" in db_payload:
-            existing_qty: dict[str, Any] = dict(
-                existing_payload.get("Quantities") or {}
-            )
-            db_qty: dict[str, Any] = db_payload["Quantities"]
-            if isinstance(db_qty, dict):
-                existing_qty = _merge_fill_missing(existing_qty, db_qty)
-            existing_payload["Quantities"] = existing_qty
-
-        merged["payload"] = existing_payload
-
-    return merged
-
-
-def _get_property_cache(
-    G: nx.DiGraph | nx.MultiDiGraph,
-) -> OrderedDict[tuple[str, str], Any]:
-    """Return or create the session-level property cache stored on the graph.
-
-    The cache lives at ``G.graph["_property_cache"]`` and is keyed by
-    ``(db_path, node_id)`` tuples so entries remain valid when the same graph
-    object is reused with a different DB context.
-
-    Values are DB element data dicts (or ``None`` when not found), with
-    ``_CACHE_MISS`` used as the "not yet fetched" sentinel so that a ``None``
-    result (element absent from DB) is not re-fetched on subsequent calls.
-    """
-    cache_obj = G.graph.get("_property_cache")
-    if isinstance(cache_obj, OrderedDict):
-        return cache_obj
-    if isinstance(cache_obj, dict):
-        cache: OrderedDict[tuple[str, str], Any] = OrderedDict(cache_obj.items())
-    else:
-        cache = OrderedDict()
-    G.graph["_property_cache"] = cache
-    return cache
+    """Merge DB-sourced element data into in-memory node data."""
+    return _merge_db_element_data_shared(node_data, db_data)
 
 
 def _cached_db_lookup(
@@ -218,146 +138,16 @@ def _cached_db_lookup(
     *,
     db_conn: Any | None = None,
 ) -> dict[str, Any] | None:
-    """Look up element data from the SQLite DB with a graph-level result cache.
-
-    Avoids reopening the database for the same element within a single agent
-    session. Cache keys include both DB path and node id, so the same graph
-    object can safely switch DB context without stale property leakage.
-
-    Callers may optionally provide an open ``db_conn`` to reuse one SQLite
-    connection across many lookups in a filter pass.
-
-    Args:
-        G: NetworkX graph with optional ``_property_cache`` graph attribute.
-        node_id: Graph node identifier used as part of the cache key.
-        db_path: Path to the SQLite database file.
-        db_conn: Optional open sqlite connection for pass-level reuse.
-
-    Returns:
-        DB element data dict (``properties`` + ``payload`` keys) or ``None``
-        when the element is not present in the database.
-    """
-    cache = _get_property_cache(G)
-    cache_key = (str(db_path.expanduser().resolve()), node_id)
-    cached = cache.get(cache_key, _CACHE_MISS)
-    if cached is not _CACHE_MISS:
-        cache.move_to_end(cache_key)
-        return cached  # type: ignore[return-value]
-
-    from rag_tag.sql_element_lookup import (  # noqa: PLC0415
-        lookup_element_by_express_id,
-        lookup_element_by_globalid,
-    )
-
-    node_props: dict[str, Any] = (G.nodes.get(node_id) or {}).get("properties") or {}
-    db_data: dict[str, Any] | None = None
-
-    global_id = node_props.get("GlobalId")
-    if global_id:
-        db_data = lookup_element_by_globalid(
-            db_path,
-            str(global_id),
-            conn=db_conn,
-        )
-
-    if db_data is None:
-        express_id_raw = node_props.get("ExpressId")
-        if express_id_raw is not None:
-            try:
-                db_data = lookup_element_by_express_id(
-                    db_path,
-                    int(express_id_raw),
-                    conn=db_conn,
-                )
-            except (TypeError, ValueError):
-                _logger.debug(
-                    "_cached_db_lookup: invalid ExpressId %r for %s",
-                    express_id_raw,
-                    node_id,
-                )
-
-    cache[cache_key] = db_data
-    cache.move_to_end(cache_key)
-    while len(cache) > _PROPERTY_CACHE_MAX_ENTRIES:
-        cache.popitem(last=False)
-    return db_data
-
-
-def _decode_typed_db_value(value: Any) -> Any:
-    """Decode DB value using the shared sql_element_lookup decoder."""
-    from rag_tag.sql_element_lookup import decode_db_value  # noqa: PLC0415
-
-    return decode_db_value(value)
+    """Look up element data from the SQLite DB with a graph-level result cache."""
+    return _cached_db_lookup_shared(G, node_id, db_path, db_conn=db_conn)
 
 
 def _collect_dotted_keys_from_sqlite(
     db_path: Path,
     class_filter: str | None,
 ) -> dict[str, list[Any]]:
-    """Collect dotted PropertySet/Quantity keys from SQLite.
-
-    Returns a mapping of ``dotted_key -> up to 3 sample values``.
-    Any DB/schema/runtime error is handled gracefully by returning an empty map.
-    """
-    if not db_path.exists():
-        return {}
-
-    import sqlite3  # noqa: PLC0415
-
-    where_sql = ""
-    params: tuple[Any, ...] = ()
-    if class_filter:
-        where_sql = " WHERE LOWER(e.ifc_class) = LOWER(?)"
-        params = (class_filter,)
-
-    key_samples: dict[str, list[Any]] = {}
-
-    def _record_sample(key: str, value: Any) -> None:
-        if key not in key_samples:
-            key_samples[key] = []
-        if len(key_samples[key]) < 3:
-            key_samples[key].append(value)
-
-    try:
-        conn = sqlite3.connect(str(db_path))
-        conn.row_factory = sqlite3.Row
-        try:
-            prop_rows = conn.execute(
-                "SELECT p.pset_name, p.property_name, p.value "
-                "FROM properties p "
-                "JOIN elements e ON e.express_id = p.element_id"
-                f"{where_sql}",
-                params,
-            ).fetchall()
-            for row in prop_rows:
-                pset_name = str(row["pset_name"])
-                prop_name = str(row["property_name"])
-                _record_sample(
-                    f"{pset_name}.{prop_name}",
-                    _decode_typed_db_value(row["value"]),
-                )
-
-            qty_rows = conn.execute(
-                "SELECT q.qto_name, q.quantity_name, q.value "
-                "FROM quantities q "
-                "JOIN elements e ON e.express_id = q.element_id"
-                f"{where_sql}",
-                params,
-            ).fetchall()
-            for row in qty_rows:
-                qto_name = str(row["qto_name"])
-                qty_name = str(row["quantity_name"])
-                _record_sample(
-                    f"{qto_name}.{qty_name}",
-                    _decode_typed_db_value(row["value"]),
-                )
-        finally:
-            conn.close()
-    except Exception as exc:  # noqa: BLE001
-        _logger.debug("list_property_keys DB fallback failed (%s): %s", db_path, exc)
-        return {}
-
-    return key_samples
+    """Collect dotted PropertySet/Quantity keys from SQLite."""
+    return _collect_dotted_keys_from_sqlite_shared(db_path, class_filter)
 
 
 def query_ifc_graph(
@@ -468,7 +258,9 @@ def query_ifc_graph(
         if element_id in G:
             if str(element_id).startswith("Element::"):
                 return element_id, None
-            return None, {"error": f"Invalid element_id (not an element): {element_id}"}
+            return None, {
+                "error": f"Invalid element_id (not an element): {element_id}"
+            }
         if not element_id.startswith("Element::"):
             candidate = f"Element::{element_id}"
             if candidate in G:
@@ -626,145 +418,7 @@ def query_ifc_graph(
         *,
         db_conn: Any | None = None,
     ) -> bool:
-        if not filters:
-            return True
-        data = G.nodes[node_id]
-        props = data.get("properties") or {}
-        if not isinstance(props, dict):
-            props = {}
-
-        payload = data.get("payload") or {}
-        if not isinstance(payload, dict):
-            payload = {}
-
-        pset_block = payload.get("PropertySets") or {}
-        if not isinstance(pset_block, dict):
-            pset_block = {}
-
-        # Effective Quantities block — in-memory first; may be enriched below.
-        _effective_quantities: dict[str, Any] = payload.get("Quantities") or {}
-        if not isinstance(_effective_quantities, dict):
-            _effective_quantities = {}
-
-        def _match_flat_property_value(prop_val: Any, expected: Any) -> bool:
-            """Return True when a direct flat property value matches *expected*."""
-            if isinstance(prop_val, list):
-                if isinstance(expected, str):
-                    return expected in prop_val
-                if isinstance(expected, list):
-                    return all(v in prop_val for v in expected)
-                return False
-            return prop_val == expected
-
-        # Minimal payload mode: pset_block will be empty because PropertySets
-        # are not stored in-memory.  If filters require pset/quantity fallback
-        # (dotted key OR flat key not directly matched), enrich from DB.
-        _has_dotted_filter = any("." in k for k in filters)
-        _needs_flat_pset_fallback = any(
-            key not in props or not _match_flat_property_value(props[key], expected)
-            for key, expected in filters.items()
-            if "." not in key
-        )
-
-        if (
-            (_has_dotted_filter or _needs_flat_pset_fallback)
-            and not pset_block
-            and not _effective_quantities
-        ):
-            _db_path_raw: Any = G.graph.get("_db_path")
-            if _db_path_raw is not None:
-                _db_data = _cached_db_lookup(
-                    G,
-                    node_id,
-                    Path(_db_path_raw),
-                    db_conn=db_conn,
-                )
-                if _db_data is not None:
-                    _db_payload: dict[str, Any] = _db_data.get("payload") or {}
-                    if isinstance(_db_payload, dict):
-                        _enriched_psets = _db_payload.get("PropertySets") or {}
-                        if isinstance(_enriched_psets, dict):
-                            pset_block = _enriched_psets
-                        _enriched_qty = _db_payload.get("Quantities") or {}
-                        if isinstance(_enriched_qty, dict):
-                            _effective_quantities = _enriched_qty
-
-        def _iter_psets() -> Iterable[tuple[str, dict[str, Any]]]:
-            """Yield (pset_name, pset_dict) from Official/Custom psets and Quantities.
-
-            Quantities (e.g. Qto_WallBaseQuantities) are stored at
-            ``payload["Quantities"]`` — a sibling of ``PropertySets``, not
-            nested inside it.  Including them here means dotted filters such
-            as ``Qto_WallBaseQuantities.Length`` work identically to pset
-            filters.
-            """
-            for section in ("Official", "Custom"):
-                section_block = pset_block.get(section) or {}
-                if not isinstance(section_block, dict):
-                    continue
-                for raw_name, pset_props in section_block.items():
-                    if not isinstance(pset_props, dict):
-                        continue
-                    yield str(raw_name), pset_props
-
-            # Also expose Quantities blocks so that dotted keys like
-            # "Qto_WallBaseQuantities.Length" are matched by _match_dotted.
-            # _effective_quantities was resolved above (in-memory or DB-enriched).
-            for qto_name, qto_data in _effective_quantities.items():
-                if isinstance(qto_data, dict):
-                    yield str(qto_name), qto_data
-
-        def _nested_lookup(
-            mapping: dict[str, Any], dotted_path: str
-        ) -> tuple[bool, Any]:
-            """Return (exists, value) for a dotted key path within nested dicts."""
-            current: Any = mapping
-            for part in dotted_path.split("."):
-                if not isinstance(current, dict) or part not in current:
-                    return False, None
-                current = current[part]
-            return True, current
-
-        def _match_dotted(pset_name: str, prop_name: str, expected: Any) -> bool:
-            """Match a specific pset path like Pset.Property or Pset.A.B."""
-            for current_pset, pset_props in _iter_psets():
-                if current_pset != pset_name:
-                    continue
-                exists, value = _nested_lookup(pset_props, prop_name)
-                if exists and value == expected:
-                    return True
-            return False
-
-        def _match_flat_in_psets(key: str, expected: Any) -> bool:
-            """Search all psets for a flat key; key must exist in pset for a match."""
-            for _pset_name, pset_props in _iter_psets():
-                if key in pset_props and pset_props[key] == expected:
-                    return True
-            return False
-
-        for key, expected in filters.items():
-            # Dotted key "PsetName.PropertyName": target specific named pset.
-            # (Uses first dot only; deeper nesting not supported.)
-            if "." in key:
-                pset_name, _, prop_name = key.partition(".")
-                if not _match_dotted(pset_name, prop_name, expected):
-                    return False
-                continue
-
-            # Flat key: check direct properties first.  Require key existence so
-            # that a missing key never accidentally matches an expected None.
-            if key in props:
-                prop_val = props[key]
-                if _match_flat_property_value(prop_val, expected):
-                    continue
-                # Key exists in flat props but value mismatches; still fall
-                # through to nested psets (same property name may appear there).
-
-            # Search nested PropertySets (key must exist in pset to match).
-            if not _match_flat_in_psets(key, expected):
-                return False
-
-        return True
+        return apply_property_filters(G, node_id, filters, db_conn=db_conn)
 
     if action == "get_elements_in_storey":
         storey = params.get("storey")
@@ -1330,7 +984,9 @@ def query_ifc_graph(
             cache_key = (str(db_path.resolve()), class_filter or "")
             db_key_samples = cache.get(cache_key)
             if db_key_samples is None:
-                db_key_samples = _collect_dotted_keys_from_sqlite(db_path, class_filter)
+                db_key_samples = _collect_dotted_keys_from_sqlite(
+                    db_path, class_filter
+                )
                 cache[cache_key] = db_key_samples
 
             for key, samples in db_key_samples.items():
