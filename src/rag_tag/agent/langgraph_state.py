@@ -66,5 +66,11 @@ def specialist_step_budget(state: LangGraphState) -> int:
     remaining = max(int(state["remaining_steps"]), 0)
     cap = state["specialist_step_cap"]
     if cap is None:
-        return remaining
+        pending = max(
+            len(state["subquestions"]) - state["current_subquestion_index"],
+            1,
+        )
+        if remaining <= 0:
+            return 0
+        return max(remaining // pending, 1)
     return min(remaining, max(cap, 1))
