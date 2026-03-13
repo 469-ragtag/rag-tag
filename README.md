@@ -222,6 +222,12 @@ URL. `config.example.yaml` includes example profiles for:
 These are example endpoint names only; update them to match your own Databricks
 serving endpoints before use.
 
+Databricks compatibility note:
+
+- Databricks rejects the OpenAI-style `parallel_tool_calls` request field.
+- Do not add `parallel_tool_calls` to Databricks profile settings in `config.yaml`.
+- `rag-tag` strips that field automatically for Databricks-backed profiles.
+
 ## Query modes
 
 - Default CLI: `uv run rag-tag`

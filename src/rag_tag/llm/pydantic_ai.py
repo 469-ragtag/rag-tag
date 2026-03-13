@@ -245,7 +245,7 @@ def _build_model_settings(
         settings["extra_headers"] = extra_headers
 
     if _is_databricks_provider(profile.provider, provider_config):
-        settings.setdefault("parallel_tool_calls", False)
+        settings.pop("parallel_tool_calls", None)
 
     if not settings:
         return None

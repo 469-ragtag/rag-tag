@@ -56,7 +56,6 @@ def test_get_agent_model_resolves_databricks_profile_to_openai_chat_model(
     assert settings == {
         "temperature": 0.2,
         "max_tokens": 512,
-        "parallel_tool_calls": False,
     }
 
 
@@ -297,14 +296,49 @@ def test_router_and_graph_agent_receive_configured_model_settings(
     assert router_captured["model_settings"] == {
         "temperature": 0.1,
         "max_tokens": 128,
-        "parallel_tool_calls": False,
     }
     assert isinstance(graph_captured["model"], OpenAIChatModel)
     assert graph_captured["model_settings"] == {
         "temperature": 0.3,
         "max_tokens": 256,
-        "parallel_tool_calls": False,
     }
+
+
+def test_databricks_settings_strip_parallel_tool_calls_even_if_configured(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_project_marker(tmp_path)
+    (tmp_path / "config.yaml").write_text(
+        "defaults:\n"
+        "  agent_profile: dbx-agent\n"
+        "providers:\n"
+        "  databricks:\n"
+        "    type: databricks\n"
+        "    host_env: DATABRICKS_HOST\n"
+        "    token_env: DATABRICKS_TOKEN\n"
+        "profiles:\n"
+        "  dbx-agent:\n"
+        "    provider: databricks\n"
+        "    model: databricks-claude-sonnet-4-6\n"
+        "    settings:\n"
+        "      temperature: 0.2\n"
+        "      parallel_tool_calls: true\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        pydantic_ai_module,
+        "_MODULE_DIR",
+        tmp_path / "src" / "rag_tag" / "llm",
+    )
+    monkeypatch.delenv("AGENT_MODEL", raising=False)
+    monkeypatch.setenv("DATABRICKS_HOST", "workspace.example.com")
+    monkeypatch.setenv("DATABRICKS_TOKEN", "test-token")
+
+    settings = pydantic_ai_module.get_agent_model_settings()
+
+    assert settings == {"temperature": 0.2}
 
 
 def test_databricks_schema_transformer_rewrites_nullable_unions() -> None:

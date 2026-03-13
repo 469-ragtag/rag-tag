@@ -3,17 +3,18 @@
 # Keep secrets such as API keys and tokens in `.env`, not in this file.
 # Keep `AGENT_MODEL` and `ROUTER_MODEL` unset if you want profile switching to
 # come from this YAML file.
+# Do not set `parallel_tool_calls` for Databricks profiles; rag-tag strips it.
 
 defaults:
     router_profile: router-gemini-flash
-    agent_profile: cohere-command-a
+    agent_profile: dbx-claude-sonnet-4-6
     router_mode: llm
 
 providers:
     databricks:
         type: databricks
         # Replace with your real Databricks workspace host or serving base URL.
-        host: https://YOUR-DATABRICKS-WORKSPACE.cloud.databricks.com
+        host: https://adb-3941304196347928.8.azuredatabricks.net/
         token_env: DATABRICKS_TOKEN
 
 profiles:

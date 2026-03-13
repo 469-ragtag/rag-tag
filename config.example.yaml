@@ -9,6 +9,7 @@
 # What still belongs outside config today:
 # - `--tui`, `--db`, `--graph-dataset`, and `--trace` remain CLI flags
 # - secrets such as DATABRICKS_TOKEN / GEMINI_API_KEY / COHERE_API_KEY stay in .env
+# - do not set `parallel_tool_calls` for Databricks profiles; rag-tag strips it
 
 defaults:
   router_profile: router-gemini-flash
