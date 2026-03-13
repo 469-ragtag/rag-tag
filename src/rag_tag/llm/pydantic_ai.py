@@ -17,25 +17,14 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-try:
-    from dotenv import load_dotenv
-except ModuleNotFoundError:
-    load_dotenv = None
+from rag_tag.config import load_project_env
+
+_MODULE_DIR = Path(__file__).resolve().parent
 
 
 def _load_env() -> None:
-    """Load environment variables from .env file if available."""
-    if load_dotenv is None:
-        return
-    from rag_tag.paths import find_project_root
-
-    project_root = find_project_root(Path(__file__).resolve().parent)
-    if project_root is not None:
-        load_dotenv(project_root / ".env")
-
-    # Map COHERE_API_KEY to CO_API_KEY for PydanticAI Cohere provider compatibility
-    if "CO_API_KEY" not in os.environ and "COHERE_API_KEY" in os.environ:
-        os.environ["CO_API_KEY"] = os.environ["COHERE_API_KEY"]
+    """Load shared project environment variables."""
+    load_project_env(_MODULE_DIR)
 
 
 def get_router_model() -> str:
