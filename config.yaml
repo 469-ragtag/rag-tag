@@ -7,7 +7,7 @@
 
 defaults:
     router_profile: router-gemini-flash
-    agent_profile: dbx-claude-sonnet-4-6
+    agent_profile: cohere-command-a
     router_mode: llm
 
 providers:

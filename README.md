@@ -125,6 +125,11 @@ Practical split:
 - `.env`: secrets and machine-local overrides
 - CLI flags: per-run session options such as TUI mode, selected DB, dataset, and tracing
 
+The checked-in `config.yaml` defaults the graph agent to the current Cohere
+baseline so a normal checkout still runs without Databricks credentials. Switch
+to a Databricks profile by editing `defaults.agent_profile` or by using
+`--agent-profile` for a one-off run.
+
 Minimal setup for the same TUI command you use today:
 
 `config.yaml`

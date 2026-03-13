@@ -214,6 +214,18 @@ def test_checked_in_config_example_matches_app_config_schema() -> None:
         )
 
 
+def test_checked_in_runtime_config_keeps_cohere_as_safe_default() -> None:
+    config_path = Path(__file__).resolve().parents[1] / "config.yaml"
+    payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+    config = AppConfig.model_validate(payload)
+
+    assert config.providers["databricks"].host_env == "DATABRICKS_HOST"
+    assert config.defaults.router_profile == "router-gemini-flash"
+    assert config.defaults.agent_profile == "cohere-command-a"
+    assert config.defaults.agent_profile in config.profiles
+
+
 def test_get_router_model_keeps_env_based_lookup_via_shared_loader(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
