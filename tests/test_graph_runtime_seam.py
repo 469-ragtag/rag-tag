@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import networkx as nx
 
-from rag_tag.graph import GraphRuntime
+from rag_tag.graph import GraphRuntime, wrap_networkx_graph
 
 
 def _build_graph() -> nx.MultiDiGraph:
@@ -61,7 +61,7 @@ def _build_graph() -> nx.MultiDiGraph:
 
 def test_graph_runtime_networkx_smoke() -> None:
     G = _build_graph()
-    runtime = GraphRuntime.from_env(graph=G)
+    runtime = wrap_networkx_graph(G)
 
     res_storey = runtime.query("get_elements_in_storey", {"storey": "Level 0"})
     assert res_storey["status"] == "ok"
