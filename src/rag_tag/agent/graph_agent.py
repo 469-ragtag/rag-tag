@@ -242,7 +242,7 @@ class GraphAgent:
 
         model = get_agent_model()
         model_settings = get_agent_model_settings()
-        
+
         agent_init_kwargs = {
             "deps_type": GraphRuntime,
             "output_type": GraphAnswer,
@@ -255,7 +255,7 @@ class GraphAgent:
         }
         if model_settings is not None:
             agent_init_kwargs["model_settings"] = model_settings
-        
+
         self._agent: Agent[GraphRuntime, GraphAnswer] = Agent(
             model,
             **agent_init_kwargs,

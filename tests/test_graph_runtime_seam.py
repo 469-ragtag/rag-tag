@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import networkx as nx
 
-from rag_tag.graph import GraphRuntime, wrap_networkx_graph
+from rag_tag.graph import wrap_networkx_graph
 
 
 def _build_graph() -> nx.MultiDiGraph:

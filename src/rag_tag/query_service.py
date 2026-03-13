@@ -202,7 +202,10 @@ def execute_sql_query(
     else:
         shown = len(combined_items)
         if req.level_like:
-            summary = f"Found {combined_total} {label} matching level '{req.level_like}', showing {shown}."
+            summary = (
+                f"Found {combined_total} {label} matching level "
+                f"'{req.level_like}', showing {shown}."
+            )
         else:
             summary = f"Found {combined_total} {label}, showing {shown}."
         result_count = shown
@@ -387,7 +390,8 @@ def _ensure_graph_context(
     """Load graph and agent instances when missing; wire DB path into graph context.
 
     Args:
-        graph: Existing graph or None to trigger loading. Can be a GraphRuntime or NetworkX graph.
+        graph: Existing graph or None to trigger loading. Can be a
+            GraphRuntime or NetworkX graph.
         agent: Existing agent or None to trigger creation.
         debug_llm_io: Passed through to GraphAgent constructor.
         graph_dataset: JSONL stem for ``build_graph`` (None = all datasets).
@@ -395,7 +399,7 @@ def _ensure_graph_context(
             ``get_element_properties`` can perform DB-backed lookups.
             When None, any previously wired context is preserved.
         payload_mode: Optional graph payload mode override for graph loading.
-    
+
     Returns:
         Tuple of (GraphRuntime, GraphAgent) ready for agent execution.
     """
@@ -408,7 +412,7 @@ def _ensure_graph_context(
 
     if nx_graph is None:
         nx_graph = load_graph(graph_dataset, payload_mode=payload_mode)
-    
+
     if db_path is not None:
         # Wire the active DB path into the graph for tool-level property lookup.
         # When the DB context changes on an existing graph instance, clear
@@ -419,10 +423,10 @@ def _ensure_graph_context(
         if previous_db_path != current_db_path:
             _clear_graph_db_caches(nx_graph)
         nx_graph.graph["_db_path"] = resolved_db_path
-    
+
     if agent is None:
         agent = GraphAgent(debug_llm_io=debug_llm_io)
-    
+
     # Wrap the networkx graph in a GraphRuntime
     runtime = wrap_networkx_graph(nx_graph, db_path=db_path)
     return runtime, agent

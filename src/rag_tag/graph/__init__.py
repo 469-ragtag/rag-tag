@@ -19,9 +19,9 @@ def __getattr__(name: str):
     if name in __all__:
         from rag_tag.graph.runtime import (
             GraphRuntime,
+            close_runtime,
             register_backend,
             wrap_networkx_graph,
-            close_runtime,
         )
 
         exports = {
