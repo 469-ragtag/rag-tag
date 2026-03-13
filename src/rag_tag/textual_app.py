@@ -10,7 +10,6 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-import networkx as nx
 from textual.app import App, ComposeResult
 from textual.binding import Binding as _Binding
 from textual.containers import ScrollableContainer, Vertical
@@ -20,6 +19,7 @@ from textual.widgets import Footer, Header, Input, Static
 from textual.worker import Worker
 
 from rag_tag.agent import GraphAgent
+from rag_tag.graph import GraphRuntime
 from rag_tag.query_service import execute_query, find_sqlite_dbs
 
 # Maximum Static widgets kept in the output area before oldest are pruned.
@@ -223,7 +223,7 @@ class QueryApp(App[None]):
         # Suppress it and record that we did so we can warn the user.
         self._input_flag_ignored: bool = bool(debug_llm_io)
         self.debug_llm_io: bool = False
-        self.graph: nx.DiGraph | None = None
+        self.runtime: GraphRuntime | None = None
         self.agent: GraphAgent | None = None
         self._last_route: str = ""
         self._last_duration_ms: float = 0.0
@@ -418,16 +418,17 @@ class QueryApp(App[None]):
             result_bundle = execute_query(
                 question,
                 self.db_paths,
-                self.graph,
+                self.runtime,
                 self.agent,
                 debug_llm_io=self.debug_llm_io,
                 graph_dataset=self.graph_dataset,
                 context_db=self.context_db,
                 payload_mode=self.graph_payload_mode,
+                strict_sql=False,
             )
 
             result: dict[str, Any] = result_bundle["result"]
-            self.graph = result_bundle.get("graph") or self.graph
+            self.runtime = result_bundle.get("runtime") or self.runtime
             self.agent = result_bundle.get("agent") or self.agent
 
             duration_ms = (time.monotonic() - t0) * 1000.0
@@ -475,9 +476,7 @@ class QueryApp(App[None]):
             )
         else:
             answer = result.get("answer") or "No answer produced."
-            self._append_output(
-                f"A: {self._truncate(str(answer), 400)}", style="answer"
-            )
+            self._append_output(f"A: {answer}", style="answer")
             warning = result.get("warning")
             if warning:
                 self._append_output(

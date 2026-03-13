@@ -13,10 +13,10 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
+from rag_tag.level_normalization import canonicalize_level
 from rag_tag.parser.sql_schema import SCHEMA_SQL
 from rag_tag.paths import find_project_root
 
-logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
 _TYPED_JSON_PREFIX = "json:"
 
@@ -52,11 +52,12 @@ def _encode_typed_property_value(value: Any) -> str | None:
 
 
 def _insert_element(conn: sqlite3.Connection, rec: dict) -> None:
+    level = _coalesce((rec.get("Hierarchy") or {}).get("Level"))
     conn.execute(
         "INSERT OR IGNORE INTO elements "
         "(express_id, global_id, ifc_class, predefined_type, name, "
-        "description, object_type, tag, level, type_name) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "description, object_type, tag, level, level_key, type_name) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             rec.get("ExpressId"),
             _coalesce(rec.get("GlobalId")),
@@ -66,7 +67,8 @@ def _insert_element(conn: sqlite3.Connection, rec: dict) -> None:
             _coalesce(rec.get("Description")),
             _coalesce(rec.get("ObjectType")),
             _coalesce(rec.get("Tag")),
-            _coalesce((rec.get("Hierarchy") or {}).get("Level")),
+            level,
+            canonicalize_level(level),
             _coalesce(rec.get("TypeName")),
         ),
     )
@@ -199,7 +201,12 @@ def jsonl_to_sql(jsonl_path: Path, db_path: Path) -> tuple[int, int, int]:
     return elem_count, len(all_props), len(all_qties)
 
 
+def _configure_logging() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+
+
 def main() -> None:
+    _configure_logging()
     ap = argparse.ArgumentParser(
         description="Convert IFC JSONL exports to normalised SQLite databases."
     )

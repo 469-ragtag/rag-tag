@@ -24,3 +24,4 @@ output/metadata/bsdd/*.json
 
 # Local generated artifacts
 ifc-*.json
+opencode*

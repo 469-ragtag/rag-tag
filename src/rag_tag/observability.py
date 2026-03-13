@@ -15,7 +15,10 @@ import warnings
 from dataclasses import dataclass
 from pathlib import Path
 
+from rag_tag.config import load_project_env
+
 _logger = logging.getLogger(__name__)
+_MODULE_DIR = Path(__file__).resolve().parent
 
 
 @dataclass
@@ -34,31 +37,6 @@ class LogfireStatus:
     enabled: bool = False
     cloud_sync: bool = False
     url: str = ""
-
-
-def _load_dotenv() -> None:
-    """Load .env from project root if it exists.
-
-    Searches upward from this file to find .env in the project root.
-    Similar to pydantic_ai._load_env() behavior.
-    """
-    try:
-        from dotenv import load_dotenv
-    except ModuleNotFoundError:
-        # python-dotenv not installed, skip loading
-        return
-
-    # Search upward from this file to find project root with .env
-    current = Path(__file__).resolve().parent
-    for _ in range(10):  # Max 10 levels up
-        env_file = current / ".env"
-        if env_file.is_file():
-            load_dotenv(env_file)
-            return
-        parent = current.parent
-        if parent == current:  # Reached filesystem root
-            break
-        current = parent
 
 
 def setup_logfire(
@@ -92,8 +70,8 @@ def setup_logfire(
     if not enabled:
         return LogfireStatus()
 
-    # Load .env before checking for token
-    _load_dotenv()
+    # Load shared project environment before checking for token.
+    load_project_env(_MODULE_DIR)
 
     try:
         import logfire

@@ -14,6 +14,7 @@ CORE_COLUMNS = [
     "ObjectType",
     "Tag",
     "Level",
+    "LevelKey",
     "TypeName",
 ]
 
@@ -30,6 +31,7 @@ CREATE TABLE IF NOT EXISTS elements (
     object_type     TEXT,
     tag             TEXT,
     level           TEXT,
+    level_key       TEXT,
     type_name       TEXT
 );
 
@@ -53,6 +55,7 @@ CREATE TABLE IF NOT EXISTS quantities (
 
 CREATE INDEX IF NOT EXISTS idx_elements_class  ON elements(ifc_class);
 CREATE INDEX IF NOT EXISTS idx_elements_level  ON elements(level);
+CREATE INDEX IF NOT EXISTS idx_elements_level_key ON elements(level_key);
 CREATE INDEX IF NOT EXISTS idx_props_element   ON properties(element_id);
 CREATE INDEX IF NOT EXISTS idx_props_pset      ON properties(pset_name);
 CREATE INDEX IF NOT EXISTS idx_quants_element  ON quantities(element_id);

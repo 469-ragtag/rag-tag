@@ -15,6 +15,7 @@
 # belongs_to_system – system names from IfcRelAssignsToGroup + IfcSystem
 # in_zone           – zone names from IfcRelAssignsToGroup + IfcZone
 # classified_as     – classification labels from IfcRelAssociatesClassification
+# typed_by          – type object GlobalIds from IfcRelDefinesByType
 
 from __future__ import annotations
 
@@ -37,6 +38,7 @@ _BLOCK_KEYS: tuple[str, ...] = (
     "belongs_to_system",
     "in_zone",
     "classified_as",
+    "typed_by",
 )
 
 
@@ -347,6 +349,27 @@ def _index_classifications(model: object, raw: dict) -> None:
         logger.debug("IfcRelAssociatesClassification iteration skipped: %s", exc)
 
 
+def _index_type_definitions(model: object, raw: dict) -> None:
+    """IfcRelDefinesByType -> ``typed_by`` from occurrence to type GlobalId."""
+    try:
+        for rel in model.by_type("IfcRelDefinesByType"):  # type: ignore[union-attr]
+            try:
+                relating_type = getattr(rel, "RelatingType", None)
+                if relating_type is None:
+                    continue
+                type_gid = _safe_gid(relating_type)
+                if not type_gid:
+                    continue
+                for obj in getattr(rel, "RelatedObjects", None) or []:
+                    gid = _safe_gid(obj)
+                    if gid and gid != type_gid:
+                        raw[gid]["typed_by"].append(type_gid)
+            except Exception as exc:
+                logger.debug("IfcRelDefinesByType record skipped: %s", exc)
+    except Exception as exc:
+        logger.debug("IfcRelDefinesByType iteration skipped: %s", exc)
+
+
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
@@ -385,6 +408,7 @@ def build_relationship_index(model: object) -> dict[str, RelationBlock]:
     _index_space_boundaries(model, raw)
     _index_groups(model, raw)
     _index_classifications(model, raw)
+    _index_type_definitions(model, raw)
 
     # Deduplicate and stable-sort every array for determinism.
     result: dict[str, RelationBlock] = {
