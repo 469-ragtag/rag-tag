@@ -1,5 +1,14 @@
-# Copy this file to config.yaml and replace the example values with your own.
+# Copy this file to config.yaml and adjust the values for your workspace.
 # Keep secrets such as DATABRICKS_TOKEN in .env, not in this file.
+#
+# What belongs here:
+# - shared model/provider/profile defaults
+# - Databricks host or base URL
+# - reusable experiment groupings
+#
+# What still belongs outside config today:
+# - `--tui`, `--db`, `--graph-dataset`, and `--trace` remain CLI flags
+# - secrets such as DATABRICKS_TOKEN / GEMINI_API_KEY / COHERE_API_KEY stay in .env
 
 defaults:
   router_profile: router-gemini-flash
@@ -19,30 +28,42 @@ profiles:
     settings:
       temperature: 0.0
 
+  # Current non-Databricks graph-agent baseline.
+  cohere-command-a:
+    model: cohere:command-a-03-2025
+    settings:
+      temperature: 0.1
+      max_tokens: 1024
+
   dbx-claude-sonnet-4-6:
     provider: databricks
     # For Databricks-backed profiles, model is the serving endpoint name.
-    model: example-claude-sonnet-4-6
+    # For Foundation Model API usage this is often the Databricks model name.
+    model: databricks-claude-sonnet-4-6
     settings:
       temperature: 0.1
+      max_tokens: 1024
 
   dbx-gpt-oss-20b:
     provider: databricks
-    model: example-gpt-oss-20b
+    model: databricks-gpt-oss-20b
     settings:
       temperature: 0.1
+      max_tokens: 1024
 
   dbx-llama-4-maverick:
     provider: databricks
-    model: example-llama-4-maverick
+    model: databricks-llama-4-maverick
     settings:
       temperature: 0.1
+      max_tokens: 1024
 
   dbx-gemma-3-12b:
     provider: databricks
-    model: example-gemma-3-12b
+    model: databricks-gemma-3-12b
     settings:
       temperature: 0.1
+      max_tokens: 1024
 
 experiments:
   graph-dbx-smoke:
@@ -50,6 +71,17 @@ experiments:
     router_profile: router-gemini-flash
     agent_profile: dbx-claude-sonnet-4-6
     profiles:
+      - dbx-claude-sonnet-4-6
+      - dbx-gpt-oss-20b
+      - dbx-llama-4-maverick
+      - dbx-gemma-3-12b
+
+  graph-agent-compare:
+    description: Compare the current Cohere graph agent against Databricks options.
+    router_profile: router-gemini-flash
+    agent_profile: cohere-command-a
+    profiles:
+      - cohere-command-a
       - dbx-claude-sonnet-4-6
       - dbx-gpt-oss-20b
       - dbx-llama-4-maverick

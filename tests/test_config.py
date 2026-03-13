@@ -200,12 +200,16 @@ def test_checked_in_config_example_matches_app_config_schema() -> None:
 
     config = AppConfig.model_validate(payload)
 
+    assert "cohere-command-a" in config.profiles
     assert config.defaults.router_profile in config.profiles
     assert config.defaults.agent_profile in config.profiles
-    experiment = config.experiments["graph-dbx-smoke"]
-    assert experiment.router_profile in config.profiles
-    assert experiment.agent_profile in config.profiles
-    assert all(profile_name in config.profiles for profile_name in experiment.profiles)
+    for experiment_name in ("graph-dbx-smoke", "graph-agent-compare"):
+        experiment = config.experiments[experiment_name]
+        assert experiment.router_profile in config.profiles
+        assert experiment.agent_profile in config.profiles
+        assert all(
+            profile_name in config.profiles for profile_name in experiment.profiles
+        )
 
 
 def test_get_router_model_keeps_env_based_lookup_via_shared_loader(

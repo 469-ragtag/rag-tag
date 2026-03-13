@@ -79,6 +79,16 @@ uv run rag-tag
 Use `config.example.yaml` as the starting point for Databricks-backed profile
 workflows and graph-model comparison runs.
 
+If you already run the app like this:
+
+```bash
+uv run rag-tag --tui --db output/Building-Architecture.db --graph-dataset Building-Architecture --trace
+```
+
+that same command still works. The new config flow changes model/provider/profile
+selection, not your normal CLI entrypoint. Keep using CLI flags for runtime session
+options such as `--tui`, `--db`, `--graph-dataset`, and `--trace`.
+
 ## Configuration
 
 Checked-in config is the recommended home for non-secret runtime defaults:
@@ -109,6 +119,83 @@ Override the discovered config file with either:
 
 The full checked-in example lives in `config.example.yaml`.
 
+Practical split:
+
+- `config.yaml`: shared defaults you want to edit and commit
+- `.env`: secrets and machine-local overrides
+- CLI flags: per-run session options such as TUI mode, selected DB, dataset, and tracing
+
+Minimal setup for the same TUI command you use today:
+
+`config.yaml`
+
+```yaml
+defaults:
+  router_profile: router-gemini-flash
+  agent_profile: dbx-claude-sonnet-4-6
+  router_mode: llm
+
+providers:
+  databricks:
+    type: databricks
+    host: https://dbc-00000000-0000.cloud.databricks.com
+    token_env: DATABRICKS_TOKEN
+
+profiles:
+  router-gemini-flash:
+    model: google-gla:gemini-2.5-flash
+    settings:
+      temperature: 0.0
+
+  cohere-command-a:
+    model: cohere:command-a-03-2025
+    settings:
+      temperature: 0.1
+      max_tokens: 1024
+
+  dbx-claude-sonnet-4-6:
+    provider: databricks
+    model: databricks-claude-sonnet-4-6
+    settings:
+      temperature: 0.1
+      max_tokens: 1024
+```
+
+`.env`
+
+```bash
+DATABRICKS_TOKEN=your_databricks_token
+GEMINI_API_KEY=your_gemini_api_key
+COHERE_API_KEY=your_cohere_api_key
+LOGFIRE_TOKEN=your_write_logfire_token
+```
+
+Then run the app exactly as before:
+
+```bash
+uv run rag-tag --tui --db output/Building-Architecture.db --graph-dataset Building-Architecture --trace
+```
+
+To switch models, either edit `defaults.agent_profile` in `config.yaml` or use a
+one-off override like:
+
+```bash
+uv run rag-tag --tui --db output/Building-Architecture.db --graph-dataset Building-Architecture --trace --agent-profile dbx-gpt-oss-20b
+```
+
+To switch back to the current Cohere graph agent through config, set:
+
+```yaml
+defaults:
+  agent_profile: cohere-command-a
+```
+
+or do it for one run only:
+
+```bash
+uv run rag-tag --tui --db output/Building-Architecture.db --graph-dataset Building-Architecture --trace --agent-profile cohere-command-a
+```
+
 ## Databricks setup
 
 Common Databricks environment variables:
@@ -126,6 +213,7 @@ For Databricks profiles, the `model` value is the serving endpoint name that is
 resolved against the workspace's OpenAI-compatible `/serving-endpoints` base
 URL. `config.example.yaml` includes example profiles for:
 
+- Cohere Command A (current baseline)
 - Claude Sonnet 4.6
 - GPT OSS 20B
 - Llama 4 Maverick
@@ -198,7 +286,7 @@ One-off comparison with explicit profiles:
 ```bash
 uv run python scripts/eval_graph_models.py \
   --config ./config.yaml \
-  --profiles dbx-claude-sonnet-4-6 dbx-gpt-oss-20b dbx-llama-4-maverick \
+  --profiles cohere-command-a dbx-claude-sonnet-4-6 dbx-gpt-oss-20b dbx-llama-4-maverick \
   --questions-file ./graph-questions.json \
   --db ./output/Building-Architecture.db \
   --output ./output/graph-model-report.json

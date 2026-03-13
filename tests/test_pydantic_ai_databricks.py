@@ -147,6 +147,38 @@ def test_agent_model_env_override_wins_over_configured_profile(
     assert pydantic_ai_module.get_agent_model_settings() is None
 
 
+def test_agent_model_can_resolve_cohere_profile_from_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_project_marker(tmp_path)
+    (tmp_path / "config.yaml").write_text(
+        "defaults:\n"
+        "  agent_profile: cohere-command-a\n"
+        "profiles:\n"
+        "  cohere-command-a:\n"
+        "    model: cohere:command-a-03-2025\n"
+        "    settings:\n"
+        "      temperature: 0.1\n"
+        "      max_tokens: 512\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        pydantic_ai_module,
+        "_MODULE_DIR",
+        tmp_path / "src" / "rag_tag" / "llm",
+    )
+    monkeypatch.delenv("AGENT_MODEL", raising=False)
+    monkeypatch.delenv("AGENT_PROFILE", raising=False)
+
+    assert pydantic_ai_module.get_agent_model() == "cohere:command-a-03-2025"
+    assert pydantic_ai_module.get_agent_model_settings() == {
+        "temperature": 0.1,
+        "max_tokens": 512,
+    }
+
+
 def test_router_profile_env_override_wins_over_configured_default(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
