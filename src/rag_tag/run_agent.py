@@ -6,6 +6,11 @@ import os
 import sys
 from pathlib import Path
 
+from rag_tag.config import (
+    AGENT_PROFILE_ENV_VAR,
+    CONFIG_PATH_ENV_VAR,
+    ROUTER_PROFILE_ENV_VAR,
+)
 from rag_tag.observability import LogfireStatus, setup_logfire
 from rag_tag.query_service import execute_query, find_sqlite_dbs
 from rag_tag.router import route_question
@@ -41,6 +46,13 @@ def _parse_dataset(value: str) -> str:
     return dataset
 
 
+def _parse_profile_name(value: str) -> str:
+    profile_name = value.strip()
+    if not profile_name:
+        raise argparse.ArgumentTypeError("Profile name cannot be empty.")
+    return profile_name
+
+
 def _parse_bool(value: str | None) -> bool:
     if value is None:
         return True
@@ -61,6 +73,32 @@ def _resolve_db_paths(db_path: Path | None) -> tuple[list[Path], str | None]:
         return [candidate], None
 
     return [], f"SQLite database not found: {candidate}"
+
+
+def _resolve_config_override_path(
+    config_path: Path | None,
+) -> tuple[str | None, str | None]:
+    if config_path is None:
+        return None, None
+
+    candidate = config_path.expanduser().resolve()
+    if not candidate.is_file():
+        return None, f"Config file not found: {candidate}"
+    return str(candidate), None
+
+
+def _apply_runtime_overrides(
+    *,
+    config_path: str | None = None,
+    router_profile: str | None = None,
+    agent_profile: str | None = None,
+) -> None:
+    if config_path is not None:
+        os.environ[CONFIG_PATH_ENV_VAR] = config_path
+    if router_profile is not None:
+        os.environ[ROUTER_PROFILE_ENV_VAR] = router_profile
+    if agent_profile is not None:
+        os.environ[AGENT_PROFILE_ENV_VAR] = agent_profile
 
 
 def _resolve_graph_dataset(
@@ -84,6 +122,24 @@ def _resolve_graph_dataset(
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="IFC query agent CLI")
+    ap.add_argument(
+        "--config",
+        type=Path,
+        default=None,
+        help="Path to config file used for model/provider/profile defaults.",
+    )
+    ap.add_argument(
+        "--router-profile",
+        type=_parse_profile_name,
+        default=None,
+        help="Override the configured router profile for this run.",
+    )
+    ap.add_argument(
+        "--agent-profile",
+        type=_parse_profile_name,
+        default=None,
+        help="Override the configured graph-agent profile for this run.",
+    )
     ap.add_argument(
         "--input",
         nargs="?",
@@ -143,6 +199,17 @@ def main() -> int:
         help="Launch Textual TUI instead of CLI.",
     )
     args = ap.parse_args()
+
+    config_override_path, config_error = _resolve_config_override_path(args.config)
+    if config_error:
+        print(config_error, file=sys.stderr)
+        return 1
+
+    _apply_runtime_overrides(
+        config_path=config_override_path,
+        router_profile=args.router_profile,
+        agent_profile=args.agent_profile,
+    )
 
     # Validate GRAPH_PAYLOAD_MODE early so the user sees a clear warning
     # rather than a silent fallback deep in the pipeline.

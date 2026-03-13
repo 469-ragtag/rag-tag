@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from rag_tag.config import (
+    CONFIG_PATH_ENV_VAR,
     AppConfig,
     discover_project_config,
     load_project_config,
@@ -143,6 +144,42 @@ def test_load_project_config_uses_explicit_relative_json_path(tmp_path: Path) ->
 
     assert loaded.config_path == explicit_path
     assert loaded.config.profiles["comparison"].model == "databricks-claude"
+
+
+def test_load_project_config_uses_env_config_override_when_no_explicit_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_project_marker(tmp_path)
+    discovered_path = tmp_path / "config.yaml"
+    discovered_path.write_text(
+        "defaults:\n"
+        "  router_profile: discovered-router\n"
+        "profiles:\n"
+        "  discovered-router:\n"
+        "    model: google-gla:gemini-2.5-flash\n",
+        encoding="utf-8",
+    )
+
+    override_path = tmp_path / "override.json"
+    override_path.write_text(
+        json.dumps(
+            {
+                "defaults": {"router_profile": "override-router"},
+                "profiles": {
+                    "override-router": {"model": "google-gla:gemini-3-flash-preview"}
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv(CONFIG_PATH_ENV_VAR, str(override_path))
+
+    loaded = load_project_config(tmp_path / "src" / "rag_tag")
+
+    assert loaded.config_path == override_path
+    assert loaded.config.defaults.router_profile == "override-router"
 
 
 def test_load_project_config_returns_empty_defaults_without_config(

@@ -147,6 +147,44 @@ def test_agent_model_env_override_wins_over_configured_profile(
     assert pydantic_ai_module.get_agent_model_settings() is None
 
 
+def test_router_profile_env_override_wins_over_configured_default(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_project_marker(tmp_path)
+    (tmp_path / "config.yaml").write_text(
+        "defaults:\n"
+        "  router_profile: gemini-router\n"
+        "providers:\n"
+        "  databricks:\n"
+        "    type: databricks\n"
+        "    host_env: DATABRICKS_HOST\n"
+        "    token_env: DATABRICKS_TOKEN\n"
+        "profiles:\n"
+        "  gemini-router:\n"
+        "    model: google-gla:gemini-2.5-flash\n"
+        "  dbx-router:\n"
+        "    provider: databricks\n"
+        "    model: router-endpoint\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        pydantic_ai_module,
+        "_MODULE_DIR",
+        tmp_path / "src" / "rag_tag" / "llm",
+    )
+    monkeypatch.delenv("ROUTER_MODEL", raising=False)
+    monkeypatch.setenv("ROUTER_PROFILE", "dbx-router")
+    monkeypatch.setenv("DATABRICKS_HOST", "workspace.example.com")
+    monkeypatch.setenv("DATABRICKS_TOKEN", "test-token")
+
+    model = pydantic_ai_module.get_router_model()
+
+    assert isinstance(model, OpenAIChatModel)
+    assert model.model_name == "router-endpoint"
+
+
 def test_router_and_graph_agent_receive_configured_model_settings(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

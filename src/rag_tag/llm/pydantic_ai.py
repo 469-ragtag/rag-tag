@@ -13,7 +13,14 @@ from pydantic_ai.profiles.openai import OpenAIModelProfile
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.settings import ModelSettings
 
-from rag_tag.config import AppConfig, ProfileConfig, ProviderConfig, load_project_config
+from rag_tag.config import (
+    AGENT_PROFILE_ENV_VAR,
+    ROUTER_PROFILE_ENV_VAR,
+    AppConfig,
+    ProfileConfig,
+    ProviderConfig,
+    load_project_config,
+)
 
 _MODULE_DIR = Path(__file__).resolve().parent
 
@@ -76,6 +83,15 @@ def get_agent_model_settings() -> ModelSettings | None:
     return _resolve_role_model("agent").settings
 
 
+def has_role_configuration(role: str, *, start_dir: Path | None = None) -> bool:
+    """Return True when a role has an explicit env/config model selection."""
+    normalized_role = _normalize_role(role)
+    if _read_env(f"{normalized_role.upper()}_MODEL") is not None:
+        return True
+    loaded = load_project_config(start_dir or _MODULE_DIR)
+    return _get_selected_profile_name(loaded.config, role=normalized_role) is not None
+
+
 def resolve_model_from_provider(
     provider_name: str | None = None,
     *,
@@ -105,7 +121,7 @@ def resolve_model_from_provider(
     if provider_name:
         provider = provider_name.strip().lower()
         if provider == "databricks":
-            profile_name = _get_default_profile_name(
+            profile_name = _get_selected_profile_name(
                 loaded.config, role=_normalize_role(role)
             )
             if profile_name is not None:
@@ -143,7 +159,7 @@ def _resolve_role_model(role: RoleName) -> ResolvedRoleModel:
     if env_model is not None:
         return ResolvedRoleModel(model=env_model)
 
-    profile_name = _get_default_profile_name(loaded.config, role=role)
+    profile_name = _get_selected_profile_name(loaded.config, role=role)
     if profile_name is None:
         return ResolvedRoleModel(model=_default_model_for_role(role))
 
@@ -242,7 +258,11 @@ def _build_model_settings(
         ) from exc
 
 
-def _get_default_profile_name(config: AppConfig, *, role: RoleName) -> str | None:
+def _get_selected_profile_name(config: AppConfig, *, role: RoleName) -> str | None:
+    runtime_profile = _read_env(_profile_env_var(role))
+    if runtime_profile is not None:
+        return runtime_profile
+
     defaults = config.defaults
     profile_name = (
         defaults.router_profile if role == "router" else defaults.agent_profile
@@ -252,6 +272,10 @@ def _get_default_profile_name(config: AppConfig, *, role: RoleName) -> str | Non
     if role in config.profiles:
         return role
     return None
+
+
+def _profile_env_var(role: RoleName) -> str:
+    return ROUTER_PROFILE_ENV_VAR if role == "router" else AGENT_PROFILE_ENV_VAR
 
 
 def _provider_prefix(

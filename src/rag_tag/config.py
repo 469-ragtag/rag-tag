@@ -23,6 +23,9 @@ except ModuleNotFoundError:
     yaml = None
 
 DEFAULT_CONFIG_FILENAMES = ("config.yaml", "config.yml", "config.json")
+CONFIG_PATH_ENV_VAR = "RAG_TAG_CONFIG"
+ROUTER_PROFILE_ENV_VAR = "ROUTER_PROFILE"
+AGENT_PROFILE_ENV_VAR = "AGENT_PROFILE"
 
 
 class ProviderConfig(BaseModel):
@@ -68,6 +71,7 @@ class DefaultsConfig(BaseModel):
 
     router_profile: str | None = None
     agent_profile: str | None = None
+    router_mode: str | None = None
 
 
 class AppConfig(BaseModel):
@@ -161,6 +165,8 @@ def _resolve_config_path(
     start_dir: Path | None,
 ) -> Path | None:
     if config_path is None:
+        config_path = _read_env(CONFIG_PATH_ENV_VAR)
+    if config_path is None:
         return discover_project_config(start_dir)
 
     candidate = Path(config_path)
@@ -201,3 +207,16 @@ def _read_config_payload(config_path: Path) -> dict[str, Any]:
 def _sync_provider_env_aliases() -> None:
     if "CO_API_KEY" not in os.environ and "COHERE_API_KEY" in os.environ:
         os.environ["CO_API_KEY"] = os.environ["COHERE_API_KEY"]
+
+
+def _read_env(name: str) -> str | None:
+    return _clean_string(os.getenv(name))
+
+
+def _clean_string(value: object | None) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    return text
