@@ -1,0 +1,56 @@
+# Copy this file to config.yaml and replace the example values with your own.
+# Keep secrets such as DATABRICKS_TOKEN in .env, not in this file.
+
+defaults:
+  router_profile: router-gemini-flash
+  agent_profile: dbx-claude-sonnet-4-6
+  router_mode: llm
+
+providers:
+  databricks:
+    type: databricks
+    # Non-secret workspace host can live in config.
+    host: https://dbc-00000000-0000.cloud.databricks.com
+    token_env: DATABRICKS_TOKEN
+
+profiles:
+  router-gemini-flash:
+    model: google-gla:gemini-2.5-flash
+    settings:
+      temperature: 0.0
+
+  dbx-claude-sonnet-4-6:
+    provider: databricks
+    # For Databricks-backed profiles, model is the serving endpoint name.
+    model: example-claude-sonnet-4-6
+    settings:
+      temperature: 0.1
+
+  dbx-gpt-oss-20b:
+    provider: databricks
+    model: example-gpt-oss-20b
+    settings:
+      temperature: 0.1
+
+  dbx-llama-4-maverick:
+    provider: databricks
+    model: example-llama-4-maverick
+    settings:
+      temperature: 0.1
+
+  dbx-gemma-3-12b:
+    provider: databricks
+    model: example-gemma-3-12b
+    settings:
+      temperature: 0.1
+
+experiments:
+  graph-dbx-smoke:
+    description: Compare Databricks graph-agent profiles on the same questions.
+    router_profile: router-gemini-flash
+    agent_profile: dbx-claude-sonnet-4-6
+    profiles:
+      - dbx-claude-sonnet-4-6
+      - dbx-gpt-oss-20b
+      - dbx-llama-4-maverick
+      - dbx-gemma-3-12b

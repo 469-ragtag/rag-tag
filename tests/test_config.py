@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 
 import pytest
+import yaml
 
 from rag_tag.config import (
     CONFIG_PATH_ENV_VAR,
@@ -191,6 +192,20 @@ def test_load_project_config_returns_empty_defaults_without_config(
 
     assert loaded.config_path is None
     assert loaded.config == AppConfig()
+
+
+def test_checked_in_config_example_matches_app_config_schema() -> None:
+    config_path = Path(__file__).resolve().parents[1] / "config.example.yaml"
+    payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+    config = AppConfig.model_validate(payload)
+
+    assert config.defaults.router_profile in config.profiles
+    assert config.defaults.agent_profile in config.profiles
+    experiment = config.experiments["graph-dbx-smoke"]
+    assert experiment.router_profile in config.profiles
+    assert experiment.agent_profile in config.profiles
+    assert all(profile_name in config.profiles for profile_name in experiment.profiles)
 
 
 def test_get_router_model_keeps_env_based_lookup_via_shared_loader(

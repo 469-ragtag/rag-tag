@@ -42,14 +42,26 @@ uv run rag-tag-generate-ontology-map
 uv sync --group dev
 ```
 
-2. Optional: configure model keys (`.env` or shell env)
+2. Copy the checked-in config and env templates
 
 ```bash
+cp config.example.yaml config.yaml
+cp .env.sample .env
+```
+
+3. Put shared defaults in `config.yaml` and secrets in `.env`
+
+```bash
+DATABRICKS_TOKEN=...
 GEMINI_API_KEY=...
 COHERE_API_KEY=...
 ```
 
-3. Build artifacts
+`config.yaml` is now the recommended place for provider settings, model profiles,
+default router/agent selections, and experiment groupings. Keep secrets and
+one-off shell overrides in `.env` or your shell environment.
+
+4. Build artifacts
 
 ```bash
 uv run rag-tag-generate-ontology-map
@@ -58,11 +70,69 @@ uv run rag-tag-jsonl-to-sql
 uv run rag-tag-jsonl-to-graph
 ```
 
-4. Run interactive agent
+5. Run interactive agent
 
 ```bash
 uv run rag-tag
 ```
+
+Use `config.example.yaml` as the starting point for Databricks-backed profile
+workflows and graph-model comparison runs.
+
+## Configuration
+
+Checked-in config is the recommended home for non-secret runtime defaults:
+
+- `defaults` for shared router/agent profile selection and `router_mode`
+- `providers` for named provider configuration such as Databricks hosts
+- `profiles` for reusable router and graph-agent model selections
+- `experiments` for repeatable graph comparison groups
+
+Use `.env` or shell environment variables for secrets and one-off overrides:
+
+- API keys and tokens such as `DATABRICKS_TOKEN`, `GEMINI_API_KEY`,
+  `COHERE_API_KEY`
+- machine-local overrides such as `RAG_TAG_CONFIG`
+- temporary runtime model/profile overrides such as `ROUTER_MODEL`,
+  `AGENT_MODEL`, `ROUTER_PROFILE`, `AGENT_PROFILE`
+
+Config discovery order:
+
+- repo-root `config.yaml`
+- repo-root `config.yml`
+- repo-root `config.json`
+
+Override the discovered config file with either:
+
+- `uv run rag-tag --config ./path/to/config.yaml`
+- `RAG_TAG_CONFIG=./path/to/config.yaml uv run rag-tag`
+
+The full checked-in example lives in `config.example.yaml`.
+
+## Databricks setup
+
+Common Databricks environment variables:
+
+```bash
+DATABRICKS_HOST=dbc-00000000-0000.cloud.databricks.com
+DATABRICKS_TOKEN=your_databricks_token
+```
+
+`DATABRICKS_TOKEN` is required for Databricks-backed profiles. `DATABRICKS_HOST`
+is the simplest host setup, but you can also keep the non-secret host value in
+`config.yaml` and leave only the token in `.env`.
+
+For Databricks profiles, the `model` value is the serving endpoint name that is
+resolved against the workspace's OpenAI-compatible `/serving-endpoints` base
+URL. `config.example.yaml` includes example profiles for:
+
+- Claude Sonnet 4.6
+- GPT OSS 20B
+- Llama 4 Maverick
+- Gemma 3 12B
+
+These are example endpoint names only; update them to match your own Databricks
+serving endpoints before use.
 
 ## Query modes
 
@@ -72,12 +142,25 @@ uv run rag-tag
 Useful options:
 
 ```bash
+uv run rag-tag --config ./config.yaml
 uv run rag-tag --db ./output/Building-Architecture.db
 uv run rag-tag --graph-dataset Building-Architecture
+uv run rag-tag --router-profile router-gemini-flash
+uv run rag-tag --agent-profile dbx-gpt-oss-20b
 uv run rag-tag --input
 uv run rag-tag --verbose
 uv run rag-tag --trace
 ```
+
+Runtime override notes:
+
+- `--router-profile` and `--agent-profile` select named config profiles for one
+  run without editing `config.yaml`.
+- `ROUTER_PROFILE` and `AGENT_PROFILE` provide the same override via env vars.
+- `ROUTER_MODEL` and `AGENT_MODEL` still bypass profile resolution for one-off
+  runs and take precedence over config-selected profiles.
+- `ROUTER_MODE` still overrides `defaults.router_mode` when set in the
+  environment.
 
 Dataset selection behavior:
 
@@ -85,6 +168,45 @@ Dataset selection behavior:
 - Else, if exactly one DB is selected, that DB stem is used.
 - Else, SQL queries can still merge across DBs, but graph queries require an
   explicit dataset when multiple JSONL datasets are present.
+
+## Graph model comparison
+
+Use `scripts/eval_graph_models.py` to compare graph-agent behavior across
+configured profiles.
+
+Important behavior:
+
+- the script intentionally forces `route="graph"`
+- it compares graph-agent execution, not router behavior
+- select profiles explicitly with `--profiles` or indirectly with
+  `--experiment`
+- write a JSON artifact with `--output` for later review or diffing
+
+Practical example using a config-defined experiment and JSON report output:
+
+```bash
+uv run python scripts/eval_graph_models.py \
+  --config ./config.yaml \
+  --experiment graph-dbx-smoke \
+  --db ./output/Building-Architecture.db \
+  --graph-dataset Building-Architecture \
+  --output ./output/graph-model-report.json
+```
+
+One-off comparison with explicit profiles:
+
+```bash
+uv run python scripts/eval_graph_models.py \
+  --config ./config.yaml \
+  --profiles dbx-claude-sonnet-4-6 dbx-gpt-oss-20b dbx-llama-4-maverick \
+  --questions-file ./graph-questions.json \
+  --db ./output/Building-Architecture.db \
+  --output ./output/graph-model-report.json
+```
+
+If `--db` resolves to exactly one SQLite database, its file stem is reused as
+the graph dataset automatically. Pass `--graph-dataset` when you need to pin a
+specific JSONL graph dataset instead.
 
 ## Key repository paths
 
