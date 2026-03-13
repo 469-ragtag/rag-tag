@@ -11,10 +11,6 @@ from pydantic_ai.exceptions import ModelHTTPError, UsageLimitExceeded
 from pydantic_ai.output import ToolOutput
 from pydantic_ai.usage import UsageLimits
 
-from rag_tag.agent.models import (
-    GraphAnswer,
-    RecoveryKind,
-)
 from rag_tag.graph import GraphRuntime
 from rag_tag.llm.pydantic_ai import get_agent_model, get_agent_model_settings
 
@@ -451,14 +447,7 @@ class GraphAgent:
             # Extra retries specifically for output schema validation.
             # Increased from 3 to 5 to give the model more chances to
             # produce valid JSON when it initially returns prose or extra keys.
-            "output_retries": 5,
-        }
-        if model_settings is not None:
-            agent_init_kwargs["model_settings"] = model_settings
-        
-        self._agent: Agent[GraphRuntime, GraphAnswer] = Agent(
-            model,
-            **agent_init_kwargs,
+            output_retries=5,
         )
 
         register_graph_tools(self._agent)
@@ -482,21 +471,6 @@ class GraphAgent:
             current ``run_sync`` call — no external second call is ever made for
             output-shape repair.
             """
-            if output._recovery_meta.kind == RecoveryKind.PLAIN_TEXT:
-                raise ModelRetry(
-                    f"{_SCHEMA_CORRECTION_HINT}\n"
-                    "Validation error: plain assistant text output; please emit "
-                    "a valid graph answer JSON object with final_result."
-                )
-            if output._recovery_meta.kind in (
-                RecoveryKind.TOOL_ENVELOPE,
-                RecoveryKind.TOOL_CALLS_WRAPPER,
-            ):
-                raise ModelRetry(
-                    f"{_SCHEMA_CORRECTION_HINT}\n"
-                    "Validation error: wrapped tool payload output; please emit "
-                    "a valid graph answer output object with final_result."
-                )
             if not (output.answer and output.answer.strip()):
                 raise ModelRetry(
                     f"{_SCHEMA_CORRECTION_HINT}\n"
