@@ -138,10 +138,7 @@ def execute_sql_query(
         )
 
     req = decision.sql_request
-    # Canonical effective limit for this request; used as the global cap across DBs.
     effective_limit = req.limit or 50
-
-    # Query every database and merge counts/items across all models.
     combined_count = 0
     combined_total = 0
     combined_items: list[Any] = []
@@ -200,7 +197,6 @@ def execute_sql_query(
     if req.intent == "list":
         combined_items = combined_items[:effective_limit]
 
-    # Rebuild summary string with the combined count.
     label = req.ifc_class or "elements"
     if req.intent == "count":
         if req.level_like:
@@ -211,13 +207,9 @@ def execute_sql_query(
             summary = f"Found {combined_count} {label}."
         result_count = combined_count
     else:
-        # Use actual item count post-cap so summary matches displayed rows.
         shown = len(combined_items)
         if req.level_like:
-            summary = (
-                f"Found {combined_total} {label} matching level"
-                f" '{req.level_like}', showing {shown}."
-            )
+            summary = f"Found {combined_total} {label} matching level '{req.level_like}', showing {shown}."
         else:
             summary = f"Found {combined_total} {label}, showing {shown}."
         result_count = shown
@@ -232,7 +224,6 @@ def execute_sql_query(
             "filters": last_payload.get("filters"),
             "count": result_count,
             "total_count": combined_total,
-            # Return the canonical effective limit, not a per-DB artifact.
             "limit": effective_limit,
             "items": combined_items,
         },

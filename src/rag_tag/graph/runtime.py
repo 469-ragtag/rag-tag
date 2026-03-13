@@ -34,6 +34,13 @@ def _extract_payload_mode(graph: nx.DiGraph | nx.MultiDiGraph) -> str:
     return "full"
 
 
+def close_runtime(runtime: GraphRuntime | None) -> None:
+    """Close backend resources associated with a graph runtime."""
+    if runtime is None:
+        return
+    runtime.close()
+
+
 def wrap_networkx_graph(
     graph: nx.DiGraph | nx.MultiDiGraph,
     *,
