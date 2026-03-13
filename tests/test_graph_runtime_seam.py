@@ -71,9 +71,7 @@ def test_graph_runtime_networkx_smoke() -> None:
     assert res_class["status"] == "ok"
     assert len(res_class["data"]["elements"]) == 1
 
-    res_adj = runtime.query(
-        "get_adjacent_elements", {"element_id": "Element::W1"}
-    )
+    res_adj = runtime.query("get_adjacent_elements", {"element_id": "Element::W1"})
     assert res_adj["status"] == "ok"
     assert len(res_adj["data"]["adjacent"]) >= 1
 

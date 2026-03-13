@@ -296,9 +296,7 @@ def apply_property_filters(
             if isinstance(qto_data, dict):
                 yield str(qto_name), qto_data
 
-    def _nested_lookup(
-        mapping: dict[str, Any], dotted_path: str
-    ) -> tuple[bool, Any]:
+    def _nested_lookup(mapping: dict[str, Any], dotted_path: str) -> tuple[bool, Any]:
         current: Any = mapping
         for part in dotted_path.split("."):
             if not isinstance(current, dict) or part not in current:

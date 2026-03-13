@@ -258,9 +258,7 @@ def query_ifc_graph(
         if element_id in G:
             if str(element_id).startswith("Element::"):
                 return element_id, None
-            return None, {
-                "error": f"Invalid element_id (not an element): {element_id}"
-            }
+            return None, {"error": f"Invalid element_id (not an element): {element_id}"}
         if not element_id.startswith("Element::"):
             candidate = f"Element::{element_id}"
             if candidate in G:
@@ -984,9 +982,7 @@ def query_ifc_graph(
             cache_key = (str(db_path.resolve()), class_filter or "")
             db_key_samples = cache.get(cache_key)
             if db_key_samples is None:
-                db_key_samples = _collect_dotted_keys_from_sqlite(
-                    db_path, class_filter
-                )
+                db_key_samples = _collect_dotted_keys_from_sqlite(db_path, class_filter)
                 cache[cache_key] = db_key_samples
 
             for key, samples in db_key_samples.items():

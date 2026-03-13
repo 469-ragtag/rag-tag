@@ -12,7 +12,11 @@ __all__ = ["GraphRuntime", "register_backend", "wrap_networkx_graph"]
 
 def __getattr__(name: str):
     if name in __all__:
-        from rag_tag.graph.runtime import GraphRuntime, register_backend, wrap_networkx_graph
+        from rag_tag.graph.runtime import (
+            GraphRuntime,
+            register_backend,
+            wrap_networkx_graph,
+        )
 
         exports = {
             "GraphRuntime": GraphRuntime,
