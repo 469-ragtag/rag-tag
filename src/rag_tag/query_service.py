@@ -76,9 +76,55 @@ def _resolve_context_db_path(
     return None
 
 
+def _require_explicit_graph_dataset(
+    runtime: GraphRuntime | nx.DiGraph | nx.MultiDiGraph | None,
+    graph_dataset: str | None,
+) -> None:
+    """Ensure graph_dataset is explicit when multiple datasets are available.
+
+    Raises:
+        ValueError: When multiple datasets are present but graph_dataset is None.
+    """
+    if graph_dataset is not None:
+        # Explicit dataset provided — no check needed.
+        return
+
+    # Check if the graph has multiple datasets.
+    if runtime is None:
+        return
+
+    # Extract datasets from the graph.
+    datasets = None
+    if isinstance(runtime, GraphRuntime):
+        datasets = runtime._graph.graph.get("datasets")
+    elif isinstance(runtime, (nx.DiGraph, nx.MultiDiGraph)):
+        datasets = runtime.graph.get("datasets")
+
+    if datasets and len(datasets) > 1:
+        raise ValueError(
+            "Multiple graph datasets are available in the model. "
+            "Please provide an explicit --graph-dataset to select which "
+            f"dataset to query. Available datasets: {', '.join(datasets)}"
+        )
+
+
+def _sql_warning_details(
+    failed_db_paths: list[str],
+    db_errors: list[dict[str, str]],
+) -> dict[str, Any] | None:
+    if not failed_db_paths and not db_errors:
+        return None
+    return {
+        "failed_db_paths": failed_db_paths,
+        "db_errors": db_errors,
+    }
+
+
 def execute_sql_query(
     decision: RouteDecision,
     db_paths: list[Path],
+    *,
+    strict_sql: bool = False,
 ) -> dict[str, Any]:
     if decision.sql_request is None:
         return _sql_error(decision, "Router did not produce a SQL request.")
@@ -88,21 +134,45 @@ def execute_sql_query(
         )
 
     req = decision.sql_request
-    # Canonical effective limit for this request; used as the global cap across DBs.
     effective_limit = req.limit or 50
-
-    # Query every database and merge counts/items across all models.
     combined_count = 0
     combined_total = 0
     combined_items: list[Any] = []
     last_payload: dict[str, Any] = {}
+    failed_db_paths: list[str] = []
+    db_errors: list[dict[str, str]] = []
 
     for db_path in db_paths:
         try:
-            envelope = query_ifc_sql(db_path, decision.sql_request)
-        except SqlQueryError:
+            envelope = query_ifc_sql(db_path, req)
+        except SqlQueryError as exc:
+            failed_db_paths.append(str(db_path))
+            db_errors.append({"db_path": str(db_path), "error": str(exc)})
+            if strict_sql:
+                return _sql_error(
+                    decision,
+                    (
+                        "Strict SQL mode aborted due to database query failure: "
+                        f"{db_path}: {exc}"
+                    ),
+                    warning=_sql_warning_details(failed_db_paths, db_errors),
+                )
             continue
         if envelope["status"] != "ok":
+            failed_db_paths.append(str(db_path))
+            db_error = envelope.get("error")
+            db_errors.append(
+                {"db_path": str(db_path), "error": str(db_error or "Unknown SQL error")}
+            )
+            if strict_sql:
+                return _sql_error(
+                    decision,
+                    (
+                        "Strict SQL mode aborted due to database query failure: "
+                        f"{db_path}: {db_error or 'Unknown SQL error'}"
+                    ),
+                    warning=_sql_warning_details(failed_db_paths, db_errors),
+                )
             continue
         payload = envelope["data"]
         last_payload = payload
@@ -111,15 +181,15 @@ def execute_sql_query(
         combined_items.extend(payload.get("items") or [])
 
     if not last_payload:
-        return _sql_error(decision, "All database queries failed.")
+        return _sql_error(
+            decision,
+            "All database queries failed.",
+            warning=_sql_warning_details(failed_db_paths, db_errors),
+        )
 
-    # Enforce global list limit: merged items across all DBs must not exceed the
-    # requested limit.  Each per-DB query already applies the same LIMIT clause,
-    # so the only way to exceed it is when results come from multiple databases.
     if req.intent == "list":
         combined_items = combined_items[:effective_limit]
 
-    # Rebuild summary string with the combined count.
     label = req.ifc_class or "elements"
     if req.intent == "count":
         if req.level_like:
@@ -130,18 +200,17 @@ def execute_sql_query(
             summary = f"Found {combined_count} {label}."
         result_count = combined_count
     else:
-        # Use actual item count post-cap so summary matches displayed rows.
         shown = len(combined_items)
         if req.level_like:
             summary = (
-                f"Found {combined_total} {label} matching level"
-                f" '{req.level_like}', showing {shown}."
+                f"Found {combined_total} {label} matching level "
+                f"'{req.level_like}', showing {shown}."
             )
         else:
             summary = f"Found {combined_total} {label}, showing {shown}."
         result_count = shown
 
-    return {
+    result = {
         "route": "sql",
         "decision": decision.reason,
         "db_paths": [str(p) for p in db_paths],
@@ -151,42 +220,43 @@ def execute_sql_query(
             "filters": last_payload.get("filters"),
             "count": result_count,
             "total_count": combined_total,
-            # Return the canonical effective limit, not a per-DB artifact.
             "limit": effective_limit,
             "items": combined_items,
         },
         "sql": last_payload.get("sql"),
     }
+    warning = _sql_warning_details(failed_db_paths, db_errors)
+    if warning is not None:
+        result["warning"] = warning
+    return result
 
 
-def _sql_error(decision: RouteDecision, message: str) -> dict[str, Any]:
+def _sql_error(
+    decision: RouteDecision,
+    message: str,
+    warning: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Build a SQL error result payload."""
-    return {
+    result = {
         "route": "sql",
         "decision": decision.reason,
         "error": message,
     }
+    if warning is not None:
+        result["warning"] = warning
+    return result
 
 
 def execute_graph_query(
     question: str,
-    graph: nx.DiGraph,
+    runtime: GraphRuntime,
     agent: GraphAgent,
     decision: RouteDecision,
-    runtime: GraphRuntime,
+    *,
+    max_steps: int = 20,
 ) -> dict[str, Any]:
-    """Execute graph query via agent.
-
-    Args:
-        question: User question
-        graph: NetworkX graph
-        agent: Graph agent instance
-        decision: Routing decision
-
-    Returns:
-        Result dict with answer, data, or error
-    """
-    agent_result = agent.run(question, runtime, max_steps=6)
+    """Execute graph query via agent."""
+    agent_result = agent.run(question, runtime, max_steps=max_steps)
     return {
         "route": "graph",
         "decision": decision.reason,
@@ -198,15 +268,17 @@ def execute_graph_query(
 def execute_query(
     question: str,
     db_paths: list[Path],
-    graph: nx.DiGraph | None,
-    agent: GraphAgent | None,
-    runtime: GraphRuntime | None = None,
+    runtime: GraphRuntime | nx.DiGraph | nx.MultiDiGraph | None = None,
+    agent: GraphAgent | None = None,
+    graph: GraphRuntime | nx.DiGraph | nx.MultiDiGraph | None = None,
     *,
     decision: RouteDecision | None = None,
     debug_llm_io: bool = False,
     graph_dataset: str | None = None,
     context_db: Path | None = None,
     payload_mode: str | None = None,
+    strict_sql: bool = False,
+    graph_max_steps: int = 20,
 ) -> dict[str, Any]:
     """Execute a query through the full pipeline (routing + execution).
 
@@ -233,12 +305,17 @@ def execute_query(
         Result dict with answer, route, decision, data, or error.
         Also returns updated graph and agent if they were loaded/created.
     """
+    if runtime is not None and graph is not None and runtime is not graph:
+        raise ValueError("Pass either runtime or graph, not both.")
+    if runtime is None and graph is not None:
+        runtime = graph
+
     try:
         if decision is None:
             decision = route_question(question, debug_llm_io=debug_llm_io)
 
         if decision.route == "sql":
-            result = execute_sql_query(decision, db_paths)
+            result = execute_sql_query(decision, db_paths, strict_sql=strict_sql)
             return {
                 "result": result,
                 "graph": graph,
@@ -246,53 +323,29 @@ def execute_query(
                 "runtime": runtime,
             }
 
-        # Resolve the DB path for graph context if not provided by the caller.
+        _require_explicit_graph_dataset(runtime, graph_dataset)
+
         resolved_context_db = context_db or _resolve_context_db_path(
             db_paths, graph_dataset
         )
-
-        # Graph route
-        # Keep backward compatibility with existing helper call sites and
-        # lightweight monkeypatched checks: only pass db_path when we actually
-        # resolved one.
-        if resolved_context_db is None and payload_mode is None:
-            graph, agent = _ensure_graph_context(
-                graph,
-                agent,
-                debug_llm_io,
-                graph_dataset,
-            )
-        elif resolved_context_db is None:
-            graph, agent = _ensure_graph_context(
-                graph,
-                agent,
-                debug_llm_io,
-                graph_dataset,
-                payload_mode=payload_mode,
-            )
-        elif payload_mode is None:
-            graph, agent = _ensure_graph_context(
-                graph,
-                agent,
-                debug_llm_io,
-                graph_dataset,
-                resolved_context_db,
-            )
-        else:
-            graph, agent = _ensure_graph_context(
-                graph,
-                agent,
-                debug_llm_io,
-                graph_dataset,
-                resolved_context_db,
-                payload_mode=payload_mode,
-            )
-        if runtime is None:
-            runtime = GraphRuntime.from_env(graph=graph, db_path=resolved_context_db)
-        result = execute_graph_query(question, graph, agent, decision, runtime)
+        runtime, agent = _ensure_graph_context(
+            runtime or graph,
+            agent,
+            debug_llm_io,
+            graph_dataset,
+            resolved_context_db,
+            payload_mode=payload_mode,
+        )
+        result = execute_graph_query(
+            question,
+            runtime,
+            agent,
+            decision,
+            max_steps=graph_max_steps,
+        )
         return {
             "result": result,
-            "graph": graph,
+            "graph": runtime,
             "agent": agent,
             "runtime": runtime,
         }
@@ -301,7 +354,7 @@ def execute_query(
         error_result = _routing_error(decision, str(exc))
         return {
             "result": error_result,
-            "graph": graph,
+            "graph": runtime,
             "agent": agent,
             "runtime": runtime,
         }
@@ -327,17 +380,18 @@ def _clear_graph_db_caches(graph: nx.DiGraph) -> None:
 
 
 def _ensure_graph_context(
-    graph: nx.DiGraph | None,
+    graph: GraphRuntime | nx.DiGraph | nx.MultiDiGraph | None,
     agent: GraphAgent | None,
     debug_llm_io: bool,
     graph_dataset: str | None = None,
     db_path: Path | None = None,
     payload_mode: str | None = None,
-) -> tuple[nx.DiGraph, GraphAgent]:
+) -> tuple[GraphRuntime, GraphAgent]:
     """Load graph and agent instances when missing; wire DB path into graph context.
 
     Args:
-        graph: Existing graph or None to trigger loading.
+        graph: Existing graph or None to trigger loading. Can be a
+            GraphRuntime or NetworkX graph.
         agent: Existing agent or None to trigger creation.
         debug_llm_io: Passed through to GraphAgent constructor.
         graph_dataset: JSONL stem for ``build_graph`` (None = all datasets).
@@ -345,22 +399,37 @@ def _ensure_graph_context(
             ``get_element_properties`` can perform DB-backed lookups.
             When None, any previously wired context is preserved.
         payload_mode: Optional graph payload mode override for graph loading.
+
+    Returns:
+        Tuple of (GraphRuntime, GraphAgent) ready for agent execution.
     """
-    if graph is None:
-        graph = load_graph(graph_dataset, payload_mode=payload_mode)
+    from rag_tag.graph import wrap_networkx_graph  # noqa: PLC0415
+
+    # Extract networkx graph if a GraphRuntime was passed
+    nx_graph = graph
+    if isinstance(graph, GraphRuntime):
+        nx_graph = graph._graph
+
+    if nx_graph is None:
+        nx_graph = load_graph(graph_dataset, payload_mode=payload_mode)
+
     if db_path is not None:
         # Wire the active DB path into the graph for tool-level property lookup.
         # When the DB context changes on an existing graph instance, clear
         # graph-scoped property caches to avoid stale cross-DB reads.
         resolved_db_path = db_path.expanduser().resolve()
-        previous_db_path = _normalize_db_path(graph.graph.get("_db_path"))
+        previous_db_path = _normalize_db_path(nx_graph.graph.get("_db_path"))
         current_db_path = str(resolved_db_path)
         if previous_db_path != current_db_path:
-            _clear_graph_db_caches(graph)
-        graph.graph["_db_path"] = resolved_db_path
+            _clear_graph_db_caches(nx_graph)
+        nx_graph.graph["_db_path"] = resolved_db_path
+
     if agent is None:
         agent = GraphAgent(debug_llm_io=debug_llm_io)
-    return graph, agent
+
+    # Wrap the networkx graph in a GraphRuntime
+    runtime = wrap_networkx_graph(nx_graph, db_path=db_path)
+    return runtime, agent
 
 
 def _routing_error(decision: RouteDecision | None, message: str) -> dict[str, Any]:

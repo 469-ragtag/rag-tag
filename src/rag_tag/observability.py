@@ -21,6 +21,13 @@ _logger = logging.getLogger(__name__)
 _MODULE_DIR = Path(__file__).resolve().parent
 
 
+def _load_dotenv() -> None:
+    """Load project .env if present to make env-based config available."""
+    from rag_tag.config import load_project_env
+
+    load_project_env(_MODULE_DIR)
+
+
 @dataclass
 class LogfireStatus:
     """Result returned by setup_logfire().
