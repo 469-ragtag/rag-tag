@@ -40,9 +40,9 @@ def test_neo4j_import_smoke() -> None:
     driver = GraphDatabase.driver(uri, auth=(user, password))
     try:
         with driver.session(database=database) as session:
-            count_nodes = session.run(
-                "MATCH (n:Node) RETURN count(n) AS c"
-            ).single()["c"]
+            count_nodes = session.run("MATCH (n:Node) RETURN count(n) AS c").single()[
+                "c"
+            ]
             count_rels = session.run(
                 "MATCH ()-[r:REL]->() RETURN count(r) AS c"
             ).single()["c"]

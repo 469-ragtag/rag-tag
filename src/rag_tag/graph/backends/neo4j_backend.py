@@ -255,6 +255,7 @@ class Neo4jBackend:
         if len(matches) > 1:
             return None, {"error": "Ambiguous storey", "candidates": matches}
         return None, {"error": f"Storey not found: {storey_query}"}
+
     def query(
         self,
         action: str,
