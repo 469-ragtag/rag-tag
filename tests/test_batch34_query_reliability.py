@@ -123,7 +123,7 @@ def test_graph_agent_honors_usage_limit(monkeypatch: pytest.MonkeyPatch) -> None
     agent = GraphAgent()
 
     def fake_run_sync(
-        question: str, *, deps: GraphRuntime, usage_limits: object
+        question: str, *, deps: GraphRuntime
     ) -> object:
         raise UsageLimitExceeded("tool_calls_limit exceeded")
 
