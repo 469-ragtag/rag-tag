@@ -58,7 +58,7 @@ def test_unexpected_model_behavior_salvages_nested_tool_envelope(
             self.body = body
 
     def fake_run_sync(
-        question: str, *, deps: GraphRuntime, usage_limits: object
+        question: str, *, deps: GraphRuntime
     ) -> object:
         raise FakeUnexpectedModelBehavior(
             {
