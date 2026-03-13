@@ -399,8 +399,10 @@ class GraphAgent:
         model = get_agent_model()
         try:
             model_settings = get_agent_model_settings()
-        except RuntimeError as exc:
-            if _is_pydantic_test_model(model) and "requires env var" in str(exc):
+        except RuntimeError:
+            # Unit tests monkeypatch get_agent_model to TestModel and should not
+            # require provider-specific runtime config just to build the agent.
+            if _is_pydantic_test_model(model):
                 model_settings = None
             else:
                 raise
