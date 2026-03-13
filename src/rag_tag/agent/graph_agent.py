@@ -12,7 +12,7 @@ from pydantic_ai.output import ToolOutput
 from pydantic_ai.usage import UsageLimits
 
 from rag_tag.graph import GraphRuntime
-from rag_tag.llm.pydantic_ai import get_agent_model
+from rag_tag.llm.pydantic_ai import get_agent_model, get_agent_model_settings
 
 from .graph_tools import register_graph_tools
 from .models import (
@@ -28,6 +28,15 @@ _logger = logging.getLogger(__name__)
 # INVALID_TOOL_GENERATION (HTTP 422).  The first attempt is attempt 0, so the
 # total number of calls is _MAX_INVALID_TOOL_RETRIES + 1.
 _MAX_INVALID_TOOL_RETRIES = 2
+
+
+def _is_pydantic_test_model(model: object) -> bool:
+    """Return True when *model* is PydanticAI's lightweight test model."""
+    model_type = model if isinstance(model, type) else type(model)
+    return getattr(model_type, "__name__", "") == "TestModel" and getattr(
+        model_type, "__module__", ""
+    ).startswith("pydantic_ai.models.test")
+
 
 # ---------------------------------------------------------------------------
 # System prompt
@@ -388,11 +397,21 @@ class GraphAgent:
         self._debug_llm_io = debug_llm_io
 
         model = get_agent_model()
+        try:
+            model_settings = get_agent_model_settings()
+        except RuntimeError:
+            # Unit tests monkeypatch get_agent_model to TestModel and should not
+            # require provider-specific runtime config just to build the agent.
+            if _is_pydantic_test_model(model):
+                model_settings = None
+            else:
+                raise
         self._agent: Agent[GraphRuntime, GraphAnswer] = Agent(
             model,
             deps_type=GraphRuntime,
             output_type=_FINAL_RESULT_TOOL,
             system_prompt=SYSTEM_PROMPT,
+            model_settings=model_settings,
             retries=2,
             # Extra retries specifically for output schema validation.
             # Increased from 3 to 5 to give the model more chances to

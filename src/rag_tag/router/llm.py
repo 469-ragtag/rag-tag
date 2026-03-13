@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pydantic_ai import Agent
 
-from rag_tag.llm.pydantic_ai import get_router_model
+from rag_tag.llm.pydantic_ai import get_router_model, get_router_model_settings
 
 from .llm_models import LlmRouteResponse
 from .models import RouteDecision, SqlRequest
@@ -28,6 +28,7 @@ def route_with_llm(question: str, *, debug_llm_io: bool = False) -> RouteDecisio
     # Get the router model from environment (default: google:gemini-2.5-flash)
     try:
         model = get_router_model()
+        model_settings = get_router_model_settings()
     except Exception as exc:
         raise LlmRouterError(
             f"Failed to get router model: {exc}. "
@@ -40,6 +41,7 @@ def route_with_llm(question: str, *, debug_llm_io: bool = False) -> RouteDecisio
             model,
             output_type=LlmRouteResponse,
             system_prompt=_build_system_prompt(),
+            model_settings=model_settings,
         )
     except Exception as exc:
         raise LlmRouterError(f"Failed to create router agent: {exc}") from exc

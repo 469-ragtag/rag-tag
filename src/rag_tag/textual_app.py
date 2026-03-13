@@ -476,9 +476,7 @@ class QueryApp(App[None]):
             )
         else:
             answer = result.get("answer") or "No answer produced."
-            self._append_output(
-                f"A: {self._truncate(str(answer), 400)}", style="answer"
-            )
+            self._append_output(f"A: {answer}", style="answer")
             warning = result.get("warning")
             if warning:
                 self._append_output(
