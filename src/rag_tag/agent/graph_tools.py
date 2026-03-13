@@ -65,6 +65,10 @@ def _fuzzy_find_nodes_impl(
 
     Returns a standard envelope dict (status/data/error).
     """
+    # Detect if query mentions "type" to bias scoring toward/away from type nodes.
+    query_lower = query.lower()
+    mentions_type = "type" in query_lower
+
     results: list[dict[str, Any]] = []
     for node_id, data in G.nodes(data=True):
         if class_filter is not None:
@@ -92,6 +96,21 @@ def _fuzzy_find_nodes_impl(
             (fuzz.WRatio(query, c) for c in candidates if c and c != "None"),
             default=0.0,
         )
+
+        # Apply scoring bias to prefer occurrences or types based on query intent.
+        is_type_node = str(data.get("class_", "")).endswith("Type")
+        if mentions_type:
+            # Query mentions "type": boost type nodes, penalize occurrences.
+            if is_type_node:
+                best_score += 5
+            else:
+                best_score -= 5
+        else:
+            # Query does NOT mention "type": boost occurrences, penalize types.
+            if is_type_node:
+                best_score -= 5
+            else:
+                best_score += 5
 
         if best_score >= min_score:
             results.append(
