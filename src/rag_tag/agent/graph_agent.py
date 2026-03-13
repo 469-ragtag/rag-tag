@@ -29,6 +29,15 @@ _logger = logging.getLogger(__name__)
 # total number of calls is _MAX_INVALID_TOOL_RETRIES + 1.
 _MAX_INVALID_TOOL_RETRIES = 2
 
+
+def _is_pydantic_test_model(model: object) -> bool:
+    """Return True when *model* is PydanticAI's lightweight test model."""
+    model_type = model if isinstance(model, type) else type(model)
+    return getattr(model_type, "__name__", "") == "TestModel" and getattr(
+        model_type, "__module__", ""
+    ).startswith("pydantic_ai.models.test")
+
+
 # ---------------------------------------------------------------------------
 # System prompt
 # ---------------------------------------------------------------------------
@@ -388,7 +397,13 @@ class GraphAgent:
         self._debug_llm_io = debug_llm_io
 
         model = get_agent_model()
-        model_settings = get_agent_model_settings()
+        try:
+            model_settings = get_agent_model_settings()
+        except RuntimeError as exc:
+            if _is_pydantic_test_model(model) and "requires env var" in str(exc):
+                model_settings = None
+            else:
+                raise
         self._agent: Agent[GraphRuntime, GraphAnswer] = Agent(
             model,
             deps_type=GraphRuntime,
