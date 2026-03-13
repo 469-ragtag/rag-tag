@@ -105,6 +105,13 @@ class GraphRuntime:
         return self._name
 
 
+def close_runtime(runtime: GraphRuntime | None) -> None:
+    """Close backend resources associated with a graph runtime."""
+    if runtime is None:
+        return
+    runtime.close()
+
+
 def wrap_networkx_graph(
     graph: nx.DiGraph | nx.MultiDiGraph,
     *,
