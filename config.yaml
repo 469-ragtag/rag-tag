@@ -1,0 +1,75 @@
+# Local config for the Building-Architecture workflow.
+#
+# Keep secrets such as API keys and tokens in `.env`, not in this file.
+# Keep `AGENT_MODEL` and `ROUTER_MODEL` unset if you want profile switching to
+# come from this YAML file.
+
+defaults:
+    router_profile: router-gemini-flash
+    agent_profile: cohere-command-a
+    router_mode: llm
+
+providers:
+    databricks:
+        type: databricks
+        # Replace with your real Databricks workspace host or serving base URL.
+        host: https://YOUR-DATABRICKS-WORKSPACE.cloud.databricks.com
+        token_env: DATABRICKS_TOKEN
+
+profiles:
+    router-gemini-flash:
+        model: google-gla:gemini-2.5-flash
+        settings:
+            temperature: 0.0
+
+    # Current graph-agent baseline.
+    cohere-command-a:
+        model: cohere:command-a-03-2025
+        settings:
+            temperature: 0.1
+
+    dbx-claude-sonnet-4-6:
+        provider: databricks
+        model: databricks-claude-sonnet-4-6
+        settings:
+            temperature: 0.1
+
+    dbx-gpt-oss-20b:
+        provider: databricks
+        model: databricks-gpt-oss-20b
+        settings:
+            temperature: 0.1
+
+    dbx-llama-4-maverick:
+        provider: databricks
+        model: databricks-llama-4-maverick
+        settings:
+            temperature: 0.1
+
+    dbx-gemma-3-12b:
+        provider: databricks
+        model: databricks-gemma-3-12b
+        settings:
+            temperature: 0.1
+
+experiments:
+    graph-dbx-smoke:
+        description: Compare only the Databricks graph-agent profiles.
+        router_profile: router-gemini-flash
+        agent_profile: dbx-claude-sonnet-4-6
+        profiles:
+            - dbx-claude-sonnet-4-6
+            - dbx-gpt-oss-20b
+            - dbx-llama-4-maverick
+            - dbx-gemma-3-12b
+
+    graph-agent-compare:
+        description: Compare the current Cohere graph agent against Databricks options.
+        router_profile: router-gemini-flash
+        agent_profile: cohere-command-a
+        profiles:
+            - cohere-command-a
+            - dbx-claude-sonnet-4-6
+            - dbx-gpt-oss-20b
+            - dbx-llama-4-maverick
+            - dbx-gemma-3-12b
