@@ -36,6 +36,7 @@ FORCED_GRAPH_DECISION = RouteDecision(
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _MISSING = object()
+_AGENT_MODEL_ENV_VAR = "AGENT_MODEL"
 
 
 def _parse_profile_name(value: str) -> str:
@@ -207,6 +208,7 @@ def temporary_profile_overrides(
     previous_values = {
         CONFIG_PATH_ENV_VAR: os.environ.get(CONFIG_PATH_ENV_VAR, _MISSING),
         AGENT_PROFILE_ENV_VAR: os.environ.get(AGENT_PROFILE_ENV_VAR, _MISSING),
+        _AGENT_MODEL_ENV_VAR: os.environ.get(_AGENT_MODEL_ENV_VAR, _MISSING),
     }
 
     try:
@@ -214,6 +216,7 @@ def temporary_profile_overrides(
             os.environ[CONFIG_PATH_ENV_VAR] = config_path
         if agent_profile is not None:
             os.environ[AGENT_PROFILE_ENV_VAR] = agent_profile
+            os.environ.pop(_AGENT_MODEL_ENV_VAR, None)
         yield
     finally:
         for name, previous in previous_values.items():

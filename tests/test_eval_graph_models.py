@@ -4,6 +4,7 @@ import importlib.util
 import os
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -52,6 +53,7 @@ def test_temporary_profile_overrides_restore_previous_env_vars(
     module = _load_eval_graph_models_module()
     monkeypatch.setenv(CONFIG_PATH_ENV_VAR, "/tmp/original-config.yaml")
     monkeypatch.setenv(AGENT_PROFILE_ENV_VAR, "original-agent")
+    monkeypatch.setenv("AGENT_MODEL", "cohere:command-a-03-2025")
 
     with module.temporary_profile_overrides(
         config_path="/tmp/override-config.yaml",
@@ -59,9 +61,11 @@ def test_temporary_profile_overrides_restore_previous_env_vars(
     ):
         assert os.environ[CONFIG_PATH_ENV_VAR] == "/tmp/override-config.yaml"
         assert os.environ[AGENT_PROFILE_ENV_VAR] == "override-agent"
+        assert "AGENT_MODEL" not in os.environ
 
     assert os.environ[CONFIG_PATH_ENV_VAR] == "/tmp/original-config.yaml"
     assert os.environ[AGENT_PROFILE_ENV_VAR] == "original-agent"
+    assert os.environ["AGENT_MODEL"] == "cohere:command-a-03-2025"
 
 
 def test_load_questions_supports_default_text_and_json_inputs(
@@ -136,7 +140,7 @@ def test_evaluate_graph_models_forces_graph_route_and_reports_by_profile(
         runtime: object | None,
         agent: object | None,
         *,
-        decision: object,
+        decision: Any,
         graph_dataset: str | None,
         context_db: Path | None,
         graph_max_steps: int,
