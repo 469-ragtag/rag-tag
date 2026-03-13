@@ -138,7 +138,7 @@ defaults:
 providers:
   databricks:
     type: databricks
-    host: https://dbc-00000000-0000.cloud.databricks.com
+    host_env: DATABRICKS_HOST
     token_env: DATABRICKS_TOKEN
 
 profiles:
@@ -164,6 +164,7 @@ profiles:
 `.env`
 
 ```bash
+DATABRICKS_HOST=your-workspace-host.databricks.com
 DATABRICKS_TOKEN=your_databricks_token
 GEMINI_API_KEY=your_gemini_api_key
 COHERE_API_KEY=your_cohere_api_key
@@ -206,8 +207,11 @@ DATABRICKS_TOKEN=your_databricks_token
 ```
 
 `DATABRICKS_TOKEN` is required for Databricks-backed profiles. `DATABRICKS_HOST`
-is the simplest host setup, but you can also keep the non-secret host value in
-`config.yaml` and leave only the token in `.env`.
+should now live in `.env` or your shell environment, while `config.yaml`
+references it via `host_env: DATABRICKS_HOST`.
+
+If you prefer to store the full OpenAI-compatible serving URL instead of the host,
+use `base_url_env` in config and define `DATABRICKS_BASE_URL` in `.env`.
 
 For Databricks profiles, the `model` value is the serving endpoint name that is
 resolved against the workspace's OpenAI-compatible `/serving-endpoints` base

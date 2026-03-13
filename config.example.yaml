@@ -3,7 +3,7 @@
 #
 # What belongs here:
 # - shared model/provider/profile defaults
-# - Databricks host or base URL
+# - env var references such as host_env / base_url_env
 # - reusable experiment groupings
 #
 # What still belongs outside config today:
@@ -19,8 +19,8 @@ defaults:
 providers:
   databricks:
     type: databricks
-    # Non-secret workspace host can live in config.
-    host: https://dbc-00000000-0000.cloud.databricks.com
+    # Read the Databricks workspace host from .env or shell env.
+    host_env: DATABRICKS_HOST
     token_env: DATABRICKS_TOKEN
 
 profiles:

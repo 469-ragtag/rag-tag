@@ -36,6 +36,7 @@ Current state:
 - PydanticAI providers: `google-gla` (AI Studio), `google-vertex` (Vertex)
 - Databricks profiles are supported through PydanticAI's OpenAI-compatible provider path
 - Databricks request shaping strips unsupported `parallel_tool_calls`
+- Databricks host/base URL should be supplied through env-backed config (`host_env` / `base_url_env`)
 - `COHERE_API_KEY` is auto-mapped to `CO_API_KEY`
 
 ## 3) Default Operating Mode for Feature Work

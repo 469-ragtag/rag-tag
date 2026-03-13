@@ -201,6 +201,8 @@ def test_checked_in_config_example_matches_app_config_schema() -> None:
     config = AppConfig.model_validate(payload)
 
     assert "cohere-command-a" in config.profiles
+    assert config.providers["databricks"].host_env == "DATABRICKS_HOST"
+    assert config.providers["databricks"].host is None
     assert config.defaults.router_profile in config.profiles
     assert config.defaults.agent_profile in config.profiles
     for experiment_name in ("graph-dbx-smoke", "graph-agent-compare"):
