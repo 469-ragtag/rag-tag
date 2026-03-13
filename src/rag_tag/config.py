@@ -32,7 +32,11 @@ class ProviderConfig(BaseModel):
 
     type: str | None = None
     base_url: str | None = None
+    base_url_env: str | None = None
+    host: str | None = None
+    host_env: str | None = None
     api_key_env: str | None = None
+    token_env: str | None = None
     headers: dict[str, str] = Field(default_factory=dict)
 
 
@@ -57,11 +61,21 @@ class ExperimentConfig(BaseModel):
     profiles: list[str] = Field(default_factory=list)
 
 
+class DefaultsConfig(BaseModel):
+    """Role defaults used when no explicit runtime selection is provided."""
+
+    model_config = ConfigDict(extra="allow")
+
+    router_profile: str | None = None
+    agent_profile: str | None = None
+
+
 class AppConfig(BaseModel):
     """Top-level checked-in application configuration."""
 
     model_config = ConfigDict(extra="allow")
 
+    defaults: DefaultsConfig = Field(default_factory=DefaultsConfig)
     providers: dict[str, ProviderConfig] = Field(default_factory=dict)
     profiles: dict[str, ProfileConfig] = Field(default_factory=dict)
     experiments: dict[str, ExperimentConfig] = Field(default_factory=dict)

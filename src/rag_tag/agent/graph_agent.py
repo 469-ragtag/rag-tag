@@ -12,7 +12,7 @@ from pydantic_ai.output import ToolOutput
 from pydantic_ai.usage import UsageLimits
 
 from rag_tag.graph import GraphRuntime
-from rag_tag.llm.pydantic_ai import get_agent_model
+from rag_tag.llm.pydantic_ai import get_agent_model, get_agent_model_settings
 
 from .graph_tools import register_graph_tools
 from .models import (
@@ -388,11 +388,13 @@ class GraphAgent:
         self._debug_llm_io = debug_llm_io
 
         model = get_agent_model()
+        model_settings = get_agent_model_settings()
         self._agent: Agent[GraphRuntime, GraphAnswer] = Agent(
             model,
             deps_type=GraphRuntime,
             output_type=_FINAL_RESULT_TOOL,
             system_prompt=SYSTEM_PROMPT,
+            model_settings=model_settings,
             retries=2,
             # Extra retries specifically for output schema validation.
             # Increased from 3 to 5 to give the model more chances to

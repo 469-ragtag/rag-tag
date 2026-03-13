@@ -76,11 +76,14 @@ def test_load_project_config_parses_yaml_structure(tmp_path: Path) -> None:
     _write_project_marker(tmp_path)
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
+        "defaults:\n"
+        "  router_profile: router-default\n"
+        "  agent_profile: dbx-agent\n"
         "providers:\n"
         "  databricks:\n"
-        "    type: openai-compatible\n"
+        "    type: databricks\n"
         "    base_url: https://workspace.example.com/serving-endpoints\n"
-        "    api_key_env: DATABRICKS_TOKEN\n"
+        "    token_env: DATABRICKS_TOKEN\n"
         "profiles:\n"
         "  router-default:\n"
         "    model: google-gla:gemini-2.5-flash\n"
@@ -100,6 +103,8 @@ def test_load_project_config_parses_yaml_structure(tmp_path: Path) -> None:
 
     assert loaded.project_root == tmp_path
     assert loaded.config_path == config_path
+    assert loaded.config.defaults.router_profile == "router-default"
+    assert loaded.config.defaults.agent_profile == "dbx-agent"
     assert loaded.config.providers["databricks"].base_url == (
         "https://workspace.example.com/serving-endpoints"
     )
