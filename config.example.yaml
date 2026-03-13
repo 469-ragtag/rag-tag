@@ -15,6 +15,17 @@ defaults:
   router_profile: router-gemini-flash
   agent_profile: dbx-claude-sonnet-4-6
   router_mode: llm
+  # Allowed values: pydanticai, langgraph
+  # This controls graph-route orchestration only, not model/provider selection.
+  graph_orchestrator: pydanticai
+
+graph_orchestration:
+  # Tunables for graph-route orchestration behavior.
+  enabled_subquestion_decomposition: true
+  max_subquestions: 3
+  reserved_orchestration_steps: 3
+  specialist_step_cap: null
+  fallback_to_graph_agent: true
 
 providers:
   databricks:

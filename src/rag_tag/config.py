@@ -72,6 +72,19 @@ class DefaultsConfig(BaseModel):
     router_profile: str | None = None
     agent_profile: str | None = None
     router_mode: str | None = None
+    graph_orchestrator: str | None = None
+
+
+class GraphOrchestrationConfig(BaseModel):
+    """Graph orchestration defaults for future orchestrator integrations."""
+
+    model_config = ConfigDict(extra="allow")
+
+    enabled_subquestion_decomposition: bool = True
+    max_subquestions: int = 3
+    reserved_orchestration_steps: int = 3
+    specialist_step_cap: int | None = None
+    fallback_to_graph_agent: bool = True
 
 
 class AppConfig(BaseModel):
@@ -80,6 +93,9 @@ class AppConfig(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     defaults: DefaultsConfig = Field(default_factory=DefaultsConfig)
+    graph_orchestration: GraphOrchestrationConfig = Field(
+        default_factory=GraphOrchestrationConfig
+    )
     providers: dict[str, ProviderConfig] = Field(default_factory=dict)
     profiles: dict[str, ProfileConfig] = Field(default_factory=dict)
     experiments: dict[str, ExperimentConfig] = Field(default_factory=dict)

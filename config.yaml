@@ -7,8 +7,16 @@
 
 defaults:
     router_profile: router-gemini-flash
-    agent_profile: cohere-command-a
+    agent_profile: dbx-gpt-oss-20b
     router_mode: llm
+    graph_orchestrator: pydanticai
+
+graph_orchestration:
+    enabled_subquestion_decomposition: true
+    max_subquestions: 3
+    reserved_orchestration_steps: 3
+    specialist_step_cap: null
+    fallback_to_graph_agent: true
 
 providers:
     databricks:

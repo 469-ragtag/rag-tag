@@ -8,10 +8,13 @@ from typing import Any
 import networkx as nx
 
 from rag_tag.agent import GraphAgent
+from rag_tag.config import GraphOrchestrationConfig, load_project_config
 from rag_tag.graph import GraphRuntime, ensure_graph_runtime, load_graph_runtime
 from rag_tag.ifc_sql_tool import SqlQueryError, query_ifc_sql
 from rag_tag.paths import find_project_root
 from rag_tag.router import RouteDecision, route_question
+
+_VALID_GRAPH_ORCHESTRATORS = frozenset({"pydanticai", "langgraph"})
 
 
 def find_sqlite_dbs() -> list[Path]:
@@ -54,6 +57,33 @@ def load_graph(
             defaulting to ``"full"`` if unset.
     """
     return load_graph_runtime(dataset, payload_mode=payload_mode)
+
+
+def resolve_graph_orchestrator() -> str:
+    """Resolve the configured graph orchestrator name.
+
+    Defaults to ``"pydanticai"`` when the config key is absent or blank.
+    Raises ``ValueError`` for unrecognized configured values.
+    """
+    loaded = load_project_config(Path(__file__).resolve().parent)
+    configured = loaded.config.defaults.graph_orchestrator
+    if configured is None or not configured.strip():
+        return "pydanticai"
+
+    orchestrator = configured.strip().lower()
+    if orchestrator not in _VALID_GRAPH_ORCHESTRATORS:
+        allowed = ", ".join(sorted(_VALID_GRAPH_ORCHESTRATORS))
+        raise ValueError(
+            "Unsupported defaults.graph_orchestrator="
+            f"{configured!r}. Allowed values: {allowed}."
+        )
+    return orchestrator
+
+
+def get_graph_orchestration_config() -> GraphOrchestrationConfig:
+    """Return the typed graph orchestration config block."""
+    loaded = load_project_config(Path(__file__).resolve().parent)
+    return loaded.config.graph_orchestration
 
 
 def _available_graph_datasets(
