@@ -153,17 +153,37 @@ def _fuzzy_find_nodes_impl(
 
 
 def _find_container_elements_excluding_impl(
-    runtime: GraphRuntime,
-    container_id: str,
+    runtime_or_graph: GraphRuntime | Any,
+    container_or_query_fn: str | Any,
+    container_id: str | None = None,
+    *,
     exclude_container_ids: list[str] | None = None,
     depth: int = 4,
 ) -> dict[str, Any]:
-    """Return non-container members of one container minus excluded containers."""
-    graph = get_networkx_graph(runtime)
+    """Return non-container members of one container minus excluded containers.
 
-    if container_id not in graph:
+    Supports both the current runtime-oriented call shape:
+    ``(runtime, container_id, ...)`` and the older test helper shape:
+    ``(graph, query_fn, container_id, ...)``.
+    """
+    graph = get_networkx_graph(runtime_or_graph)
+
+    if callable(container_or_query_fn):
+        _legacy_query_fn = container_or_query_fn
+        del _legacy_query_fn
+        resolved_container_id = container_id
+    else:
+        resolved_container_id = container_or_query_fn
+
+    if not isinstance(resolved_container_id, str):
         return make_error_envelope(
-            f"Container not found: {container_id}",
+            "Container not found: None",
+            "not_found",
+        )
+
+    if resolved_container_id not in graph:
+        return make_error_envelope(
+            f"Container not found: {resolved_container_id}",
             "not_found",
         )
 
@@ -181,7 +201,9 @@ def _find_container_elements_excluding_impl(
             "invalid",
         )
 
-    included = _collect_container_descendants(graph, [container_id], depth=depth)
+    included = _collect_container_descendants(
+        graph, [resolved_container_id], depth=depth
+    )
     excluded = _collect_container_descendants(
         graph,
         exclude_container_ids,
@@ -195,24 +217,27 @@ def _find_container_elements_excluding_impl(
         ),
     )
 
+    elements = [
+        {
+            "id": node_id,
+            "label": graph.nodes[node_id].get("label"),
+            "class_": graph.nodes[node_id].get("class_"),
+            "properties": sanitize_properties_for_llm(
+                graph.nodes[node_id].get("properties") or {}
+            ),
+            "payload": None,
+        }
+        for node_id in element_ids
+    ]
+
     return {
         "status": "ok",
         "data": {
-            "container_id": container_id,
+            "container_id": resolved_container_id,
             "exclude_container_ids": exclude_container_ids,
             "count": len(element_ids),
-            "elements": [
-                {
-                    "id": node_id,
-                    "label": graph.nodes[node_id].get("label"),
-                    "class_": graph.nodes[node_id].get("class_"),
-                    "properties": sanitize_properties_for_llm(
-                        graph.nodes[node_id].get("properties") or {}
-                    ),
-                    "payload": None,
-                }
-                for node_id in element_ids
-            ],
+            "elements": elements,
+            "results": elements,
         },
         "error": None,
     }
