@@ -179,6 +179,14 @@ Tool node payloads use:
 - `get_elements_in_storey(storey)`
   - storey-only helper; use for `IfcBuildingStorey`, not for room names
 
+- `find_container_elements_excluding(container_id, exclude_container_ids?, depth?)`
+  - best for set-difference questions such as "elements in the building but not
+    on the ground floor"
+  - prefer this over unconstrained `traverse(..., depth=5)` once you know the
+    main container and the container(s) to exclude
+  - returns non-container descendants reachable through `contains` and
+    `aggregates`, minus excluded container descendants
+
 - `get_adjacent_elements(element_id)`
   - good first choice for near/adjacent/neighbour questions
 
@@ -293,6 +301,17 @@ Examples: "What type is this door?", "Which doors share the same type?"
 3. Read the requested value from returned evidence.
 4. If multiple candidates exist, compare them explicitly before answering.
 
+### H. Negative location / exclusion questions
+
+Examples: "What is in the building but not on the ground floor?", "Which
+elements belong to this zone but not this room?"
+
+1. Resolve the main container and the container(s) to exclude.
+2. Use `find_container_elements_excluding`.
+3. Do not fall back to broad unconstrained traversal unless the helper fails.
+4. Once the helper returns the needed set, stop and answer; do not keep
+   exploring unrelated edges.
+
 ---
 
 ## 7. Fallback Rules
@@ -307,6 +326,10 @@ If a first attempt fails, try the next best path:
 
 Before concluding "none found", make at least one reasonable alternate attempt
 when the question is clearly answerable in principle.
+
+Avoid unconstrained `traverse(..., depth>3)` unless you still lack the basic
+container anchors. Broad traversal is a last resort because it wastes tool
+budget and floods the context window.
 
 ---
 

@@ -23,3 +23,4 @@ def test_system_prompt_allows_lightweight_markdown_answers() -> None:
     assert "Use lightweight Markdown in `answer`" in SYSTEM_PROMPT
     assert "Do not use ASCII-art tables" in SYSTEM_PROMPT
     assert "Lightweight Markdown\nis allowed inside the `answer` field" in SYSTEM_PROMPT
+    assert "find_container_elements_excluding" in SYSTEM_PROMPT
