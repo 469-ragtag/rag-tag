@@ -39,6 +39,16 @@ import numpy as np
 import plotly.graph_objects as go
 import plotly.io as pio
 
+from rag_tag.graph.spatial_reasoning import (
+    FACING_MAX_DISTANCE,
+    SUPPORT_GAP_TOLERANCE,
+    bbox_contains,
+    bbox_vertical_overlap,
+    facing_score_between_nodes,
+    is_parallel,
+    is_perpendicular,
+    support_relation_between_nodes,
+)
 from rag_tag.paths import find_project_root
 
 LOG = logging.getLogger(__name__)
@@ -946,6 +956,14 @@ def build_graph_from_jsonl(
             "below",
             "intersects_3d",
             "touches_surface",
+            "supports",
+            "supported_by",
+            "rests_on",
+            "parallel_to",
+            "perpendicular_to",
+            "facing",
+            "inside_3d",
+            "contains_3d",
             "space_bounded_by",
             "bounds_space",
             "path_connected_to",
@@ -1361,6 +1379,7 @@ def add_topology_facts(G: nx.DiGraph | nx.MultiDiGraph) -> None:
                 )
             else:
                 overlap_area = _bbox_xy_overlap_area(bbox_a, bbox_b)
+            pair_distance = distance_between_bboxes(bbox_a, bbox_b)
             if overlap_area > 0.0:
                 _add_topology_edge(
                     a,
@@ -1412,6 +1431,149 @@ def add_topology_facts(G: nx.DiGraph | nx.MultiDiGraph) -> None:
                             intersection_volume=intersection_volume,
                             contact_area=contact_area,
                         )
+
+            if bbox_contains(bbox_a, bbox_b):
+                _add_topology_edge(
+                    a,
+                    b,
+                    relation="contains_3d",
+                    containment_ratio=1.0,
+                )
+                _add_topology_edge(
+                    b,
+                    a,
+                    relation="inside_3d",
+                    containment_ratio=1.0,
+                )
+            elif bbox_contains(bbox_b, bbox_a):
+                _add_topology_edge(
+                    b,
+                    a,
+                    relation="contains_3d",
+                    containment_ratio=1.0,
+                )
+                _add_topology_edge(
+                    a,
+                    b,
+                    relation="inside_3d",
+                    containment_ratio=1.0,
+                )
+
+            support_relation, support_score = support_relation_between_nodes(
+                G.nodes[a],
+                G.nodes[b],
+                gap_tolerance=SUPPORT_GAP_TOLERANCE,
+            )
+            if support_relation == "a_supports_b" and support_score is not None:
+                gap = max(0.0, float(bbox_b[0][2]) - float(bbox_a[1][2]))
+                _add_topology_edge(
+                    a,
+                    b,
+                    relation="supports",
+                    vertical_gap=gap,
+                    overlap_area_xy=overlap_area,
+                    support_score=support_score,
+                )
+                _add_topology_edge(
+                    b,
+                    a,
+                    relation="supported_by",
+                    vertical_gap=gap,
+                    overlap_area_xy=overlap_area,
+                    support_score=support_score,
+                )
+                _add_topology_edge(
+                    b,
+                    a,
+                    relation="rests_on",
+                    vertical_gap=gap,
+                    overlap_area_xy=overlap_area,
+                    support_score=support_score,
+                )
+            elif support_relation == "b_supports_a" and support_score is not None:
+                gap = max(0.0, float(bbox_a[0][2]) - float(bbox_b[1][2]))
+                _add_topology_edge(
+                    b,
+                    a,
+                    relation="supports",
+                    vertical_gap=gap,
+                    overlap_area_xy=overlap_area,
+                    support_score=support_score,
+                )
+                _add_topology_edge(
+                    a,
+                    b,
+                    relation="supported_by",
+                    vertical_gap=gap,
+                    overlap_area_xy=overlap_area,
+                    support_score=support_score,
+                )
+                _add_topology_edge(
+                    a,
+                    b,
+                    relation="rests_on",
+                    vertical_gap=gap,
+                    overlap_area_xy=overlap_area,
+                    support_score=support_score,
+                )
+
+            vertical_overlap = bbox_vertical_overlap(bbox_a, bbox_b)
+            if vertical_overlap > 0.0 and (
+                pair_distance <= FACING_MAX_DISTANCE or overlap_area > 0.0
+            ):
+                parallel, angle = is_parallel(G.nodes[a], G.nodes[b])
+                if parallel and angle is not None:
+                    parallel_score = max(0.0, 1.0 - min(angle, 90.0) / 90.0)
+                    _add_topology_edge(
+                        a,
+                        b,
+                        relation="parallel_to",
+                        axis_angle_deg=angle,
+                        parallel_score=parallel_score,
+                    )
+                    _add_topology_edge(
+                        b,
+                        a,
+                        relation="parallel_to",
+                        axis_angle_deg=angle,
+                        parallel_score=parallel_score,
+                    )
+                    facing_score = facing_score_between_nodes(G.nodes[a], G.nodes[b])
+                    if facing_score is not None and facing_score >= 0.35:
+                        _add_topology_edge(
+                            a,
+                            b,
+                            relation="facing",
+                            axis_angle_deg=angle,
+                            facing_score=facing_score,
+                            distance=pair_distance,
+                        )
+                        _add_topology_edge(
+                            b,
+                            a,
+                            relation="facing",
+                            axis_angle_deg=angle,
+                            facing_score=facing_score,
+                            distance=pair_distance,
+                        )
+
+                perpendicular, angle = is_perpendicular(G.nodes[a], G.nodes[b])
+                if perpendicular and angle is not None:
+                    perpendicular_score = max(0.0, 1.0 - (abs(90.0 - angle) / 90.0))
+                    _add_topology_edge(
+                        a,
+                        b,
+                        relation="perpendicular_to",
+                        axis_angle_deg=angle,
+                        perpendicular_score=perpendicular_score,
+                    )
+                    _add_topology_edge(
+                        b,
+                        a,
+                        relation="perpendicular_to",
+                        axis_angle_deg=angle,
+                        perpendicular_score=perpendicular_score,
+                    )
             # Only check vertical order if footprints overlap.
             if overlap_area <= 0.0:
                 continue
@@ -1466,6 +1628,14 @@ def plot_interactive_graph(G: nx.DiGraph | nx.MultiDiGraph, out_html: Path) -> N
         "overlaps_xy": "#0ea5e9",
         "intersects_3d": "#b91c1c",
         "touches_surface": "#9333ea",
+        "supports": "#7c2d12",
+        "supported_by": "#9a3412",
+        "rests_on": "#c2410c",
+        "parallel_to": "#1d4ed8",
+        "perpendicular_to": "#0f766e",
+        "facing": "#dc2626",
+        "inside_3d": "#0369a1",
+        "contains_3d": "#0284c7",
         "above": "#7c3aed",
         "below": "#9333ea",
         "hosts": "#b91c1c",
@@ -1489,6 +1659,14 @@ def plot_interactive_graph(G: nx.DiGraph | nx.MultiDiGraph, out_html: Path) -> N
         "overlaps_xy": "2D footprint overlap",
         "intersects_3d": "mesh-informed 3D intersection",
         "touches_surface": "mesh-informed surface contact",
+        "supports": "lower element supports upper element",
+        "supported_by": "upper element supported by lower element",
+        "rests_on": "upper element rests directly on lower element",
+        "parallel_to": "dominant horizontal axes are parallel",
+        "perpendicular_to": "dominant horizontal axes are perpendicular",
+        "facing": "parallel elements face across a clearance gap",
+        "inside_3d": "element is inside another element's 3D extent",
+        "contains_3d": "element contains another element's 3D extent",
         "above": "vertical ordering above",
         "below": "vertical ordering below",
         "hosts": "explicit IFC host relationship",
