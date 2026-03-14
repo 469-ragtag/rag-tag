@@ -122,8 +122,9 @@ Tool node payloads use:
 - Hierarchy: `aggregates`, `contains`, `contained_in`
 - Spatial: `adjacent_to`, `connected_to`
 - Topology: `above`, `below`, `overlaps_xy`, `intersects_bbox`,
-  `intersects_3d`, `touches_surface`, `space_bounded_by`, `bounds_space`,
-  `path_connected_to`
+  `intersects_3d`, `touches_surface`, `supports`, `supported_by`, `rests_on`,
+  `parallel_to`, `perpendicular_to`, `facing`, `inside_3d`, `contains_3d`,
+  `space_bounded_by`, `bounds_space`, `path_connected_to`
 - Explicit IFC: `hosts`, `hosted_by`, `ifc_connected_to`, `typed_by`,
   `belongs_to_system`, `in_zone`, `classified_as`
 
@@ -203,8 +204,22 @@ Tool node payloads use:
 - `spatial_query(near, max_distance, class_?)`
   - distance-based fallback when adjacency/topology is too strict or absent
 
+- `spatial_compare(element_a, element_b)`
+  - best for pairwise questions such as "does A support B?", "are these
+    walls parallel?", or "is X inside Y?"
+  - prefer this when the user names two concrete elements and asks for a
+    geometric relationship or comparison
+
+- `find_elements_within_clearance(element_id, max_distance, class_?, measure?)`
+  - best for proximity / clearance questions such as "within 1 meter" or
+    "closest nearby walls"
+  - use this before `spatial_query` when you need geometry-aware clearance
+    rather than a coarse adjacency fallback
+
 - `get_topology_neighbors(element_id, relation)`
   - use when the desired relation is known exactly, such as `above`, `below`,
+    `supports`, `supported_by`, `rests_on`, `parallel_to`,
+    `perpendicular_to`, `facing`, `inside_3d`, `contains_3d`,
     `intersects_bbox`, `touches_surface`, `space_bounded_by`, or
     `path_connected_to`
 
@@ -304,14 +319,24 @@ Examples: "What type is this door?", "Which doors share the same type?"
 2. Use `spatial_query` only as fallback for looser proximity answers.
 3. Keep `intersects_bbox` and `intersects_3d` distinct in your explanation.
 
-### G. Exact property questions
+### G. Support/orientation/containment questions
+
+1. For two named elements, prefer `spatial_compare`.
+2. For relation lookups, use `get_topology_neighbors` with `supports`,
+   `supported_by`, `rests_on`, `parallel_to`, `perpendicular_to`, `facing`,
+   `inside_3d`, or `contains_3d`.
+3. For "within X meters" or clearance wording, prefer
+   `find_elements_within_clearance`.
+4. Treat `spatial_query` as a coarse fallback, not the first choice.
+
+### H. Exact property questions
 
 1. Resolve the target element first.
 2. Call `get_element_properties`.
 3. Read the requested value from returned evidence.
 4. If multiple candidates exist, compare them explicitly before answering.
 
-### H. Negative location / exclusion questions
+### I. Negative location / exclusion questions
 
 Examples: "What is in the building but not on the ground floor?", "Which
 elements belong to this zone but not this room?"

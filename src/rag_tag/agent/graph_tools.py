@@ -450,6 +450,36 @@ def register_graph_tools(agent: Any) -> None:
         return ctx.deps.query("spatial_query", params)
 
     @agent.tool
+    def spatial_compare(
+        ctx: RunContext[GraphRuntime],
+        element_a: str,
+        element_b: str,
+    ) -> dict[str, Any]:
+        """Compare two elements using stored geometry and derived relation metrics."""
+        return ctx.deps.query(
+            "spatial_compare",
+            {"element_a": element_a, "element_b": element_b},
+        )
+
+    @agent.tool
+    def find_elements_within_clearance(
+        ctx: RunContext[GraphRuntime],
+        element_id: str,
+        max_distance: float,
+        class_: str | None = None,
+        measure: str = "surface",
+    ) -> dict[str, Any]:
+        """Find elements within a clearance threshold using geometry-aware distance."""
+        params: dict[str, Any] = {
+            "element_id": element_id,
+            "max_distance": max_distance,
+            "measure": measure,
+        }
+        if class_:
+            params["class"] = class_
+        return ctx.deps.query("find_elements_within_clearance", params)
+
+    @agent.tool
     def get_elements_in_storey(
         ctx: RunContext[GraphRuntime],
         storey: str,
@@ -499,8 +529,9 @@ def register_graph_tools(agent: Any) -> None:
         """Get topology neighbors for one relation.
 
         relation must be one of: above, below, overlaps_xy, intersects_bbox,
-        intersects_3d, touches_surface, space_bounded_by, bounds_space,
-        path_connected_to.
+        intersects_3d, touches_surface, supports, supported_by, rests_on,
+        parallel_to, perpendicular_to, facing, inside_3d, contains_3d,
+        space_bounded_by, bounds_space, path_connected_to.
         """
         return ctx.deps.query(
             "get_topology_neighbors",
