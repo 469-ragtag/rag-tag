@@ -75,16 +75,28 @@ class _QueryInput(Input):
     """
 
     BINDINGS: list[_Binding] = [  # type: ignore[assignment]
+        *[
+            _Binding(
+                key="delete",
+                action="delete_right",
+                description="Delete character right",
+                show=False,
+            )
+            if isinstance(b, _Binding) and b.key == "delete,ctrl+d"
+            else b
+            for b in Input.BINDINGS
+        ],
         _Binding(
-            key="delete",
-            action="delete_right",
-            description="Delete character right",
+            key="space",
+            action="insert_space",
+            description="Insert space",
             show=False,
-        )
-        if isinstance(b, _Binding) and b.key == "delete,ctrl+d"
-        else b
-        for b in Input.BINDINGS
+        ),
     ]
+
+    def action_insert_space(self) -> None:
+        """Insert a literal space for terminals that don't pass it through."""
+        self.insert_text_at_cursor(" ")
 
 
 class QueryApp(App[None]):
