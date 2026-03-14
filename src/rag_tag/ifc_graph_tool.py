@@ -22,8 +22,10 @@ from rag_tag.graph.properties import (
 )
 from rag_tag.graph.spatial_reasoning import (
     bbox_from_node,
+    candidate_node_ids_within_bbox_distance,
     centroid_from_node,
     compare_nodes_geometry,
+    get_spatial_index,
 )
 from rag_tag.graph.spatial_reasoning import (
     distance_between_bboxes as _distance_between_bboxes_shared,
@@ -949,10 +951,32 @@ def query_ifc_graph(
         source_bbox = bbox_from_node(source_node)
         source_centroid = centroid_from_node(source_node)
         results = []
+        candidate_node_ids: list[str]
+        if source_bbox is not None:
+            spatial_index = get_spatial_index(G)
+            indexed_candidates = candidate_node_ids_within_bbox_distance(
+                spatial_index,
+                source_bbox,
+                max_distance_value,
+                exclude_node_id=resolved,
+            )
+            bboxless_candidates = [
+                str(node_id)
+                for node_id, node_data in G.nodes(data=True)
+                if str(node_id).startswith("Element::")
+                and node_id != resolved
+                and bbox_from_node(node_data) is None
+            ]
+            candidate_node_ids = list(indexed_candidates) + bboxless_candidates
+        else:
+            candidate_node_ids = [
+                str(node_id)
+                for node_id in G.nodes
+                if str(node_id).startswith("Element::") and node_id != resolved
+            ]
 
-        for node_id, node_data in G.nodes(data=True):
-            if node_id == resolved or not str(node_id).startswith("Element::"):
-                continue
+        for node_id in candidate_node_ids:
+            node_data = G.nodes[node_id]
             if class_filter is not None:
                 if str(node_data.get("class_", "")).lower() != class_filter.lower():
                     continue
