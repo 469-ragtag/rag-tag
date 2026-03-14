@@ -12,6 +12,7 @@ __all__ = [
     "register_backend",
     "wrap_networkx_graph",
     "close_runtime",
+    "get_networkx_graph",
 ]
 
 
@@ -20,6 +21,7 @@ def __getattr__(name: str):
         from rag_tag.graph.runtime import (
             GraphRuntime,
             close_runtime,
+            get_networkx_graph,
             register_backend,
             wrap_networkx_graph,
         )
@@ -29,6 +31,7 @@ def __getattr__(name: str):
             "register_backend": register_backend,
             "wrap_networkx_graph": wrap_networkx_graph,
             "close_runtime": close_runtime,
+            "get_networkx_graph": get_networkx_graph,
         }
         return exports[name]
     raise AttributeError(name)
