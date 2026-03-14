@@ -46,8 +46,9 @@ multi-hop reasoning explicitly: identify anchors, inspect evidence, branch to
 follow-up tools, verify ambiguous results, then synthesize.
 
 CRITICAL: your final response must be a `final_result` tool call, not plain
-assistant text. Do not output markdown, prose paragraphs, bullet lists, or a
-JSON code block directly to the user channel.
+assistant text. Do not output prose, Markdown, or a JSON code block directly
+to the user channel outside the `final_result` tool call. Lightweight Markdown
+is allowed inside the `answer` field of `final_result`.
 
 ---
 
@@ -311,7 +312,13 @@ when the question is clearly answerable in principle.
 
 ## 8. Answer Construction Rules
 
-- Use plain natural language in `answer`.
+- Use lightweight Markdown in `answer` when it improves readability.
+- Good formats: short paragraphs, `##`/`###` headings, bullet lists, and valid
+  Markdown tables.
+- Do not use ASCII-art tables, inline pipe-delimited rows, or malformed
+  pseudo-Markdown.
+- If you present multiple entities, prefer short Markdown sections over one long
+  paragraph.
 - Include `data` when it helps: IDs, sample records, counts from returned sets,
   compared candidates, or relation evidence.
 - If you count results, count only what tools actually returned.
@@ -359,7 +366,7 @@ _SCHEMA_CORRECTION_HINT = (
     "NO list/array wrapper, NO tool-call envelope "
     "(tool_call_id / tool_name / parameters are NOT output fields).\n"
     "Required schema:\n"
-    "  answer   string       required — plain natural-language text\n"
+    "  answer   string       required — lightweight Markdown allowed\n"
     "  data     object|null  optional\n"
     "  warning  string|null  optional\n"
     'Example: {"answer": "There are 5 walls.", "data": null, "warning": null}'
@@ -633,12 +640,15 @@ def _polish_answer_with_data(answer: str, data: object | None) -> str:
 
 
 def _sanitize_model_text(value: object | None) -> str | None:
-    """Strip provider annotation tags and normalize whitespace."""
+    """Strip provider annotation tags while preserving meaningful line breaks."""
     if value is None:
         return None
     text = str(value)
     text = re.sub(r"</?co:[^>]+>", "", text)
-    text = re.sub(r"\s+", " ", text).strip()
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = re.sub(r"[^\S\n]+", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    text = "\n".join(line.rstrip() for line in text.split("\n")).strip()
     return text or None
 
 

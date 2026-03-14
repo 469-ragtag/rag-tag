@@ -15,14 +15,15 @@ from textual.binding import Binding as _Binding
 from textual.containers import ScrollableContainer, Vertical
 from textual.reactive import reactive
 from textual.theme import Theme
-from textual.widgets import Footer, Header, Input, Static
+from textual.widget import Widget
+from textual.widgets import Footer, Header, Input, Markdown, Static
 from textual.worker import Worker
 
 from rag_tag.agent import GraphAgent
 from rag_tag.graph import GraphRuntime
 from rag_tag.query_service import execute_query, find_sqlite_dbs
 
-# Maximum Static widgets kept in the output area before oldest are pruned.
+# Maximum output widgets kept in the output area before oldest are pruned.
 _HISTORY_MAX = 200
 
 # Maximum JSON lines shown in verbose detail per answer.
@@ -133,6 +134,12 @@ class QueryApp(App[None]):
     .answer {
         color: $success;
         text-style: bold;
+    }
+
+    .answer-markdown {
+        margin: 0 0 0 3;
+        color: $foreground;
+        background: transparent;
     }
 
     .error {
@@ -476,9 +483,7 @@ class QueryApp(App[None]):
             )
         else:
             answer = result.get("answer") or "No answer produced."
-            self._append_output(
-                f"A: {self._truncate(str(answer), 400)}", style="answer"
-            )
+            self._append_answer_output(str(answer))
             warning = result.get("warning")
             if warning:
                 self._append_output(
@@ -581,6 +586,32 @@ class QueryApp(App[None]):
 
     # ----------------------------------------------------------- output / status
 
+    def _append_answer_output(self, answer: str) -> None:
+        """Mount the answer label plus a Markdown-rendered answer body."""
+        self._append_output("A:", style="answer")
+        markdown = Markdown(answer, classes="answer-markdown")
+        setattr(markdown, "code_indent_guides", False)
+        self._mount_output_widget(markdown)
+
+    def _mount_output_widget(self, widget: Widget, *, verbose: bool = False) -> None:
+        """Mount an output widget, pruning history and preserving scroll behavior."""
+        output = self._output_panel()
+
+        if verbose:
+            widget.add_class("verbose-detail")
+            if self.show_verbose:
+                widget.add_class("visible")
+        else:
+            children = list(output.children)
+            non_verbose = [c for c in children if "verbose-detail" not in c.classes]
+            if len(non_verbose) >= _HISTORY_MAX:
+                remove_count = len(non_verbose) - _HISTORY_MAX + 1
+                for child in non_verbose[:remove_count]:
+                    child.remove()
+
+        output.mount(widget)
+        self._output_container().scroll_end(animate=False)
+
     def _append_output(
         self, text: str, *, style: str = "", verbose: bool = False
     ) -> None:
@@ -593,31 +624,13 @@ class QueryApp(App[None]):
                 Verbose-detail widgets are excluded from the history cap so that
                 hidden JSON lines do not displace visible Q/A content.
         """
-        output = self._output_panel()
-
-        # Keep memory bounded.  Verbose-detail widgets (hidden by default) must
-        # not count toward the cap or they would silently crowd out visible lines.
-        if not verbose:
-            children = list(output.children)
-            non_verbose = [c for c in children if "verbose-detail" not in c.classes]
-            if len(non_verbose) >= _HISTORY_MAX:
-                remove_count = len(non_verbose) - _HISTORY_MAX + 1
-                for child in non_verbose[:remove_count]:
-                    child.remove()
-
-        # Build the CSS class string.
         classes: list[str] = []
         if style:
             classes.append(style)
-        if verbose:
-            classes.append("verbose-detail")
-            if self.show_verbose:
-                classes.append("visible")
-
-        line = Static(text, classes=" ".join(classes), markup=False)
-        output.mount(line)
-
-        self._output_container().scroll_end(animate=False)
+        self._mount_output_widget(
+            Static(text, classes=" ".join(classes), markup=False),
+            verbose=verbose,
+        )
 
     def _update_status(self, text: str) -> None:
         """Replace the status-bar content."""
