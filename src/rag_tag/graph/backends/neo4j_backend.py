@@ -118,6 +118,9 @@ class Neo4jBackend:
                     properties = {}
                 _merge_scalar_properties(properties, node)
                 payload = _decode_json(node.get("payload_json"))
+                geometry = _decode_json(node.get("geometry_json")) or {}
+                if not isinstance(geometry, dict):
+                    geometry = {}
                 G.add_node(
                     node_id,
                     label=node.get("label"),
@@ -125,6 +128,7 @@ class Neo4jBackend:
                     node_kind=node.get("node_kind"),
                     properties=properties,
                     payload=payload if isinstance(payload, dict) else {},
+                    **geometry,
                 )
         G.graph["_payload_mode"] = "full"
         if self.db_path is not None:
@@ -263,8 +267,6 @@ class Neo4jBackend:
         *,
         payload_mode: str = LLM_PAYLOAD_MODE,
     ) -> dict[str, Any]:
-        if self._conn_error:
-            return self._err(self._conn_error, "neo4j_not_configured")
         if not isinstance(action, str):
             return self._err("Invalid action: action must be a string", "invalid")
         action = normalize_action_name(action)
@@ -360,6 +362,13 @@ class Neo4jBackend:
             # Key discovery uses the same NetworkX-based helper logic.
             catalog = self._ensure_catalog_graph()
             return query_ifc_graph_catalog(catalog, action, params, payload_mode)
+
+        if action in {"spatial_compare", "find_elements_within_clearance"}:
+            catalog = self._ensure_catalog_graph()
+            return query_ifc_graph_catalog(catalog, action, params, payload_mode)
+
+        if self._conn_error:
+            return self._err(self._conn_error, "neo4j_not_configured")
 
         if action == "get_element_properties":
             element_id = params.get("element_id")
@@ -517,6 +526,12 @@ class Neo4jBackend:
                             "overlap_area_xy": r.get("overlap_area_xy"),
                             "intersection_volume": r.get("intersection_volume"),
                             "contact_area": r.get("contact_area"),
+                            "axis_angle_deg": r.get("axis_angle_deg"),
+                            "parallel_score": r.get("parallel_score"),
+                            "perpendicular_score": r.get("perpendicular_score"),
+                            "facing_score": r.get("facing_score"),
+                            "support_score": r.get("support_score"),
+                            "containment_ratio": r.get("containment_ratio"),
                             "source": self._edge_source(rel, r.get("source")),
                         }
                     )
@@ -925,6 +940,9 @@ def _node_data_from_neo4j(node: Any) -> dict[str, Any]:
     payload = _decode_json(node.get("payload_json"))
     if not isinstance(payload, dict):
         payload = {}
+    geometry = _decode_json(node.get("geometry_json")) or {}
+    if not isinstance(geometry, dict):
+        geometry = {}
     return {
         "id": node.get("node_id"),
         "label": node.get("label"),
@@ -932,6 +950,7 @@ def _node_data_from_neo4j(node: Any) -> dict[str, Any]:
         "node_kind": node.get("node_kind"),
         "properties": properties,
         "payload": payload,
+        **geometry,
     }
 
 

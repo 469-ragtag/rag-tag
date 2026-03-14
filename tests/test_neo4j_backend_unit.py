@@ -73,3 +73,46 @@ def test_resolve_storey_node_uses_context_managed_session(
     assert err is None
     assert fake_context.enter_count == 1
     assert fake_context.exit_count == 1
+
+
+def test_catalog_backed_geometry_actions_work_without_neo4j_env(monkeypatch) -> None:
+    graph = nx.MultiDiGraph()
+    graph.add_node(
+        "Element::A",
+        label="A",
+        class_="IfcWall",
+        properties={"GlobalId": "A"},
+        payload={},
+        bbox={"min": [0.0, 0.0, 0.0], "max": [1.0, 0.2, 2.0]},
+        spatial_descriptor={
+            "principal_axis": [1.0, 0.0, 0.0],
+            "dominant_horizontal_direction": [1.0, 0.0, 0.0],
+        },
+    )
+    graph.add_node(
+        "Element::B",
+        label="B",
+        class_="IfcWall",
+        properties={"GlobalId": "B"},
+        payload={},
+        bbox={"min": [0.0, 1.0, 0.0], "max": [1.0, 1.2, 2.0]},
+        spatial_descriptor={
+            "principal_axis": [1.0, 0.0, 0.0],
+            "dominant_horizontal_direction": [1.0, 0.0, 0.0],
+        },
+    )
+
+    monkeypatch.delenv("NEO4J_URI", raising=False)
+    monkeypatch.delenv("NEO4J_USERNAME", raising=False)
+    monkeypatch.delenv("NEO4J_PASSWORD", raising=False)
+
+    backend = Neo4jBackend(graph=graph)
+
+    result = backend.query(
+        "spatial_compare",
+        {"element_a": "Element::A", "element_b": "Element::B"},
+    )
+
+    assert result["status"] == "ok"
+    assert result["data"]["element_a"] == "Element::A"
+    assert result["data"]["element_b"] == "Element::B"
