@@ -20,6 +20,17 @@ from rag_tag.graph.properties import (
 from rag_tag.graph.properties import (
     merge_db_element_data as _merge_db_element_data_shared,
 )
+from rag_tag.graph.spatial_reasoning import (
+    bbox_from_node,
+    centroid_from_node,
+    compare_nodes_geometry,
+)
+from rag_tag.graph.spatial_reasoning import (
+    distance_between_bboxes as _distance_between_bboxes_shared,
+)
+from rag_tag.graph.spatial_reasoning import (
+    distance_between_points as _distance_between_points_shared,
+)
 from rag_tag.graph_contract import (
     CANONICAL_ACTIONS,
     CANONICAL_RELATION_SET,
@@ -410,6 +421,39 @@ def query_ifc_graph(
                 seen.add(key)
                 yield nbr, edge
 
+    def _best_pair_edge(a: str, b: str) -> dict[str, Any] | None:
+        priority = {
+            "intersects_3d": 0,
+            "touches_surface": 1,
+            "connected_to": 2,
+            "adjacent_to": 3,
+            "supports": 4,
+            "supported_by": 4,
+            "rests_on": 4,
+            "contains_3d": 5,
+            "inside_3d": 5,
+            "parallel_to": 6,
+            "perpendicular_to": 6,
+            "facing": 6,
+            "overlaps_xy": 7,
+            "intersects_bbox": 8,
+            "above": 9,
+            "below": 9,
+        }
+        best: dict[str, Any] | None = None
+        best_priority = 10_000
+        for u, v in ((a, b), (b, a)):
+            for edge in _iter_edge_dicts(u, v):
+                relation = _edge_relation(edge)
+                if relation is None:
+                    continue
+                current_priority = priority.get(relation, 99)
+                if current_priority >= best_priority:
+                    continue
+                best_priority = current_priority
+                best = {"relation": relation, **edge}
+        return best
+
     def _apply_property_filters(
         node_id: str,
         filters: Dict[str, Any],
@@ -563,6 +607,12 @@ def query_ifc_graph(
                     "overlap_area_xy": edge.get("overlap_area_xy"),
                     "intersection_volume": edge.get("intersection_volume"),
                     "contact_area": edge.get("contact_area"),
+                    "axis_angle_deg": edge.get("axis_angle_deg"),
+                    "parallel_score": edge.get("parallel_score"),
+                    "perpendicular_score": edge.get("perpendicular_score"),
+                    "facing_score": edge.get("facing_score"),
+                    "support_score": edge.get("support_score"),
+                    "containment_ratio": edge.get("containment_ratio"),
                     "source": _edge_source(edge, edge_relation),
                 }
             )
@@ -614,6 +664,63 @@ def query_ifc_graph(
             )
         return _ok_action(
             action, {"element_id": resolved, "intersections_3d": neighbors}
+        )
+
+    if action == "spatial_compare":
+        element_a = params.get("element_a")
+        element_b = params.get("element_b")
+        if not element_a:
+            return _err("Missing param: element_a", "missing_param")
+        if not isinstance(element_a, str):
+            return _err("Invalid param: element_a must be a string", "invalid")
+        if not element_b:
+            return _err("Missing param: element_b", "missing_param")
+        if not isinstance(element_b, str):
+            return _err("Invalid param: element_b must be a string", "invalid")
+
+        resolved_a, err = _resolve_element_id(element_a)
+        if err:
+            error_msg = err.get("error", "Unknown error")
+            code = "ambiguous" if "Ambiguous" in str(error_msg) else "not_found"
+            return _err(
+                str(error_msg),
+                code,
+                (
+                    {"candidates": err.get("candidates", [])}
+                    if code == "ambiguous"
+                    else None
+                ),
+            )
+
+        resolved_b, err = _resolve_element_id(element_b)
+        if err:
+            error_msg = err.get("error", "Unknown error")
+            code = "ambiguous" if "Ambiguous" in str(error_msg) else "not_found"
+            return _err(
+                str(error_msg),
+                code,
+                (
+                    {"candidates": err.get("candidates", [])}
+                    if code == "ambiguous"
+                    else None
+                ),
+            )
+
+        if resolved_a is None or resolved_b is None:
+            return _err("One or both elements were not found", "not_found")
+
+        comparison = compare_nodes_geometry(
+            G.nodes[resolved_a],
+            G.nodes[resolved_b],
+            edge_metrics=_best_pair_edge(resolved_a, resolved_b),
+        )
+        return _ok_action(
+            action,
+            {
+                "element_a": resolved_a,
+                "element_b": resolved_b,
+                **comparison,
+            },
         )
 
     if action == "find_nodes":
@@ -789,6 +896,121 @@ def query_ifc_graph(
             {
                 "near": resolved,
                 "max_distance": max_distance_value,
+                "results": results,
+            },
+        )
+
+    if action == "find_elements_within_clearance":
+        element_id = params.get("element_id")
+        max_distance = params.get("max_distance")
+        measure = params.get("measure", "surface")
+        cls = params.get("class")
+
+        if not element_id:
+            return _err("Missing param: element_id", "missing_param")
+        if not isinstance(element_id, str):
+            return _err("Invalid param: element_id must be a string", "invalid")
+        if max_distance is None:
+            return _err("Missing param: max_distance", "missing_param")
+        try:
+            max_distance_value = float(max_distance)
+        except (TypeError, ValueError):
+            return _err("Invalid param: max_distance must be a number", "invalid")
+
+        if not isinstance(measure, str):
+            return _err("Invalid param: measure must be a string", "invalid")
+        measure_value = measure.strip().lower() or "surface"
+        if measure_value not in {"surface", "bbox", "centroid"}:
+            return _err(
+                "Invalid param: measure must be one of surface, bbox, centroid",
+                "invalid",
+            )
+
+        if cls is not None and not isinstance(cls, str):
+            return _err("Invalid param: class must be a string", "invalid")
+        class_filter = _normalize_class(cls) if cls else None
+
+        resolved, err = _resolve_element_id(element_id)
+        if err:
+            error_msg = err.get("error", "Unknown error")
+            if "Ambiguous" in str(error_msg):
+                return _err(
+                    str(error_msg),
+                    "ambiguous",
+                    {"candidates": err.get("candidates", [])},
+                )
+            if "Invalid element_id" in str(error_msg):
+                return _err(str(error_msg), "invalid")
+            return _err(str(error_msg), "not_found")
+        if resolved is None:
+            return _err(f"Element not found: {element_id}", "not_found")
+
+        source_node = G.nodes[resolved]
+        source_bbox = bbox_from_node(source_node)
+        source_centroid = centroid_from_node(source_node)
+        results = []
+
+        for node_id, node_data in G.nodes(data=True):
+            if node_id == resolved or not str(node_id).startswith("Element::"):
+                continue
+            if class_filter is not None:
+                if str(node_data.get("class_", "")).lower() != class_filter.lower():
+                    continue
+
+            comparison = compare_nodes_geometry(
+                source_node,
+                node_data,
+                edge_metrics=_best_pair_edge(resolved, str(node_id)),
+            )
+            distance_value = comparison.get("surface_distance")
+
+            if measure_value == "bbox":
+                target_bbox = bbox_from_node(node_data)
+                if source_bbox is not None and target_bbox is not None:
+                    distance_value = _distance_between_bboxes_shared(
+                        source_bbox, target_bbox
+                    )
+            elif measure_value == "centroid":
+                target_centroid = centroid_from_node(node_data)
+                if source_centroid is not None and target_centroid is not None:
+                    distance_value = _distance_between_points_shared(
+                        source_centroid, target_centroid
+                    )
+
+            if distance_value is None or float(distance_value) > max_distance_value:
+                continue
+
+            results.append(
+                {
+                    "id": node_id,
+                    "label": node_data.get("label"),
+                    "class_": node_data.get("class_"),
+                    "surface_distance": float(distance_value),
+                    "direction_vector": comparison.get("direction_vector"),
+                    "axis_angle_deg": comparison.get("axis_angle_deg"),
+                    "parallel_score": comparison.get("parallel_score"),
+                    "facing_score": comparison.get("facing_score"),
+                    "support_relation": comparison.get("support_relation"),
+                    "inside_or_contains": comparison.get("inside_or_contains"),
+                    "source": comparison.get("source"),
+                    "verified": comparison.get("verified"),
+                }
+            )
+
+        results.sort(
+            key=lambda item: (
+                float(item.get("surface_distance") or 0.0),
+                str(item.get("label") or ""),
+                str(item.get("id") or ""),
+            )
+        )
+        return _ok_action(
+            action,
+            {
+                "element_id": resolved,
+                "max_distance": max_distance_value,
+                "measure": measure_value,
+                "class": class_filter,
                 "results": results,
             },
         )
