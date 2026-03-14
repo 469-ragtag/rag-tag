@@ -7,9 +7,11 @@ import networkx as nx
 import pytest
 from pydantic_ai.models.test import TestModel
 
+from rag_tag.agent import LangGraphAgent
 from rag_tag.agent.graph_agent import GraphAgent
 from rag_tag.agent.graph_tools import _fuzzy_find_nodes_impl
 from rag_tag.agent.models import GraphAnswer
+from rag_tag.config import GraphOrchestrationConfig
 from rag_tag.graph import GraphRuntime, wrap_networkx_graph
 from rag_tag.ifc_graph_tool import query_ifc_graph
 from rag_tag.query_service import _ensure_graph_context
@@ -149,3 +151,26 @@ def test_graph_agent_deps_and_tool_helpers_use_graph_runtime(
     fuzzy = _fuzzy_find_nodes_impl(runtime, "plumbing wall")
     assert fuzzy["status"] == "ok"
     assert fuzzy["data"]["matches"][0]["id"] == "Element::wall-occ"
+
+
+def test_ensure_graph_context_can_create_langgraph_agent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("rag_tag.agent.graph_agent.get_agent_model", TestModel)
+    monkeypatch.setattr(
+        "rag_tag.query_service.resolve_graph_orchestrator",
+        lambda: "langgraph",
+    )
+    monkeypatch.setattr(
+        "rag_tag.query_service.get_graph_orchestration_config",
+        lambda: GraphOrchestrationConfig(),
+    )
+
+    runtime, agent = _ensure_graph_context(
+        wrap_networkx_graph(nx.MultiDiGraph()),
+        agent=None,
+        debug_llm_io=False,
+    )
+
+    assert isinstance(runtime, GraphRuntime)
+    assert isinstance(agent, LangGraphAgent)

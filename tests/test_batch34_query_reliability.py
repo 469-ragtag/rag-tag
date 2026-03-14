@@ -8,6 +8,7 @@ from pydantic_ai.exceptions import UsageLimitExceeded
 from pydantic_ai.models.test import TestModel
 
 from rag_tag.agent.graph_agent import GraphAgent
+from rag_tag.config import GraphOrchestrationConfig
 from rag_tag.graph import GraphRuntime, wrap_networkx_graph
 from rag_tag.query_service import execute_query, execute_sql_query
 from rag_tag.router.models import RouteDecision, SqlRequest
@@ -145,3 +146,71 @@ def test_graph_agent_honors_usage_limit(monkeypatch: pytest.MonkeyPatch) -> None
     assert "max_steps=1" in warning
     assert isinstance(data, dict)
     assert data.get("max_steps") == 1
+
+
+def test_execute_query_preserves_bundle_shape_with_langgraph_orchestrator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rag_tag import query_service
+
+    class FakeLangGraphAgent:
+        def __init__(
+            self,
+            *,
+            debug_llm_io: bool = False,
+            orchestration_config: GraphOrchestrationConfig | None = None,
+        ) -> None:
+            self.debug_llm_io = debug_llm_io
+            self.orchestration_config = orchestration_config
+
+        def run(
+            self,
+            question: str,
+            runtime: GraphRuntime,
+            *,
+            max_steps: int = 20,
+            trace: object | None = None,
+            run_id: str | None = None,
+        ) -> dict[str, object]:
+            del runtime, trace, run_id
+            return {
+                "answer": f"langgraph:{question}",
+                "data": {"max_steps": max_steps},
+            }
+
+    graph = nx.MultiDiGraph()
+    graph.graph["datasets"] = ["model-a"]
+    runtime = wrap_networkx_graph(graph)
+    decision = RouteDecision(route="graph", reason="graph route", sql_request=None)
+
+    monkeypatch.setattr(query_service, "LangGraphAgent", FakeLangGraphAgent)
+    monkeypatch.setattr(
+        query_service,
+        "resolve_graph_orchestrator",
+        lambda: "langgraph",
+    )
+    monkeypatch.setattr(
+        query_service,
+        "get_graph_orchestration_config",
+        lambda: GraphOrchestrationConfig(),
+    )
+
+    bundle = execute_query(
+        "Which rooms are adjacent to the kitchen?",
+        db_paths=[],
+        runtime=runtime,
+        agent=None,
+        decision=decision,
+        graph_dataset="model-a",
+        graph_max_steps=7,
+    )
+
+    assert bundle["runtime"] is runtime
+    assert bundle["graph"] is runtime
+    assert isinstance(bundle["agent"], FakeLangGraphAgent)
+    assert bundle["result"] == {
+        "route": "graph",
+        "decision": "graph route",
+        "answer": "langgraph:Which rooms are adjacent to the kitchen?",
+        "data": {"max_steps": 7},
+    }
