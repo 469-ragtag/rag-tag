@@ -406,9 +406,7 @@ def _ensure_graph_context(
     # Extract the underlying NetworkX graph through the public runtime API.
     existing_runtime = graph if isinstance(graph, GraphRuntime) else None
     nx_graph = (
-        existing_runtime.get_networkx_graph()
-        if existing_runtime is not None
-        else graph
+        existing_runtime.get_networkx_graph() if existing_runtime is not None else graph
     )
 
     if nx_graph is None:
