@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import math
+from collections import defaultdict
+from dataclasses import dataclass
 from typing import Any
 
+import networkx as nx
 import numpy as np
 
 ORIENTATION_ANGLE_TOLERANCE_DEG = 15.0
@@ -11,6 +14,22 @@ SUPPORT_GAP_TOLERANCE = 0.05
 FACING_MAX_DISTANCE = 2.0
 CONTAINMENT_TOLERANCE = 1e-6
 MAX_MESH_POINTS = 256
+MIN_SPATIAL_INDEX_CELL_SIZE = 1.0
+
+type BBox3D = tuple[tuple[float, float, float], tuple[float, float, float]]
+type Point3D = tuple[float, float, float]
+
+
+@dataclass(slots=True)
+class SpatialIndex:
+    node_ids: tuple[str, ...]
+    bboxes: tuple[BBox3D, ...]
+    centroids: tuple[Point3D | None, ...]
+    node_to_index: dict[str, int]
+    xy_cell_size: float
+    grid_3d_cell_size: float
+    xy_grid: dict[tuple[int, int], tuple[int, ...]]
+    grid_3d: dict[tuple[int, int, int], tuple[int, ...]]
 
 
 def centroid_from_node(node_data: dict[str, Any]) -> tuple[float, float, float] | None:
@@ -177,6 +196,116 @@ def bbox_contains(
         outer[0][i] - tolerance <= inner[0][i] <= inner[1][i] <= outer[1][i] + tolerance
         for i in range(3)
     )
+
+
+def get_spatial_index(
+    graph: nx.Graph | nx.DiGraph | nx.MultiGraph | nx.MultiDiGraph,
+) -> SpatialIndex:
+    node_ids: list[str] = []
+    bboxes: list[BBox3D] = []
+    centroids: list[Point3D | None] = []
+
+    for node_id, node_data in graph.nodes(data=True):
+        if not str(node_id).startswith("Element::"):
+            continue
+        bbox = bbox_from_node(node_data)
+        if bbox is None:
+            continue
+        node_ids.append(str(node_id))
+        bboxes.append(bbox)
+        centroids.append(centroid_from_node(node_data))
+
+    wanted = frozenset(node_ids)
+    cached = graph.graph.get("_spatial_index")
+    cached_nodes = graph.graph.get("_spatial_index_node_ids")
+    if isinstance(cached, SpatialIndex) and cached_nodes == wanted:
+        return cached
+
+    index = _build_spatial_index(node_ids, bboxes, centroids)
+    graph.graph["_spatial_index"] = index
+    graph.graph["_spatial_index_node_ids"] = wanted
+    return index
+
+
+def candidate_node_ids_with_xy_overlap(
+    index: SpatialIndex,
+    bbox: BBox3D,
+    *,
+    exclude_node_id: str | None = None,
+) -> tuple[str, ...]:
+    candidates: set[int] = set()
+    exclude_idx = index.node_to_index.get(exclude_node_id) if exclude_node_id else None
+    for key in _bbox_xy_cell_keys(bbox, index.xy_cell_size):
+        candidates.update(index.xy_grid.get(key, ()))
+
+    matches: list[str] = []
+    for candidate_idx in sorted(candidates):
+        if candidate_idx == exclude_idx:
+            continue
+        if bbox_xy_overlap_area(bbox, index.bboxes[candidate_idx]) <= 0.0:
+            continue
+        matches.append(index.node_ids[candidate_idx])
+    return tuple(matches)
+
+
+def candidate_node_ids_within_bbox_distance(
+    index: SpatialIndex,
+    bbox: BBox3D,
+    max_distance: float,
+    *,
+    exclude_node_id: str | None = None,
+) -> tuple[str, ...]:
+    distance_limit = max(float(max_distance), 0.0)
+    candidates: set[int] = set()
+    exclude_idx = index.node_to_index.get(exclude_node_id) if exclude_node_id else None
+    expanded_bbox = _expand_bbox(bbox, distance_limit)
+    for key in _bbox_3d_cell_keys(expanded_bbox, index.grid_3d_cell_size):
+        candidates.update(index.grid_3d.get(key, ()))
+
+    matches: list[str] = []
+    for candidate_idx in sorted(candidates):
+        if candidate_idx == exclude_idx:
+            continue
+        if (
+            distance_between_bboxes(bbox, index.bboxes[candidate_idx]) - distance_limit
+            > 1e-9
+        ):
+            continue
+        matches.append(index.node_ids[candidate_idx])
+    return tuple(matches)
+
+
+def iter_topology_candidate_pairs(
+    index: SpatialIndex,
+    *,
+    near_distance: float = FACING_MAX_DISTANCE,
+) -> tuple[tuple[str, str], ...]:
+    pairs: set[tuple[int, int]] = set()
+    distance_limit = max(float(near_distance), 0.0)
+
+    for idx, node_id in enumerate(index.node_ids):
+        bbox = index.bboxes[idx]
+
+        for other_node_id in candidate_node_ids_with_xy_overlap(
+            index,
+            bbox,
+            exclude_node_id=node_id,
+        ):
+            other_idx = index.node_to_index[other_node_id]
+            pair = (idx, other_idx) if idx < other_idx else (other_idx, idx)
+            pairs.add(pair)
+
+        for other_node_id in candidate_node_ids_within_bbox_distance(
+            index,
+            bbox,
+            distance_limit,
+            exclude_node_id=node_id,
+        ):
+            other_idx = index.node_to_index[other_node_id]
+            pair = (idx, other_idx) if idx < other_idx else (other_idx, idx)
+            pairs.add(pair)
+
+    return tuple((index.node_ids[i], index.node_ids[j]) for i, j in sorted(pairs))
 
 
 def dominant_horizontal_axis(
@@ -506,3 +635,108 @@ def _dominant_axis_from_points(
         return None
     axis = eigenvectors[:, int(np.argmax(eigenvalues))]
     return _normalize_2d(np.asarray(axis, dtype=float))
+
+
+def _build_spatial_index(
+    node_ids: list[str],
+    bboxes: list[BBox3D],
+    centroids: list[Point3D | None],
+) -> SpatialIndex:
+    xy_cell_size = _estimate_spatial_index_cell_size(bboxes, dimensions=2)
+    grid_3d_cell_size = _estimate_spatial_index_cell_size(bboxes, dimensions=3)
+    xy_grid: dict[tuple[int, int], list[int]] = defaultdict(list)
+    grid_3d: dict[tuple[int, int, int], list[int]] = defaultdict(list)
+
+    for idx, bbox in enumerate(bboxes):
+        for key in _bbox_xy_cell_keys(bbox, xy_cell_size):
+            xy_grid[key].append(idx)
+        for key in _bbox_3d_cell_keys(bbox, grid_3d_cell_size):
+            grid_3d[key].append(idx)
+
+    return SpatialIndex(
+        node_ids=tuple(node_ids),
+        bboxes=tuple(bboxes),
+        centroids=tuple(centroids),
+        node_to_index={node_id: idx for idx, node_id in enumerate(node_ids)},
+        xy_cell_size=xy_cell_size,
+        grid_3d_cell_size=grid_3d_cell_size,
+        xy_grid={key: tuple(values) for key, values in xy_grid.items()},
+        grid_3d={key: tuple(values) for key, values in grid_3d.items()},
+    )
+
+
+def _estimate_spatial_index_cell_size(
+    bboxes: list[BBox3D],
+    *,
+    dimensions: int,
+) -> float:
+    if not bboxes:
+        return MIN_SPATIAL_INDEX_CELL_SIZE
+    extents: list[float] = []
+    for bbox in bboxes:
+        dx = max(0.0, float(bbox[1][0] - bbox[0][0]))
+        dy = max(0.0, float(bbox[1][1] - bbox[0][1]))
+        dz = max(0.0, float(bbox[1][2] - bbox[0][2]))
+        if dimensions == 2:
+            extents.append(max(dx, dy))
+        else:
+            extents.append(max(dx, dy, dz))
+    if not extents:
+        return MIN_SPATIAL_INDEX_CELL_SIZE
+    median_extent = float(np.median(np.asarray(extents, dtype=float)))
+    baseline = FACING_MAX_DISTANCE if dimensions == 3 else 1.0
+    return max(MIN_SPATIAL_INDEX_CELL_SIZE, median_extent * 2.0, baseline)
+
+
+def _expand_bbox(bbox: BBox3D, padding: float) -> BBox3D:
+    distance = max(float(padding), 0.0)
+    return (
+        (
+            float(bbox[0][0] - distance),
+            float(bbox[0][1] - distance),
+            float(bbox[0][2] - distance),
+        ),
+        (
+            float(bbox[1][0] + distance),
+            float(bbox[1][1] + distance),
+            float(bbox[1][2] + distance),
+        ),
+    )
+
+
+def _coord_to_cell(coord: float, cell_size: float) -> int:
+    return int(math.floor(float(coord) / max(cell_size, 1e-9)))
+
+
+def _bbox_xy_cell_keys(
+    bbox: BBox3D,
+    cell_size: float,
+) -> tuple[tuple[int, int], ...]:
+    x_range = range(
+        _coord_to_cell(bbox[0][0], cell_size),
+        _coord_to_cell(bbox[1][0], cell_size) + 1,
+    )
+    y_range = range(
+        _coord_to_cell(bbox[0][1], cell_size),
+        _coord_to_cell(bbox[1][1], cell_size) + 1,
+    )
+    return tuple((x, y) for x in x_range for y in y_range)
+
+
+def _bbox_3d_cell_keys(
+    bbox: BBox3D,
+    cell_size: float,
+) -> tuple[tuple[int, int, int], ...]:
+    x_range = range(
+        _coord_to_cell(bbox[0][0], cell_size),
+        _coord_to_cell(bbox[1][0], cell_size) + 1,
+    )
+    y_range = range(
+        _coord_to_cell(bbox[0][1], cell_size),
+        _coord_to_cell(bbox[1][1], cell_size) + 1,
+    )
+    z_range = range(
+        _coord_to_cell(bbox[0][2], cell_size),
+        _coord_to_cell(bbox[1][2], cell_size) + 1,
+    )
+    return tuple((x, y, z) for x in x_range for y in y_range for z in z_range)
