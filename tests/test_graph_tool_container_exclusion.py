@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import networkx as nx
+import pytest
 
 from rag_tag.agent.graph_tools import _find_container_elements_excluding_impl
 from rag_tag.graph import wrap_networkx_graph
@@ -69,3 +70,35 @@ def test_find_container_elements_excluding_errors_for_missing_container():
 
     assert result["status"] == "error"
     assert result["error"]["code"] == "not_found"
+
+
+@pytest.mark.parametrize("zone_class", ["IfcZone", "IfcSpatialZone"])
+def test_find_container_elements_excluding_supports_zone_membership(
+    zone_class: str,
+):
+    graph = nx.MultiDiGraph()
+    graph.add_node("Zone::service", label="Service zone", class_=zone_class)
+    graph.add_node("Space::101", label="Room 101", class_="IfcSpace")
+    graph.add_node("Element::wall", label="Zone wall", class_="IfcWall")
+    graph.add_node(
+        "Element::diffuser",
+        label="Zone diffuser",
+        class_="IfcFlowTerminal",
+    )
+
+    graph.add_edge("Space::101", "Element::wall", relation="contains")
+    graph.add_edge("Element::wall", "Zone::service", relation="in_zone")
+    graph.add_edge("Element::diffuser", "Zone::service", relation="in_zone")
+
+    runtime = wrap_networkx_graph(graph)
+
+    result = _find_container_elements_excluding_impl(
+        runtime,
+        "Zone::service",
+        exclude_container_ids=["Space::101"],
+    )
+
+    assert result["status"] == "ok"
+    data = result["data"]
+    assert data["count"] == 1
+    assert [item["id"] for item in data["elements"]] == ["Element::diffuser"]

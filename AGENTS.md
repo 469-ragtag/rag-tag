@@ -28,11 +28,15 @@ Current state:
 - Graph is NetworkX with distance-based adjacency
 - SQL schema exists and is used for counts/lists
 - Router and graph agent are migrated to PydanticAI
+- Checked-in runtime config supports `config.yaml`, `config.yml`, and `config.json`
 - Router default model: `google-gla:gemini-2.5-flash`
 - Graph agent default model: `cohere:command-a-03-2025`
 - Optional observability via Logfire (`--trace`)
 - Tool outputs normalized as `{status,data,error}` envelope
 - PydanticAI providers: `google-gla` (AI Studio), `google-vertex` (Vertex)
+- Databricks profiles are supported through PydanticAI's OpenAI-compatible provider path
+- Databricks request shaping strips unsupported `parallel_tool_calls`
+- Databricks host/base URL should be supplied through env-backed config (`host_env` / `base_url_env`)
 - `COHERE_API_KEY` is auto-mapped to `CO_API_KEY`
 
 ## 3) Default Operating Mode for Feature Work
@@ -120,11 +124,14 @@ Use these when applicable:
 - Refresh bSDD RDF snapshot: `uv run rag-tag-refresh-ifc43-rdf`
 - Generate ontology map: `uv run rag-tag-generate-ontology-map`
 - Run app: `uv run rag-tag`
+- Compare graph-agent profiles: `uv run python scripts/eval_graph_models.py`
 
 Examples:
 
 - `COHERE_API_KEY=... uv run rag-tag`
 - `GEMINI_API_KEY=... uv run rag-tag`
+- `uv run rag-tag --config ./config.yaml`
+- `uv run rag-tag --agent-profile cohere-command-a`
 - `COHERE_API_KEY=... uv run rag-tag --input`
 - `uv run rag-tag --verbose`
 - `LOGFIRE_TOKEN=... uv run rag-tag --trace`
@@ -133,6 +140,8 @@ Router/model overrides:
 
 - `ROUTER_MODE=rule uv run rag-tag`
 - `ROUTER_MODE=llm GEMINI_API_KEY=... uv run rag-tag`
+- `ROUTER_PROFILE=router-gemini-flash uv run rag-tag`
+- `AGENT_PROFILE=dbx-claude-sonnet-4-6 uv run rag-tag`
 - `AGENT_MODEL=cohere:command-a-03-2025 COHERE_API_KEY=... uv run rag-tag`
 - `ROUTER_MODEL=google-gla:gemini-2.5-flash GEMINI_API_KEY=... uv run rag-tag`
 - `ROUTER_MODEL=google-gla:gemini-3-flash-preview GEMINI_API_KEY=... uv run rag-tag`
@@ -146,6 +155,10 @@ Evaluate routing:
 
 - `uv run python scripts/eval_routing.py --db ./output/Building-Architecture.db`
 
+Evaluate graph-agent profiles:
+
+- `uv run python scripts/eval_graph_models.py --config ./config.yaml --experiment graph-agent-compare --db ./output/Building-Architecture.db --graph-dataset Building-Architecture`
+
 ### Lint/format
 
 - Format: `uv run ruff format .`
@@ -156,11 +169,9 @@ Evaluate routing:
 
 ### Tests
 
-- No tests currently in repo.
-- If tests are added:
-    - `uv run pytest`
-    - `uv run pytest tests/test_file.py`
-    - `uv run pytest tests/test_file.py::test_name`
+- Run all tests: `uv run pytest`
+- Run one file: `uv run pytest tests/test_file.py`
+- Run one test: `uv run pytest tests/test_file.py::test_name`
 
 ## 8) Code Style and Quality Rules
 

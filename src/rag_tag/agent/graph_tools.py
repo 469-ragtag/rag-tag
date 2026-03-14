@@ -34,6 +34,7 @@ _CONTAINER_CLASSES = {
     "IfcSpatialZone",
     "IfcTypeObject",
 }
+_ZONE_CONTAINER_CLASSES = {"IfcZone", "IfcSpatialZone"}
 _CONTAINER_EDGE_RELATIONS = {"contains", "aggregates"}
 
 
@@ -168,7 +169,7 @@ def _find_container_elements_excluding_impl(
     exclude_container_ids: list[str] | None = None,
     depth: int = 4,
 ) -> dict[str, Any]:
-    """Return non-container descendants of one container minus excluded containers."""
+    """Return non-container members of one container minus excluded containers."""
     graph = get_networkx_graph(runtime)
 
     if container_id not in graph:
@@ -234,7 +235,7 @@ def _collect_container_descendants(
     *,
     depth: int,
 ) -> set[str]:
-    """Collect non-container descendants reachable via hierarchy/container edges."""
+    """Collect non-container descendants reachable via container membership edges."""
     if not start_ids:
         return set()
 
@@ -246,6 +247,21 @@ def _collect_container_descendants(
         node_id, node_depth = queue.popleft()
         if node_depth >= depth:
             continue
+
+        if graph.nodes[node_id].get("class_") in _ZONE_CONTAINER_CLASSES:
+            for source_id, _target, edge_data in graph.in_edges(node_id, data=True):
+                relation = normalize_relation_name(edge_data.get("relation"))
+                if relation != "in_zone":
+                    continue
+                if source_id in seen:
+                    continue
+
+                seen.add(source_id)
+                queue.append((source_id, node_depth + 1))
+
+                if graph.nodes[source_id].get("class_") in _CONTAINER_CLASSES:
+                    continue
+                descendants.add(source_id)
 
         for _src, target_id, edge_data in graph.out_edges(node_id, data=True):
             relation = normalize_relation_name(edge_data.get("relation"))
