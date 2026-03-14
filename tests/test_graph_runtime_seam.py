@@ -158,6 +158,10 @@ def test_ensure_graph_context_can_create_langgraph_agent(
 ) -> None:
     monkeypatch.setattr("rag_tag.agent.graph_agent.get_agent_model", TestModel)
     monkeypatch.setattr(
+        "rag_tag.agent.langgraph_agent._ensure_langgraph_dependency",
+        lambda: None,
+    )
+    monkeypatch.setattr(
         "rag_tag.query_service.resolve_graph_orchestrator",
         lambda: "langgraph",
     )

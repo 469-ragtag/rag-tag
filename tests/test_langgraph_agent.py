@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import networkx as nx
+import pytest
 
+from rag_tag.agent import langgraph_agent as langgraph_agent_module
 from rag_tag.agent.langgraph_agent import LangGraphAgent
 from rag_tag.config import GraphOrchestrationConfig
 from rag_tag.graph import wrap_networkx_graph
@@ -23,6 +25,17 @@ class FakeSpecialist:
         del runtime, trace, run_id
         self.calls.append((question, max_steps))
         return {"answer": f"answer:{question}", "data": {"max_steps": max_steps}}
+
+
+@pytest.fixture(autouse=True)
+def _allow_langgraph_agent_without_installed_dependency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        langgraph_agent_module,
+        "_ensure_langgraph_dependency",
+        lambda: None,
+    )
 
 
 def test_langgraph_agent_runs_sequential_specialist_calls_and_synthesizes() -> None:
@@ -123,3 +136,16 @@ def test_langgraph_agent_returns_error_when_fallback_is_disabled() -> None:
     )
 
     assert result == {"error": "LangGraph orchestration failed: synthesis failed"}
+
+
+def test_langgraph_agent_init_requires_langgraph_dependency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        langgraph_agent_module,
+        "_ensure_langgraph_dependency",
+        lambda: (_ for _ in ()).throw(RuntimeError("langgraph missing")),
+    )
+
+    with pytest.raises(RuntimeError, match="langgraph missing"):
+        LangGraphAgent()

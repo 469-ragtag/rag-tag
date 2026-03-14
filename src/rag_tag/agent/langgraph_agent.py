@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
@@ -38,6 +39,7 @@ class LangGraphAgent:
         decompose: Decomposer | None = None,
         synthesize: Synthesizer | None = None,
     ) -> None:
+        _ensure_langgraph_dependency()
         self._debug_llm_io = debug_llm_io
         self._specialist = specialist or GraphAgent(debug_llm_io=debug_llm_io)
         self._config = orchestration_config or _load_orchestration_config()
@@ -96,6 +98,14 @@ class LangGraphAgent:
 def _load_orchestration_config() -> GraphOrchestrationConfig:
     loaded = load_project_config(_MODULE_DIR)
     return loaded.config.graph_orchestration
+
+
+def _ensure_langgraph_dependency() -> None:
+    if importlib.util.find_spec("langgraph") is None:
+        raise RuntimeError(
+            "LangGraph orchestrator requires the 'langgraph' package to be "
+            "installed. Run the project dependency sync to install it."
+        )
 
 
 def _default_synthesizer(state: LangGraphState) -> dict[str, object]:

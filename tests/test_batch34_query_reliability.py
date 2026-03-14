@@ -214,3 +214,43 @@ def test_execute_query_preserves_bundle_shape_with_langgraph_orchestrator(
         "answer": "langgraph:Which rooms are adjacent to the kitchen?",
         "data": {"max_steps": 7},
     }
+
+
+def test_execute_query_returns_error_when_langgraph_dependency_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rag_tag import query_service
+
+    graph = nx.MultiDiGraph()
+    graph.graph["datasets"] = ["model-a"]
+    runtime = wrap_networkx_graph(graph)
+    decision = RouteDecision(route="graph", reason="graph route", sql_request=None)
+
+    monkeypatch.setattr(
+        query_service,
+        "resolve_graph_orchestrator",
+        lambda: "langgraph",
+    )
+    monkeypatch.setattr(
+        query_service,
+        "LangGraphAgent",
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("langgraph missing")),
+    )
+
+    bundle = execute_query(
+        "Which rooms are adjacent to the kitchen?",
+        db_paths=[],
+        runtime=runtime,
+        agent=None,
+        decision=decision,
+        graph_dataset="model-a",
+    )
+
+    assert bundle["runtime"] is runtime
+    assert bundle["graph"] is runtime
+    assert bundle["agent"] is None
+    assert bundle["result"] == {
+        "route": "graph",
+        "decision": "graph route",
+        "error": "langgraph missing",
+    }
