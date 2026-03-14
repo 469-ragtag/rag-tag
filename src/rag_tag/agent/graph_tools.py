@@ -43,25 +43,19 @@ _CONTAINER_EDGE_RELATIONS = {"contains", "aggregates"}
 # ---------------------------------------------------------------------------
 
 
-def _all_class_values(runtime: GraphRuntime) -> list[str]:
+def _all_class_values(G) -> list[str]:
     """Return sorted unique IFC class_ values present in the graph."""
-    graph = get_networkx_graph(runtime)
-    return sorted(
-        {str(d["class_"]) for _, d in graph.nodes(data=True) if d.get("class_")}
-    )
+    return sorted({str(d["class_"]) for _, d in G.nodes(data=True) if d.get("class_")})
 
 
-def _normalize_class_fuzzy(
-    class_input: str,
-    runtime: GraphRuntime,
-) -> tuple[str | None, float]:
+def _normalize_class_fuzzy(class_input: str, G) -> tuple[str | None, float]:
     """Match a user-supplied class name against actual class_ values in the graph.
 
     Returns:
         (best_match, score) where best_match is None if no match exceeds the
         threshold.
     """
-    known = _all_class_values(runtime)
+    known = _all_class_values(G)
     if not known:
         return None, 0.0
     result = process.extractOne(class_input, known, scorer=fuzz.WRatio)
@@ -75,21 +69,8 @@ def _normalize_class_fuzzy(
     )
 
 
-def _class_is_type_like(class_name: str | None) -> bool:
-    """Return True when *class_name* denotes an IFC type object."""
-    if not class_name:
-        return False
-    return class_name.endswith("Type") or class_name == "IfcTypeObject"
-
-
-def _query_has_type_intent(query: str) -> bool:
-    """Return True when the user text explicitly asks about a type/family."""
-    query_terms = {term for term in query.lower().replace("-", " ").split() if term}
-    return any(term in query_terms for term in _TYPE_INTENT_TERMS)
-
-
 def _fuzzy_find_nodes_impl(
-    runtime: GraphRuntime,
+    G,
     query: str,
     class_filter: str | None = None,
     top_k: int = 10,
@@ -99,10 +80,11 @@ def _fuzzy_find_nodes_impl(
 
     Returns a standard envelope dict (status/data/error).
     """
-    G = get_networkx_graph(runtime)
-    results: list[dict[str, Any]] = []
-    query_has_type_intent = _query_has_type_intent(query)
+    # Detect if query mentions "type" to bias scoring toward/away from type nodes.
+    query_lower = query.lower()
+    mentions_type = "type" in query_lower
 
+    results: list[dict[str, Any]] = []
     for node_id, data in G.nodes(data=True):
         if class_filter is not None:
             if str(data.get("class_", "")).lower() != class_filter.lower():
@@ -129,22 +111,29 @@ def _fuzzy_find_nodes_impl(
             (fuzz.WRatio(query, c) for c in candidates if c and c != "None"),
             default=0.0,
         )
-        adjusted_score = best_score
-        class_name = str(data.get("class_", ""))
 
-        if class_filter is None and _class_is_type_like(class_name):
-            if query_has_type_intent:
-                adjusted_score += 8.0
+        # Apply scoring bias to prefer occurrences or types based on query intent.
+        is_type_node = str(data.get("class_", "")).endswith("Type")
+        if mentions_type:
+            # Query mentions "type": boost type nodes, penalize occurrences.
+            if is_type_node:
+                best_score += 5
             else:
-                adjusted_score -= 8.0
+                best_score -= 5
+        else:
+            # Query does NOT mention "type": boost occurrences, penalize types.
+            if is_type_node:
+                best_score -= 5
+            else:
+                best_score += 5
 
-        if adjusted_score >= min_score:
+        if best_score >= min_score:
             results.append(
                 {
                     "id": node_id,
                     "label": data.get("label"),
                     "class_": data.get("class_"),
-                    "score": round(adjusted_score, 1),
+                    "score": round(best_score, 1),
                     "properties": sanitize_properties_for_llm(props),
                     "payload": None,
                 }
@@ -327,13 +316,15 @@ def register_graph_tools(agent: Any) -> None:
         A missing key never matches an expected value of ``None``; filters only
         pass when the key is explicitly present with the expected value.
         """
+        G = ctx.deps.get_networkx_graph()
+
         # Multi-word input means descriptive name, not IFC class.
         if class_ and " " in class_.strip():
-            return _fuzzy_find_nodes_impl(ctx.deps, class_, top_k=20)
+            return _fuzzy_find_nodes_impl(G, class_, top_k=20)
 
         normalized_class = class_
         if class_:
-            best, _score = _normalize_class_fuzzy(class_, ctx.deps)
+            best, _score = _normalize_class_fuzzy(class_, G)
             if best is not None:
                 normalized_class = best
 
@@ -343,7 +334,7 @@ def register_graph_tools(agent: Any) -> None:
         if property_filters:
             params["property_filters"] = property_filters
 
-        result = query_ifc_graph(ctx.deps, "find_nodes", params)
+        result = ctx.deps.query("find_nodes", params)
 
         # Exact match empty -> fuzzy fallback over names/descriptions.
         if (

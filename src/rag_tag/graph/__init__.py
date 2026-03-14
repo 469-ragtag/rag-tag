@@ -1,38 +1,34 @@
-"""Graph runtime abstractions and backend implementations."""
+"""Graph backend runtime exports (lazy to avoid import cycles)."""
 
-from .payloads import (
-    INTERNAL_PAYLOAD_MODE,
-    LLM_PAYLOAD_MODE,
-    build_node_payload,
-    sanitize_llm_property_value,
-    sanitize_properties_for_llm,
-)
-from .runtime import (
-    close_runtime,
-    ensure_graph_runtime,
-    get_default_backend,
-    get_networkx_graph,
-    is_graph_runtime,
-    load_graph_runtime,
-    query_graph_runtime,
-    wrap_networkx_graph,
-)
-from .types import GraphBackend, GraphRuntime
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from rag_tag.graph.runtime import GraphRuntime, register_backend
 
 __all__ = [
-    "GraphBackend",
     "GraphRuntime",
-    "INTERNAL_PAYLOAD_MODE",
-    "LLM_PAYLOAD_MODE",
-    "build_node_payload",
-    "close_runtime",
-    "ensure_graph_runtime",
-    "get_default_backend",
-    "get_networkx_graph",
-    "is_graph_runtime",
-    "load_graph_runtime",
-    "query_graph_runtime",
-    "sanitize_llm_property_value",
-    "sanitize_properties_for_llm",
+    "register_backend",
     "wrap_networkx_graph",
+    "close_runtime",
 ]
+
+
+def __getattr__(name: str):
+    if name in __all__:
+        from rag_tag.graph.runtime import (
+            GraphRuntime,
+            close_runtime,
+            register_backend,
+            wrap_networkx_graph,
+        )
+
+        exports = {
+            "GraphRuntime": GraphRuntime,
+            "register_backend": register_backend,
+            "wrap_networkx_graph": wrap_networkx_graph,
+            "close_runtime": close_runtime,
+        }
+        return exports[name]
+    raise AttributeError(name)

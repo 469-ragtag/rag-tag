@@ -119,3 +119,16 @@ def test_display_result_plain_text_answer_uses_markdown_path(monkeypatch) -> Non
     markdown_widget = mounted[0][0]
     assert isinstance(markdown_widget, Markdown)
     assert markdown_widget._initial_markdown == plain_text_answer
+
+
+def test_query_input_accepts_spaces() -> None:
+    async def _run() -> None:
+        app = QueryApp([Path("output/Building-Architecture.db")])
+        async with app.run_test() as pilot:
+            query_input = app.query_one("#query-input")
+            await pilot.press("a")
+            await pilot.press("space")
+            await pilot.press("b")
+            assert query_input.value == "a b"
+
+    asyncio.run(_run())

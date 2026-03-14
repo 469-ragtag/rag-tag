@@ -76,6 +76,44 @@ uv run rag-tag-jsonl-to-graph
 uv run rag-tag
 ```
 
+## Neo4j backend (optional)
+
+The Neo4j backend mirrors the canonical NetworkX graph so query semantics stay
+consistent. Import always truncates and re-inserts nodes/edges.
+
+### 1) Set env vars
+
+```bash
+GRAPH_BACKEND=neo4j
+NEO4J_URI=bolt://localhost:7687
+NEO4J_USERNAME=neo4j
+NEO4J_PASSWORD=your-password
+# Optional
+NEO4J_DATABASE=neo4j
+```
+
+You can put these in `.env` for local dev.
+
+### 2) Import JSONL into Neo4j
+
+```bash
+uv run rag-tag-jsonl-to-neo4j --jsonl-dir ./output
+```
+
+Optional: import a single dataset:
+
+```bash
+uv run rag-tag-jsonl-to-neo4j --jsonl-dir ./output --dataset Building-Architecture
+```
+
+### 3) Run the app against Neo4j
+
+```bash
+uv run rag-tag
+```
+
+To confirm which backend was used, inspect the returned result bundle; it
+includes a `runtime` field set to `networkx` or `neo4j`.
 Use `config.example.yaml` as the starting point for Databricks-backed profile
 workflows and graph-model comparison runs.
 
