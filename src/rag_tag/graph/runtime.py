@@ -112,6 +112,15 @@ def close_runtime(runtime: GraphRuntime | None) -> None:
     runtime.close()
 
 
+def get_networkx_graph(
+    runtime: GraphRuntime | nx.DiGraph | nx.MultiDiGraph,
+) -> nx.DiGraph | nx.MultiDiGraph:
+    """Return the underlying NetworkX graph from a runtime or raw graph."""
+    if isinstance(runtime, GraphRuntime):
+        return runtime.get_networkx_graph()
+    return runtime
+
+
 def wrap_networkx_graph(
     graph: nx.DiGraph | nx.MultiDiGraph,
     *,
