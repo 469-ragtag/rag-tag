@@ -160,49 +160,49 @@ class Neo4jBackend:
     ) -> tuple[str | None, dict[str, Any] | None]:
         if not isinstance(element_id, str):
             return None, {"error": "Invalid element_id: element_id must be a string"}
-        session = self._session()
-        if session is None:
-            return None, {"error": "Neo4j not configured"}
+        with self._session() as session:
+            if session is None:
+                return None, {"error": "Neo4j not configured"}
 
-        def _match_node_id(node_id: str) -> str | None:
-            rec = session.run(MATCH_NODE_BY_ID, node_id=node_id).single()
-            if rec is None:
+            def _match_node_id(node_id: str) -> str | None:
+                rec = session.run(MATCH_NODE_BY_ID, node_id=node_id).single()
+                if rec is None:
+                    return None
+                node = rec["n"]
+                if node is None:
+                    return None
+                if str(node_id).startswith("Element::"):
+                    return node_id
                 return None
-            node = rec["n"]
-            if node is None:
-                return None
-            if str(node_id).startswith("Element::"):
-                return node_id
-            return None
 
-        if element_id.startswith("Element::"):
-            resolved = _match_node_id(element_id)
-            if resolved:
-                return resolved, None
-        else:
-            candidate = f"Element::{element_id}"
-            resolved = _match_node_id(candidate)
-            if resolved:
-                return resolved, None
+            if element_id.startswith("Element::"):
+                resolved = _match_node_id(element_id)
+                if resolved:
+                    return resolved, None
+            else:
+                candidate = f"Element::{element_id}"
+                resolved = _match_node_id(candidate)
+                if resolved:
+                    return resolved, None
 
-        rows = list(
-            session.run(
-                "MATCH (n:Node) WHERE n.node_id STARTS WITH 'Element::' "
-                "AND n.global_id = $gid RETURN n.node_id AS id",
-                gid=element_id,
+            rows = list(
+                session.run(
+                    "MATCH (n:Node) WHERE n.node_id STARTS WITH 'Element::' "
+                    "AND n.global_id = $gid RETURN n.node_id AS id",
+                    gid=element_id,
+                )
             )
-        )
-        if len(rows) == 1:
-            return rows[0]["id"], None
-        if len(rows) > 1:
-            return (
-                None,
-                {
-                    "error": "Ambiguous element_id",
-                    "candidates": [r["id"] for r in rows],
-                },
-            )
-        return None, {"error": f"Element not found: {element_id}"}
+            if len(rows) == 1:
+                return rows[0]["id"], None
+            if len(rows) > 1:
+                return (
+                    None,
+                    {
+                        "error": "Ambiguous element_id",
+                        "candidates": [r["id"] for r in rows],
+                    },
+                )
+            return None, {"error": f"Element not found: {element_id}"}
 
     def _resolve_storey_node(
         self, storey_query: str
@@ -210,51 +210,51 @@ class Neo4jBackend:
         query = storey_query.strip()
         if not query:
             return None, {"error": "Missing param: storey"}
-        session = self._session()
-        if session is None:
-            return None, {"error": "Neo4j not configured"}
+        with self._session() as session:
+            if session is None:
+                return None, {"error": "Neo4j not configured"}
 
-        direct = query if query.startswith("Storey::") else f"Storey::{query}"
-        rec = session.run(MATCH_STOREY_BY_ID, node_id=direct).single()
-        if rec is not None:
-            node = rec["n"]
-            if node is not None:
+            direct = query if query.startswith("Storey::") else f"Storey::{query}"
+            rec = session.run(MATCH_STOREY_BY_ID, node_id=direct).single()
+            if rec is not None:
+                node = rec["n"]
+                if node is not None:
+                    return node.get("node_id"), None
+
+            rows = list(session.run(MATCH_STOREY_BY_LABEL, label=query))
+            if len(rows) == 1:
+                node = rows[0]["n"]
                 return node.get("node_id"), None
+            if len(rows) > 1:
+                return (
+                    None,
+                    {
+                        "error": "Ambiguous storey",
+                        "candidates": [r["n"].get("node_id") for r in rows],
+                    },
+                )
 
-        rows = list(session.run(MATCH_STOREY_BY_LABEL, label=query))
-        if len(rows) == 1:
-            node = rows[0]["n"]
-            return node.get("node_id"), None
-        if len(rows) > 1:
-            return (
-                None,
-                {
-                    "error": "Ambiguous storey",
-                    "candidates": [r["n"].get("node_id") for r in rows],
-                },
-            )
+            def _norm(text: str) -> str:
+                return " ".join(
+                    chunk
+                    for chunk in "".join(
+                        c.lower() if c.isalnum() else " " for c in text
+                    ).split()
+                )
 
-        def _norm(text: str) -> str:
-            return " ".join(
-                chunk
-                for chunk in "".join(
-                    c.lower() if c.isalnum() else " " for c in text
-                ).split()
+            rows = list(
+                session.run(
+                    "MATCH (n:Node) WHERE toLower(n.class_) = 'ifcbuildingstorey' "
+                    "RETURN n.node_id AS id, n.label AS label"
+                )
             )
-
-        rows = list(
-            session.run(
-                "MATCH (n:Node) WHERE toLower(n.class_) = 'ifcbuildingstorey' "
-                "RETURN n.node_id AS id, n.label AS label"
-            )
-        )
-        qn = _norm(query)
-        matches = [r["id"] for r in rows if _norm(str(r["label"] or "")) == qn]
-        if len(matches) == 1:
-            return matches[0], None
-        if len(matches) > 1:
-            return None, {"error": "Ambiguous storey", "candidates": matches}
-        return None, {"error": f"Storey not found: {storey_query}"}
+            qn = _norm(query)
+            matches = [r["id"] for r in rows if _norm(str(r["label"] or "")) == qn]
+            if len(matches) == 1:
+                return matches[0], None
+            if len(matches) > 1:
+                return None, {"error": "Ambiguous storey", "candidates": matches}
+            return None, {"error": f"Storey not found: {storey_query}"}
 
     def query(
         self,
