@@ -267,8 +267,6 @@ class Neo4jBackend:
         *,
         payload_mode: str = LLM_PAYLOAD_MODE,
     ) -> dict[str, Any]:
-        if self._conn_error:
-            return self._err(self._conn_error, "neo4j_not_configured")
         if not isinstance(action, str):
             return self._err("Invalid action: action must be a string", "invalid")
         action = normalize_action_name(action)
@@ -368,6 +366,9 @@ class Neo4jBackend:
         if action in {"spatial_compare", "find_elements_within_clearance"}:
             catalog = self._ensure_catalog_graph()
             return query_ifc_graph_catalog(catalog, action, params, payload_mode)
+
+        if self._conn_error:
+            return self._err(self._conn_error, "neo4j_not_configured")
 
         if action == "get_element_properties":
             element_id = params.get("element_id")
