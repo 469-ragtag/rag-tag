@@ -39,10 +39,18 @@ CREATE (a)-[r:REL]->(b)
 SET r.relation = row.relation,
     r.source = row.source,
     r.distance = row.distance,
+    r.distance_method = row.distance_method,
     r.vertical_gap = row.vertical_gap,
     r.overlap_area_xy = row.overlap_area_xy,
     r.intersection_volume = row.intersection_volume,
     r.contact_area = row.contact_area,
+    r.axis_angle_deg = row.axis_angle_deg,
+    r.parallel_score = row.parallel_score,
+    r.perpendicular_score = row.perpendicular_score,
+    r.facing_score = row.facing_score,
+    r.support_score = row.support_score,
+    r.containment_ratio = row.containment_ratio,
+    r.verified = row.verified,
     // Preserve parallel edge ordering deterministically.
     r.edge_index = row.edge_index
 """

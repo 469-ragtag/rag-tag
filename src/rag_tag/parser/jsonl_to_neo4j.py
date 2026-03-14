@@ -151,10 +151,18 @@ def import_networkx_graph(
                         "relation": data.get("relation"),
                         "source": data.get("source"),
                         "distance": data.get("distance"),
+                        "distance_method": data.get("distance_method"),
                         "vertical_gap": data.get("vertical_gap"),
                         "overlap_area_xy": data.get("overlap_area_xy"),
                         "intersection_volume": data.get("intersection_volume"),
                         "contact_area": data.get("contact_area"),
+                        "axis_angle_deg": data.get("axis_angle_deg"),
+                        "parallel_score": data.get("parallel_score"),
+                        "perpendicular_score": data.get("perpendicular_score"),
+                        "facing_score": data.get("facing_score"),
+                        "support_score": data.get("support_score"),
+                        "containment_ratio": data.get("containment_ratio"),
+                        "verified": data.get("verified"),
                         "edge_index": edge_index,
                     }
                 )
