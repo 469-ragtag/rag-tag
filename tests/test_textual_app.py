@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 from rag_tag.textual_app import QueryApp
@@ -32,3 +33,16 @@ def test_display_result_keeps_full_answer_text(monkeypatch) -> None:
 
     assert emitted[1] == (f"A: {long_answer}", "answer", False)
     assert emitted[1][0].endswith(" END")
+
+
+def test_query_input_accepts_spaces() -> None:
+    async def _run() -> None:
+        app = QueryApp([Path("output/Building-Architecture.db")])
+        async with app.run_test() as pilot:
+            query_input = app.query_one("#query-input")
+            await pilot.press("a")
+            await pilot.press("space")
+            await pilot.press("b")
+            assert query_input.value == "a b"
+
+    asyncio.run(_run())
