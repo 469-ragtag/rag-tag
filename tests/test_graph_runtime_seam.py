@@ -1,8 +1,15 @@
 from __future__ import annotations
 
 import networkx as nx
+import pytest
 
 from rag_tag.graph import wrap_networkx_graph
+from rag_tag.query_service import (
+    _ensure_graph_context,
+    _require_explicit_graph_dataset,
+    execute_query,
+)
+from rag_tag.router.models import RouteDecision
 
 
 def _build_graph() -> nx.MultiDiGraph:
@@ -80,3 +87,82 @@ def test_graph_runtime_networkx_smoke() -> None:
     )
     assert res_traverse["status"] == "ok"
     assert len(res_traverse["data"]["results"]) == 2
+
+
+def test_ensure_graph_context_reuses_existing_runtime() -> None:
+    runtime = wrap_networkx_graph(_build_graph())
+    sentinel_agent = object()
+
+    resolved_runtime, resolved_agent = _ensure_graph_context(
+        runtime,
+        sentinel_agent,
+        False,
+    )
+
+    assert resolved_runtime is runtime
+    assert resolved_agent is sentinel_agent
+
+
+def test_ensure_graph_context_honors_graph_backend_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph = _build_graph()
+    sentinel_agent = object()
+    monkeypatch.setenv("GRAPH_BACKEND", "neo4j")
+
+    runtime, resolved_agent = _ensure_graph_context(
+        graph,
+        sentinel_agent,
+        False,
+    )
+
+    assert runtime.backend_name == "neo4j"
+    assert runtime.get_networkx_graph() is graph
+    assert resolved_agent is sentinel_agent
+
+
+def test_require_explicit_graph_dataset_uses_runtime_public_graph() -> None:
+    runtime = wrap_networkx_graph(_build_graph())
+    runtime.get_networkx_graph().graph["datasets"] = ["A", "B"]
+
+    with pytest.raises(ValueError, match="Multiple graph datasets are available"):
+        _require_explicit_graph_dataset(runtime, None)
+
+
+def test_execute_query_reuses_existing_runtime_without_private_graph_access(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = wrap_networkx_graph(_build_graph())
+    runtime.get_networkx_graph().graph["datasets"] = ["OnlyDataset"]
+    sentinel_agent = object()
+    captured: dict[str, object] = {}
+
+    def fake_execute_graph_query(
+        question: str,
+        runtime_arg,
+        agent_arg,
+        decision: RouteDecision,
+        *,
+        max_steps: int = 20,
+    ) -> dict[str, object]:
+        captured["runtime"] = runtime_arg
+        captured["agent"] = agent_arg
+        return {"route": "graph", "answer": "ok"}
+
+    monkeypatch.setattr(
+        "rag_tag.query_service.execute_graph_query",
+        fake_execute_graph_query,
+    )
+
+    bundle = execute_query(
+        "dummy question",
+        [],
+        runtime,
+        sentinel_agent,
+        decision=RouteDecision(route="graph", reason="test", sql_request=None),
+    )
+
+    assert captured["runtime"] is runtime
+    assert captured["agent"] is sentinel_agent
+    assert bundle["runtime"] is runtime
+    assert bundle["graph"] is runtime

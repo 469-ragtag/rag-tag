@@ -96,7 +96,7 @@ def _require_explicit_graph_dataset(
     # Extract datasets from the graph.
     datasets = None
     if isinstance(runtime, GraphRuntime):
-        datasets = runtime._graph.graph.get("datasets")
+        datasets = runtime.get_networkx_graph().graph.get("datasets")
     elif isinstance(runtime, (nx.DiGraph, nx.MultiDiGraph)):
         datasets = runtime.graph.get("datasets")
 
@@ -403,12 +403,13 @@ def _ensure_graph_context(
     Returns:
         Tuple of (GraphRuntime, GraphAgent) ready for agent execution.
     """
-    from rag_tag.graph import wrap_networkx_graph  # noqa: PLC0415
-
-    # Extract networkx graph if a GraphRuntime was passed
-    nx_graph = graph
-    if isinstance(graph, GraphRuntime):
-        nx_graph = graph._graph
+    # Extract the underlying NetworkX graph through the public runtime API.
+    existing_runtime = graph if isinstance(graph, GraphRuntime) else None
+    nx_graph = (
+        existing_runtime.get_networkx_graph()
+        if existing_runtime is not None
+        else graph
+    )
 
     if nx_graph is None:
         nx_graph = load_graph(graph_dataset, payload_mode=payload_mode)
@@ -427,8 +428,12 @@ def _ensure_graph_context(
     if agent is None:
         agent = GraphAgent(debug_llm_io=debug_llm_io)
 
-    # Wrap the networkx graph in a GraphRuntime
-    runtime = wrap_networkx_graph(nx_graph, db_path=db_path)
+    if existing_runtime is not None:
+        return existing_runtime, agent
+
+    # Create the runtime through the configured backend factory so
+    # GRAPH_BACKEND=neo4j is honored in the live query path.
+    runtime = GraphRuntime.from_env(graph=nx_graph, db_path=db_path)
     return runtime, agent
 
 
