@@ -45,8 +45,10 @@ from rag_tag.graph.spatial_reasoning import (
     bbox_contains,
     bbox_vertical_overlap,
     facing_score_between_nodes,
+    get_spatial_index,
     is_parallel,
     is_perpendicular,
+    iter_topology_candidate_pairs,
     support_relation_between_nodes,
 )
 from rag_tag.paths import find_project_root
@@ -1325,10 +1327,12 @@ def add_topology_facts(G: nx.DiGraph | nx.MultiDiGraph) -> None:
         """Add topology edge with explicit topology source semantics."""
         G.add_edge(u, v, source="topology", **attrs)
 
-    element_nodes: list[str] = []
-    element_bboxes: list[tuple] = []
-    element_refs: list[tuple[str, str, str]] = []
-    element_footprints: list[list[tuple[float, float]] | None] = []
+    spatial_index = get_spatial_index(G)
+    if not spatial_index.node_ids:
+        return
+
+    element_refs_by_node_id: dict[str, tuple[str, str, str]] = {}
+    element_footprints_by_node_id: dict[str, list[tuple[float, float]] | None] = {}
 
     for n, d in G.nodes(data=True):
         if not str(n).startswith("Element::"):
@@ -1340,9 +1344,8 @@ def add_topology_facts(G: nx.DiGraph | nx.MultiDiGraph) -> None:
         dataset_key = d.get("dataset")
         if not isinstance(gid, str) or not gid or not isinstance(dataset_key, str):
             continue
-        element_nodes.append(n)
-        element_bboxes.append(bbox)
-        element_refs.append((n, dataset_key, gid))
+        node_id = str(n)
+        element_refs_by_node_id[node_id] = (node_id, dataset_key, gid)
         footprint = d.get("footprint_polygon")
         if isinstance(footprint, list) and len(footprint) >= 3:
             parsed = []
@@ -1351,242 +1354,248 @@ def add_topology_facts(G: nx.DiGraph | nx.MultiDiGraph) -> None:
                     parsed.append((float(p[0]), float(p[1])))
                 elif isinstance(p, list) and len(p) == 2:
                     parsed.append((float(p[0]), float(p[1])))
-            element_footprints.append(parsed if len(parsed) >= 3 else None)
-        else:
-            element_footprints.append(None)
-
-    occ_shape_by_node_id = _get_occ_shape_index(G, element_refs)
-
-    for i, a in enumerate(element_nodes):
-        bbox_a = element_bboxes[i]
-        node_ref_a = element_refs[i]
-        for j in range(i + 1, len(element_nodes)):
-            b = element_nodes[j]
-            bbox_b = element_bboxes[j]
-            node_ref_b = element_refs[j]
-            footprint_a = element_footprints[i]
-            footprint_b = element_footprints[j]
-
-            intersects_bbox = _bboxes_intersect(bbox_a, bbox_b)
-            if intersects_bbox:
-                _add_topology_edge(a, b, relation="intersects_bbox")
-                _add_topology_edge(b, a, relation="intersects_bbox")
-
-            if footprint_a is not None and footprint_b is not None:
-                overlap_area = _convex_polygon_intersection_area(
-                    footprint_a,
-                    footprint_b,
-                )
-            else:
-                overlap_area = _bbox_xy_overlap_area(bbox_a, bbox_b)
-            pair_distance = distance_between_bboxes(bbox_a, bbox_b)
-            if overlap_area > 0.0:
-                _add_topology_edge(
-                    a,
-                    b,
-                    relation="overlaps_xy",
-                    overlap_area_xy=overlap_area,
-                )
-                _add_topology_edge(
-                    b,
-                    a,
-                    relation="overlaps_xy",
-                    overlap_area_xy=overlap_area,
-                )
-
-            # Prefer exact OCC mesh boolean metrics when available.
-            shape_a = occ_shape_by_node_id.get(node_ref_a[0])
-            shape_b = occ_shape_by_node_id.get(node_ref_b[0])
-            if shape_a is not None and shape_b is not None:
-                metrics = _compute_common_metrics(shape_a, shape_b)
-                if metrics is not None:
-                    intersection_volume, contact_area = metrics
-                    if intersection_volume > 1e-9:
-                        _add_topology_edge(
-                            a,
-                            b,
-                            relation="intersects_3d",
-                            intersection_volume=intersection_volume,
-                            contact_area=contact_area,
-                        )
-                        _add_topology_edge(
-                            b,
-                            a,
-                            relation="intersects_3d",
-                            intersection_volume=intersection_volume,
-                            contact_area=contact_area,
-                        )
-                    elif contact_area > 1e-6:
-                        _add_topology_edge(
-                            a,
-                            b,
-                            relation="touches_surface",
-                            intersection_volume=intersection_volume,
-                            contact_area=contact_area,
-                        )
-                        _add_topology_edge(
-                            b,
-                            a,
-                            relation="touches_surface",
-                            intersection_volume=intersection_volume,
-                            contact_area=contact_area,
-                        )
-
-            if bbox_contains(bbox_a, bbox_b):
-                _add_topology_edge(
-                    a,
-                    b,
-                    relation="contains_3d",
-                    containment_ratio=1.0,
-                )
-                _add_topology_edge(
-                    b,
-                    a,
-                    relation="inside_3d",
-                    containment_ratio=1.0,
-                )
-            elif bbox_contains(bbox_b, bbox_a):
-                _add_topology_edge(
-                    b,
-                    a,
-                    relation="contains_3d",
-                    containment_ratio=1.0,
-                )
-                _add_topology_edge(
-                    a,
-                    b,
-                    relation="inside_3d",
-                    containment_ratio=1.0,
-                )
-
-            support_relation, support_score = support_relation_between_nodes(
-                G.nodes[a],
-                G.nodes[b],
-                gap_tolerance=SUPPORT_GAP_TOLERANCE,
+            element_footprints_by_node_id[node_id] = (
+                parsed if len(parsed) >= 3 else None
             )
-            if support_relation == "a_supports_b" and support_score is not None:
-                gap = max(0.0, float(bbox_b[0][2]) - float(bbox_a[1][2]))
-                _add_topology_edge(
-                    a,
-                    b,
-                    relation="supports",
-                    vertical_gap=gap,
-                    overlap_area_xy=overlap_area,
-                    support_score=support_score,
-                )
-                _add_topology_edge(
-                    b,
-                    a,
-                    relation="supported_by",
-                    vertical_gap=gap,
-                    overlap_area_xy=overlap_area,
-                    support_score=support_score,
-                )
-                _add_topology_edge(
-                    b,
-                    a,
-                    relation="rests_on",
-                    vertical_gap=gap,
-                    overlap_area_xy=overlap_area,
-                    support_score=support_score,
-                )
-            elif support_relation == "b_supports_a" and support_score is not None:
-                gap = max(0.0, float(bbox_a[0][2]) - float(bbox_b[1][2]))
-                _add_topology_edge(
-                    b,
-                    a,
-                    relation="supports",
-                    vertical_gap=gap,
-                    overlap_area_xy=overlap_area,
-                    support_score=support_score,
-                )
-                _add_topology_edge(
-                    a,
-                    b,
-                    relation="supported_by",
-                    vertical_gap=gap,
-                    overlap_area_xy=overlap_area,
-                    support_score=support_score,
-                )
-                _add_topology_edge(
-                    a,
-                    b,
-                    relation="rests_on",
-                    vertical_gap=gap,
-                    overlap_area_xy=overlap_area,
-                    support_score=support_score,
-                )
+        else:
+            element_footprints_by_node_id[node_id] = None
 
-            vertical_overlap = bbox_vertical_overlap(bbox_a, bbox_b)
-            if vertical_overlap > 0.0 and (
-                pair_distance <= FACING_MAX_DISTANCE or overlap_area > 0.0
-            ):
-                parallel, angle = is_parallel(G.nodes[a], G.nodes[b])
-                if parallel and angle is not None:
-                    parallel_score = max(0.0, 1.0 - min(angle, 90.0) / 90.0)
-                    _add_topology_edge(
-                        a,
-                        b,
-                        relation="parallel_to",
-                        axis_angle_deg=angle,
-                        parallel_score=parallel_score,
-                    )
-                    _add_topology_edge(
-                        b,
-                        a,
-                        relation="parallel_to",
-                        axis_angle_deg=angle,
-                        parallel_score=parallel_score,
-                    )
-                    facing_score = facing_score_between_nodes(G.nodes[a], G.nodes[b])
-                    if facing_score is not None and facing_score >= 0.35:
-                        _add_topology_edge(
-                            a,
-                            b,
-                            relation="facing",
-                            axis_angle_deg=angle,
-                            facing_score=facing_score,
-                            distance=pair_distance,
-                        )
-                        _add_topology_edge(
-                            b,
-                            a,
-                            relation="facing",
-                            axis_angle_deg=angle,
-                            facing_score=facing_score,
-                            distance=pair_distance,
-                        )
+    occ_shape_by_node_id = _get_occ_shape_index(
+        G,
+        list(element_refs_by_node_id.values()),
+    )
 
-                perpendicular, angle = is_perpendicular(G.nodes[a], G.nodes[b])
-                if perpendicular and angle is not None:
-                    perpendicular_score = max(0.0, 1.0 - (abs(90.0 - angle) / 90.0))
+    for a, b in iter_topology_candidate_pairs(
+        spatial_index,
+        near_distance=FACING_MAX_DISTANCE,
+    ):
+        bbox_a = spatial_index.bboxes[spatial_index.node_to_index[a]]
+        bbox_b = spatial_index.bboxes[spatial_index.node_to_index[b]]
+        node_ref_a = element_refs_by_node_id.get(a)
+        node_ref_b = element_refs_by_node_id.get(b)
+        footprint_a = element_footprints_by_node_id.get(a)
+        footprint_b = element_footprints_by_node_id.get(b)
+
+        intersects_bbox = _bboxes_intersect(bbox_a, bbox_b)
+        if intersects_bbox:
+            _add_topology_edge(a, b, relation="intersects_bbox")
+            _add_topology_edge(b, a, relation="intersects_bbox")
+
+        if footprint_a is not None and footprint_b is not None:
+            overlap_area = _convex_polygon_intersection_area(
+                footprint_a,
+                footprint_b,
+            )
+        else:
+            overlap_area = _bbox_xy_overlap_area(bbox_a, bbox_b)
+        pair_distance = distance_between_bboxes(bbox_a, bbox_b)
+        if overlap_area > 0.0:
+            _add_topology_edge(
+                a,
+                b,
+                relation="overlaps_xy",
+                overlap_area_xy=overlap_area,
+            )
+            _add_topology_edge(
+                b,
+                a,
+                relation="overlaps_xy",
+                overlap_area_xy=overlap_area,
+            )
+
+        # Prefer exact OCC mesh boolean metrics when available.
+        shape_a = occ_shape_by_node_id.get(node_ref_a[0]) if node_ref_a else None
+        shape_b = occ_shape_by_node_id.get(node_ref_b[0]) if node_ref_b else None
+        if shape_a is not None and shape_b is not None:
+            metrics = _compute_common_metrics(shape_a, shape_b)
+            if metrics is not None:
+                intersection_volume, contact_area = metrics
+                if intersection_volume > 1e-9:
                     _add_topology_edge(
                         a,
                         b,
-                        relation="perpendicular_to",
-                        axis_angle_deg=angle,
-                        perpendicular_score=perpendicular_score,
+                        relation="intersects_3d",
+                        intersection_volume=intersection_volume,
+                        contact_area=contact_area,
                     )
                     _add_topology_edge(
                         b,
                         a,
-                        relation="perpendicular_to",
-                        axis_angle_deg=angle,
-                        perpendicular_score=perpendicular_score,
+                        relation="intersects_3d",
+                        intersection_volume=intersection_volume,
+                        contact_area=contact_area,
                     )
-            # Only check vertical order if footprints overlap.
-            if overlap_area <= 0.0:
-                continue
-            a_min_z, a_max_z = float(bbox_a[0][2]), float(bbox_a[1][2])
-            b_min_z, b_max_z = float(bbox_b[0][2]), float(bbox_b[1][2])
-            if a_min_z > b_max_z:
-                gap = a_min_z - b_max_z
-                _add_topology_edge(a, b, relation="above", vertical_gap=gap)
-                _add_topology_edge(b, a, relation="below", vertical_gap=gap)
-            elif b_min_z > a_max_z:
-                gap = b_min_z - a_max_z
-                _add_topology_edge(b, a, relation="above", vertical_gap=gap)
-                _add_topology_edge(a, b, relation="below", vertical_gap=gap)
+                elif contact_area > 1e-6:
+                    _add_topology_edge(
+                        a,
+                        b,
+                        relation="touches_surface",
+                        intersection_volume=intersection_volume,
+                        contact_area=contact_area,
+                    )
+                    _add_topology_edge(
+                        b,
+                        a,
+                        relation="touches_surface",
+                        intersection_volume=intersection_volume,
+                        contact_area=contact_area,
+                    )
+
+        if bbox_contains(bbox_a, bbox_b):
+            _add_topology_edge(
+                a,
+                b,
+                relation="contains_3d",
+                containment_ratio=1.0,
+            )
+            _add_topology_edge(
+                b,
+                a,
+                relation="inside_3d",
+                containment_ratio=1.0,
+            )
+        elif bbox_contains(bbox_b, bbox_a):
+            _add_topology_edge(
+                b,
+                a,
+                relation="contains_3d",
+                containment_ratio=1.0,
+            )
+            _add_topology_edge(
+                a,
+                b,
+                relation="inside_3d",
+                containment_ratio=1.0,
+            )
+
+        support_relation, support_score = support_relation_between_nodes(
+            G.nodes[a],
+            G.nodes[b],
+            gap_tolerance=SUPPORT_GAP_TOLERANCE,
+        )
+        if support_relation == "a_supports_b" and support_score is not None:
+            gap = max(0.0, float(bbox_b[0][2]) - float(bbox_a[1][2]))
+            _add_topology_edge(
+                a,
+                b,
+                relation="supports",
+                vertical_gap=gap,
+                overlap_area_xy=overlap_area,
+                support_score=support_score,
+            )
+            _add_topology_edge(
+                b,
+                a,
+                relation="supported_by",
+                vertical_gap=gap,
+                overlap_area_xy=overlap_area,
+                support_score=support_score,
+            )
+            _add_topology_edge(
+                b,
+                a,
+                relation="rests_on",
+                vertical_gap=gap,
+                overlap_area_xy=overlap_area,
+                support_score=support_score,
+            )
+        elif support_relation == "b_supports_a" and support_score is not None:
+            gap = max(0.0, float(bbox_a[0][2]) - float(bbox_b[1][2]))
+            _add_topology_edge(
+                b,
+                a,
+                relation="supports",
+                vertical_gap=gap,
+                overlap_area_xy=overlap_area,
+                support_score=support_score,
+            )
+            _add_topology_edge(
+                a,
+                b,
+                relation="supported_by",
+                vertical_gap=gap,
+                overlap_area_xy=overlap_area,
+                support_score=support_score,
+            )
+            _add_topology_edge(
+                a,
+                b,
+                relation="rests_on",
+                vertical_gap=gap,
+                overlap_area_xy=overlap_area,
+                support_score=support_score,
+            )
+
+        vertical_overlap = bbox_vertical_overlap(bbox_a, bbox_b)
+        if vertical_overlap > 0.0 and (
+            pair_distance <= FACING_MAX_DISTANCE or overlap_area > 0.0
+        ):
+            parallel, angle = is_parallel(G.nodes[a], G.nodes[b])
+            if parallel and angle is not None:
+                parallel_score = max(0.0, 1.0 - min(angle, 90.0) / 90.0)
+                _add_topology_edge(
+                    a,
+                    b,
+                    relation="parallel_to",
+                    axis_angle_deg=angle,
+                    parallel_score=parallel_score,
+                )
+                _add_topology_edge(
+                    b,
+                    a,
+                    relation="parallel_to",
+                    axis_angle_deg=angle,
+                    parallel_score=parallel_score,
+                )
+                facing_score = facing_score_between_nodes(G.nodes[a], G.nodes[b])
+                if facing_score is not None and facing_score >= 0.35:
+                    _add_topology_edge(
+                        a,
+                        b,
+                        relation="facing",
+                        axis_angle_deg=angle,
+                        facing_score=facing_score,
+                        distance=pair_distance,
+                    )
+                    _add_topology_edge(
+                        b,
+                        a,
+                        relation="facing",
+                        axis_angle_deg=angle,
+                        facing_score=facing_score,
+                        distance=pair_distance,
+                    )
+
+            perpendicular, angle = is_perpendicular(G.nodes[a], G.nodes[b])
+            if perpendicular and angle is not None:
+                perpendicular_score = max(0.0, 1.0 - (abs(90.0 - angle) / 90.0))
+                _add_topology_edge(
+                    a,
+                    b,
+                    relation="perpendicular_to",
+                    axis_angle_deg=angle,
+                    perpendicular_score=perpendicular_score,
+                )
+                _add_topology_edge(
+                    b,
+                    a,
+                    relation="perpendicular_to",
+                    axis_angle_deg=angle,
+                    perpendicular_score=perpendicular_score,
+                )
+        # Only check vertical order if footprints overlap.
+        if overlap_area <= 0.0:
+            continue
+        a_min_z, a_max_z = float(bbox_a[0][2]), float(bbox_a[1][2])
+        b_min_z, b_max_z = float(bbox_b[0][2]), float(bbox_b[1][2])
+        if a_min_z > b_max_z:
+            gap = a_min_z - b_max_z
+            _add_topology_edge(a, b, relation="above", vertical_gap=gap)
+            _add_topology_edge(b, a, relation="below", vertical_gap=gap)
+        elif b_min_z > a_max_z:
+            gap = b_min_z - a_max_z
+            _add_topology_edge(b, a, relation="above", vertical_gap=gap)
+            _add_topology_edge(a, b, relation="below", vertical_gap=gap)
 
 
 def plot_interactive_graph(G: nx.DiGraph | nx.MultiDiGraph, out_html: Path) -> None:
