@@ -341,3 +341,16 @@ def test_import_networkx_graph_projects_dataset_metadata(monkeypatch) -> None:
 
     assert node_rows[0]["dataset"] == "model-a"
     assert rel_rows[0]["dataset"] == "model-a"
+
+
+def test_set_context_db_path_updates_neo4j_backend_and_catalog_graph(
+    tmp_path,
+) -> None:
+    graph = nx.MultiDiGraph()
+    backend = Neo4jBackend(graph=graph)
+    updated_db = tmp_path / "updated.db"
+
+    backend.set_context_db_path(updated_db)
+
+    assert backend.db_path == updated_db.resolve()
+    assert backend.get_networkx_graph().graph["_db_path"] == updated_db.resolve()

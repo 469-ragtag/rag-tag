@@ -105,6 +105,16 @@ class Neo4jBackend:
     def get_networkx_graph(self) -> nx.DiGraph | nx.MultiDiGraph:
         return self._ensure_catalog_graph()
 
+    def set_context_db_path(self, db_path: Path | None) -> None:
+        resolved = db_path.expanduser().resolve() if db_path is not None else None
+        self.db_path = resolved
+        if self._catalog_graph is None:
+            return
+        if resolved is None:
+            self._catalog_graph.graph.pop("_db_path", None)
+            return
+        self._catalog_graph.graph["_db_path"] = resolved
+
     def _ensure_catalog_graph(self) -> nx.DiGraph | nx.MultiDiGraph:
         if self._catalog_graph is not None:
             return self._catalog_graph

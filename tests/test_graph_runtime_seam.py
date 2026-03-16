@@ -197,6 +197,47 @@ def test_ensure_graph_context_passes_selected_dataset_to_neo4j_backend(
     assert resolved_agent is sentinel_agent
 
 
+def test_ensure_graph_context_updates_reused_neo4j_runtime_db_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph = _build_graph()
+    graph.graph["datasets"] = ["OnlyDataset"]
+    _write_project_marker(tmp_path)
+    (tmp_path / "config.yaml").write_text(
+        "defaults:\n  graph_backend: neo4j\n",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("GRAPH_BACKEND", raising=False)
+    monkeypatch.setattr(
+        graph_runtime_module,
+        "_MODULE_DIR",
+        tmp_path / "src" / "rag_tag" / "graph",
+    )
+
+    original_db = tmp_path / "first.db"
+    runtime = graph_runtime_module.GraphRuntime.from_env(
+        graph=graph,
+        db_path=original_db,
+        selected_datasets=["OnlyDataset"],
+    )
+    sentinel_agent = object()
+    updated_db = tmp_path / "second.db"
+
+    resolved_runtime, resolved_agent = _ensure_graph_context(
+        runtime,
+        sentinel_agent,
+        False,
+        graph_dataset="OnlyDataset",
+        db_path=updated_db,
+    )
+
+    assert resolved_runtime is runtime
+    assert resolved_agent is sentinel_agent
+    assert getattr(runtime._backend, "db_path") == updated_db.resolve()
+    assert runtime.get_networkx_graph().graph["_db_path"] == updated_db.resolve()
+
+
 def test_require_explicit_graph_dataset_uses_runtime_public_graph() -> None:
     runtime = wrap_networkx_graph(_build_graph())
     runtime.get_networkx_graph().graph["datasets"] = ["A", "B"]

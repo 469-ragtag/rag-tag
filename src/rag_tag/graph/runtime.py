@@ -25,6 +25,8 @@ class GraphBackend(Protocol):
 
     def get_networkx_graph(self) -> nx.DiGraph | nx.MultiDiGraph: ...
 
+    def set_context_db_path(self, db_path: Path | None) -> None: ...
+
     def close(self) -> None: ...
 
 
@@ -82,6 +84,12 @@ class NetworkXBackend:
 
     def get_networkx_graph(self) -> nx.DiGraph | nx.MultiDiGraph:
         return self.graph
+
+    def set_context_db_path(self, db_path: Path | None) -> None:
+        if db_path is None:
+            self.graph.graph.pop("_db_path", None)
+            return
+        self.graph.graph["_db_path"] = db_path.expanduser().resolve()
 
     def close(self) -> None:
         return None
@@ -162,6 +170,9 @@ class GraphRuntime:
 
     def close(self) -> None:
         self._backend.close()
+
+    def set_context_db_path(self, db_path: Path | None) -> None:
+        self._backend.set_context_db_path(db_path)
 
     @property
     def backend_name(self) -> str:

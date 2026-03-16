@@ -423,6 +423,8 @@ def _ensure_graph_context(
         if previous_db_path != current_db_path:
             _clear_graph_db_caches(nx_graph)
         nx_graph.graph["_db_path"] = resolved_db_path
+        if existing_runtime is not None:
+            existing_runtime.set_context_db_path(resolved_db_path)
 
     if agent is None:
         agent = GraphAgent(debug_llm_io=debug_llm_io)
