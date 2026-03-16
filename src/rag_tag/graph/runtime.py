@@ -126,13 +126,27 @@ class GraphRuntime:
         *,
         graph: nx.DiGraph | nx.MultiDiGraph | None = None,
         db_path: Path | None = None,
+        selected_datasets: list[str] | tuple[str, ...] | None = None,
         start_dir: Path | None = None,
     ) -> "GraphRuntime":
         name = _default_backend_name(start_dir)
         factory = _BACKEND_REGISTRY.get(name)
         if factory is None:
             raise ValueError(f"Unknown GRAPH_BACKEND: {name}")
-        return cls(factory(graph=graph, db_path=db_path), name)
+        if selected_datasets is None and graph is not None:
+            graph_datasets = graph.graph.get("datasets")
+            if isinstance(graph_datasets, list) and all(
+                isinstance(item, str) for item in graph_datasets
+            ):
+                selected_datasets = sorted(graph_datasets)
+        return cls(
+            factory(
+                graph=graph,
+                db_path=db_path,
+                selected_datasets=selected_datasets,
+            ),
+            name,
+        )
 
     def query(
         self,
@@ -196,7 +210,9 @@ def wrap_networkx_graph(
 # Register default backend.
 register_backend(
     "networkx",
-    lambda *, graph=None, db_path=None: NetworkXBackend(graph or nx.MultiDiGraph()),
+    lambda *, graph=None, db_path=None, selected_datasets=None: NetworkXBackend(
+        graph or nx.MultiDiGraph()
+    ),
 )
 
 
@@ -207,10 +223,15 @@ def _register_neo4j_backend() -> None:
         *,
         graph: nx.DiGraph | nx.MultiDiGraph | None = None,
         db_path: Path | None = None,
+        selected_datasets: list[str] | tuple[str, ...] | None = None,
     ) -> GraphBackend:
         from rag_tag.graph.backends.neo4j_backend import Neo4jBackend  # noqa: PLC0415
 
-        return Neo4jBackend(graph=graph, db_path=db_path)
+        return Neo4jBackend(
+            graph=graph,
+            db_path=db_path,
+            selected_datasets=tuple(selected_datasets or ()),
+        )
 
     register_backend("neo4j", _factory)
 

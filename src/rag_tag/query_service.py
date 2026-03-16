@@ -430,9 +430,23 @@ def _ensure_graph_context(
     if existing_runtime is not None:
         return existing_runtime, agent
 
+    selected_datasets: list[str] | None = None
+    if graph_dataset is not None:
+        selected_datasets = [graph_dataset]
+    else:
+        datasets = nx_graph.graph.get("datasets")
+        if isinstance(datasets, list) and all(
+            isinstance(item, str) for item in datasets
+        ):
+            selected_datasets = sorted(datasets)
+
     # Create the runtime through the configured backend factory so checked-in
     # config defaults and one-off GRAPH_BACKEND overrides are both honored.
-    runtime = GraphRuntime.from_env(graph=nx_graph, db_path=db_path)
+    runtime = GraphRuntime.from_env(
+        graph=nx_graph,
+        db_path=db_path,
+        selected_datasets=selected_datasets,
+    )
     return runtime, agent
 
 

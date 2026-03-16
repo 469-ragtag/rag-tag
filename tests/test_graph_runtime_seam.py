@@ -166,6 +166,37 @@ def test_ensure_graph_context_uses_graph_backend_from_config(
     assert resolved_agent is sentinel_agent
 
 
+def test_ensure_graph_context_passes_selected_dataset_to_neo4j_backend(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph = _build_graph()
+    graph.graph["datasets"] = ["model-a", "model-b"]
+    sentinel_agent = object()
+    _write_project_marker(tmp_path)
+    (tmp_path / "config.yaml").write_text(
+        "defaults:\n  graph_backend: neo4j\n",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("GRAPH_BACKEND", raising=False)
+    monkeypatch.setattr(
+        graph_runtime_module,
+        "_MODULE_DIR",
+        tmp_path / "src" / "rag_tag" / "graph",
+    )
+
+    runtime, resolved_agent = _ensure_graph_context(
+        graph,
+        sentinel_agent,
+        False,
+        graph_dataset="model-a",
+    )
+
+    assert runtime.backend_name == "neo4j"
+    assert getattr(runtime._backend, "selected_datasets") == ("model-a",)
+    assert resolved_agent is sentinel_agent
+
+
 def test_require_explicit_graph_dataset_uses_runtime_public_graph() -> None:
     runtime = wrap_networkx_graph(_build_graph())
     runtime.get_networkx_graph().graph["datasets"] = ["A", "B"]
