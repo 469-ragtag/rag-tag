@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import networkx as nx
 import pytest
 
+from rag_tag.agent.graph_tools import register_graph_tools
 from rag_tag.graph import runtime as graph_runtime_module
 from rag_tag.graph import wrap_networkx_graph
 from rag_tag.query_service import (
@@ -209,6 +211,62 @@ def test_execute_query_reuses_existing_runtime_without_private_graph_access(
     assert captured["agent"] is sentinel_agent
     assert bundle["runtime"] is runtime
     assert bundle["graph"] is runtime
+
+
+def test_execute_query_requires_explicit_dataset_before_first_graph_load(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_project_marker(tmp_path)
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    (output_dir / "model-a.jsonl").write_text("", encoding="utf-8")
+    (output_dir / "model-b.jsonl").write_text("", encoding="utf-8")
+
+    monkeypatch.setattr("rag_tag.query_service.find_project_root", lambda *_: tmp_path)
+
+    def fail_load_graph(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise AssertionError("load_graph should not run for ambiguous first loads")
+
+    monkeypatch.setattr("rag_tag.query_service.load_graph", fail_load_graph)
+
+    bundle = execute_query(
+        "Which rooms are adjacent to the kitchen?",
+        db_paths=[],
+        decision=RouteDecision(route="graph", reason="test", sql_request=None),
+    )
+
+    assert "Multiple graph datasets are available" in bundle["result"]["error"]
+
+
+def test_get_elements_in_storey_tool_uses_runtime_query() -> None:
+    class ToolRegistryAgent:
+        def __init__(self) -> None:
+            self.tools: dict[str, object] = {}
+
+        def tool(self, func):  # type: ignore[no-untyped-def]
+            self.tools[func.__name__] = func
+            return func
+
+    class FakeRuntime:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict[str, object]]] = []
+
+        def query(self, action: str, params: dict[str, object]) -> dict[str, object]:
+            self.calls.append((action, params))
+            return {"status": "ok", "data": {"elements": []}, "error": None}
+
+    fake_agent = ToolRegistryAgent()
+    register_graph_tools(fake_agent)
+    runtime = FakeRuntime()
+
+    result = fake_agent.tools["get_elements_in_storey"](
+        SimpleNamespace(deps=runtime),
+        "Level 0",
+    )
+
+    assert runtime.calls == [("get_elements_in_storey", {"storey": "Level 0"})]
+    assert result["status"] == "ok"
 
 
 def _write_project_marker(project_root: Path) -> None:

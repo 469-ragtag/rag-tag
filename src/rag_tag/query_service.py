@@ -89,13 +89,14 @@ def _require_explicit_graph_dataset(
         # Explicit dataset provided — no check needed.
         return
 
-    # Check if the graph has multiple datasets.
-    if runtime is None:
-        return
-
-    # Extract datasets from the graph.
     datasets = None
-    if isinstance(runtime, GraphRuntime):
+    if runtime is None:
+        project_root = find_project_root(Path(__file__).resolve().parent)
+        if project_root is not None:
+            output_dir = project_root / "output"
+            if output_dir.is_dir():
+                datasets = sorted({path.stem for path in output_dir.glob("*.jsonl")})
+    elif isinstance(runtime, GraphRuntime):
         datasets = runtime.get_networkx_graph().graph.get("datasets")
     elif isinstance(runtime, (nx.DiGraph, nx.MultiDiGraph)):
         datasets = runtime.graph.get("datasets")
