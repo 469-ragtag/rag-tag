@@ -23,7 +23,6 @@ dependencies = [
     "numpy>=2.4.1",
     "pydantic>=2.7.0",
     "plotly>=6.5.2",
-    "PyYAML>=6.0.2",
     "python-dotenv>=1.2.1",
     "pydantic-ai-slim[google,cohere,openai]>=0.0.1",
     "rapidfuzz>=3.0.0",
@@ -44,7 +43,7 @@ rag-tag-refresh-ifc43-rdf = "rag_tag.cli.refresh_bsdd_ifc43_rdf:main"
 [dependency-groups]
 dev = [
     "pre-commit>=3.7",
-    "pytest>=8.3",
+    "pytest>=8.0",
     "ruff>=0.9",
 ]
 

@@ -19,7 +19,6 @@ from rapidfuzz import fuzz, process
 from rag_tag.graph import GraphRuntime, get_networkx_graph
 from rag_tag.graph.payloads import sanitize_properties_for_llm
 from rag_tag.graph_contract import make_error_envelope, normalize_relation_name
-from rag_tag.ifc_graph_tool import query_ifc_graph
 
 # Minimum rapidfuzz WRatio score (0-100) to accept a fuzzy class normalisation.
 _CLASS_FUZZY_THRESHOLD = 72
@@ -446,7 +445,7 @@ def register_graph_tools(agent: Any) -> None:
         storey: str,
     ) -> dict[str, Any]:
         """Get all non-container elements in a specific storey/level."""
-        return query_ifc_graph(ctx.deps, "get_elements_in_storey", {"storey": storey})
+        return ctx.deps.query("get_elements_in_storey", {"storey": storey})
 
     @agent.tool
     def find_container_elements_excluding(

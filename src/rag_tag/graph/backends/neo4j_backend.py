@@ -443,6 +443,7 @@ class Neo4jBackend:
                 return self._err(f"Element not found: {element_id}", "not_found")
 
             neighbors: list[dict[str, Any]] = []
+            seen: set[tuple[str, str, str]] = set()
             with self._session() as session:
                 if session is None:
                     return self._err("Neo4j not configured", "neo4j_not_configured")
@@ -454,6 +455,10 @@ class Neo4jBackend:
                 for record in result:
                     m = record["m"]
                     r = record["r"]
+                    dedupe_key = _spatial_neighbor_dedupe_key(m, r)
+                    if dedupe_key in seen:
+                        continue
+                    seen.add(dedupe_key)
                     relation = normalize_relation_name(r.get("relation"))
                     neighbors.append(
                         {
@@ -504,6 +509,7 @@ class Neo4jBackend:
                 return self._err(f"Element not found: {element_id}", "not_found")
 
             neighbors: list[dict[str, Any]] = []
+            seen: set[tuple[str, str, str]] = set()
             with self._session() as session:
                 if session is None:
                     return self._err("Neo4j not configured", "neo4j_not_configured")
@@ -515,6 +521,10 @@ class Neo4jBackend:
                 for record in result:
                     m = record["m"]
                     r = record["r"]
+                    dedupe_key = _topology_neighbor_dedupe_key(m, r)
+                    if dedupe_key in seen:
+                        continue
+                    seen.add(dedupe_key)
                     rel = normalize_relation_name(r.get("relation"))
                     neighbors.append(
                         {
@@ -568,6 +578,7 @@ class Neo4jBackend:
                 return self._err(f"Element not found: {element_id}", "not_found")
 
             neighbors: list[dict[str, Any]] = []
+            seen: set[tuple[str, str, str]] = set()
             with self._session() as session:
                 if session is None:
                     return self._err("Neo4j not configured", "neo4j_not_configured")
@@ -579,6 +590,10 @@ class Neo4jBackend:
                 for record in result:
                     m = record["m"]
                     r = record["r"]
+                    dedupe_key = _topology_neighbor_dedupe_key(m, r)
+                    if dedupe_key in seen:
+                        continue
+                    seen.add(dedupe_key)
                     rel = normalize_relation_name(r.get("relation"))
                     neighbors.append(
                         {
@@ -632,6 +647,7 @@ class Neo4jBackend:
                 )
 
             results: list[dict[str, Any]] = []
+            seen: set[tuple[str, str, str]] = set()
             with self._session() as session:
                 if session is None:
                     return self._err("Neo4j not configured", "neo4j_not_configured")
@@ -643,6 +659,10 @@ class Neo4jBackend:
                 for record in result:
                     m = record["m"]
                     r = record["r"]
+                    dedupe_key = _spatial_neighbor_dedupe_key(m, r)
+                    if dedupe_key in seen:
+                        continue
+                    seen.add(dedupe_key)
                     dist = r.get("distance")
                     if dist is None or float(dist) > max_distance_value:
                         continue
@@ -702,6 +722,7 @@ class Neo4jBackend:
                 return self._err(f"Element not found: {element_id}", "not_found")
 
             results: list[dict[str, Any]] = []
+            seen: set[tuple[str, str, str]] = set()
             with self._session() as session:
                 if session is None:
                     return self._err("Neo4j not configured", "neo4j_not_configured")
@@ -713,6 +734,10 @@ class Neo4jBackend:
                 for record in result:
                     m = record["m"]
                     r = record["r"]
+                    dedupe_key = _topology_neighbor_dedupe_key(m, r)
+                    if dedupe_key in seen:
+                        continue
+                    seen.add(dedupe_key)
                     gap = r.get("vertical_gap")
                     if (
                         max_gap_value is not None
@@ -769,6 +794,7 @@ class Neo4jBackend:
                 return self._err(f"Element not found: {element_id}", "not_found")
 
             results: list[dict[str, Any]] = []
+            seen: set[tuple[str, str, str]] = set()
             with self._session() as session:
                 if session is None:
                     return self._err("Neo4j not configured", "neo4j_not_configured")
@@ -780,6 +806,10 @@ class Neo4jBackend:
                 for record in result:
                     m = record["m"]
                     r = record["r"]
+                    dedupe_key = _topology_neighbor_dedupe_key(m, r)
+                    if dedupe_key in seen:
+                        continue
+                    seen.add(dedupe_key)
                     gap = r.get("vertical_gap")
                     if (
                         max_gap_value is not None
@@ -971,6 +1001,22 @@ def _merge_scalar_properties(properties: dict[str, Any], node: Any) -> None:
     for key, value in mapping.items():
         if key not in properties and value is not None:
             properties[key] = value
+
+
+def _spatial_neighbor_dedupe_key(node: Any, edge: Any) -> tuple[str, str, str]:
+    return (
+        str(node.get("node_id") or ""),
+        normalize_relation_name(edge.get("relation")) or "",
+        str(edge.get("distance")),
+    )
+
+
+def _topology_neighbor_dedupe_key(node: Any, edge: Any) -> tuple[str, str, str]:
+    return (
+        str(node.get("node_id") or ""),
+        normalize_relation_name(edge.get("relation")) or "",
+        str(edge.get("vertical_gap") or edge.get("intersection_volume") or ""),
+    )
 
 
 def query_ifc_graph_catalog(
