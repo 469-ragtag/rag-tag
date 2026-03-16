@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any, cast
+
 import networkx as nx
 import pytest
 
@@ -354,3 +356,35 @@ def test_set_context_db_path_updates_neo4j_backend_and_catalog_graph(
 
     assert backend.db_path == updated_db.resolve()
     assert backend.get_networkx_graph().graph["_db_path"] == updated_db.resolve()
+
+
+def test_catalog_backed_find_nodes_respects_selected_datasets() -> None:
+    graph = nx.MultiDiGraph()
+    graph.graph["datasets"] = ["model-a", "model-b"]
+    graph.add_node(
+        "Element::model-a::W1",
+        label="Wall A",
+        class_="IfcWall",
+        dataset="model-a",
+        properties={"GlobalId": "W1"},
+        payload={},
+    )
+    graph.add_node(
+        "Element::model-b::W1",
+        label="Wall B",
+        class_="IfcWall",
+        dataset="model-b",
+        properties={"GlobalId": "W1"},
+        payload={},
+    )
+
+    backend = Neo4jBackend(graph=graph, selected_datasets=("model-a",))
+
+    result = backend.query("find_nodes", {"class": "IfcWall"})
+    data = cast(dict[str, Any], result["data"])
+    elements = cast(list[dict[str, Any]], data["elements"])
+
+    assert result["status"] == "ok"
+    assert [element["id"] for element in elements] == ["Element::model-a::W1"]
+    assert list(backend.get_networkx_graph().nodes) == ["Element::model-a::W1"]
+    assert backend.get_networkx_graph().graph["datasets"] == ["model-a"]

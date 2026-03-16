@@ -72,7 +72,7 @@ class Neo4jBackend:
         )
         # Lazy in-memory catalog: used for fuzzy/class helpers that still rely on
         # NetworkX semantics without forcing a full agent refactor.
-        self._catalog_graph = self.graph
+        self._catalog_graph = _scope_catalog_graph(self.graph, self.selected_datasets)
         self._driver = None
         self._database = (os.environ.get("NEO4J_DATABASE") or "").strip() or None
         self._conn_error = None
@@ -1085,6 +1085,24 @@ def _topology_neighbor_dedupe_key(node: Any, edge: Any) -> tuple[str, str, str]:
         normalize_relation_name(edge.get("relation")) or "",
         str(edge.get("vertical_gap") or edge.get("intersection_volume") or ""),
     )
+
+
+def _scope_catalog_graph(
+    graph: nx.DiGraph | nx.MultiDiGraph | None,
+    selected_datasets: tuple[str, ...],
+) -> nx.DiGraph | nx.MultiDiGraph | None:
+    if graph is None or not selected_datasets:
+        return graph
+
+    selected = set(selected_datasets)
+    node_ids = [
+        node_id
+        for node_id, data in graph.nodes(data=True)
+        if data.get("dataset") is None or data.get("dataset") in selected
+    ]
+    scoped_graph = graph.subgraph(node_ids).copy()
+    scoped_graph.graph["datasets"] = list(selected_datasets)
+    return scoped_graph
 
 
 def query_ifc_graph_catalog(

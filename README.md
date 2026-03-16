@@ -1,452 +1,642 @@
 # rag-tag
 
-`rag-tag` is a research toolkit for IFC-based digital twins.
+`rag-tag` is a research toolkit for natural-language querying over IFC/BIM digital twins.
 
-It converts IFC models into:
+It exists because BIM questions usually split into two different kinds of work:
 
-- JSONL element records (schema-aware, geometry-aware)
-- flat SQLite tables for deterministic count/list/aggregation queries
-- a NetworkX graph for hierarchy + spatial/topological traversal
+- counts, lists, and aggregations need deterministic answers
+- spatial and topological questions need graph traversal over model relationships
 
-Natural-language questions are routed to SQL or graph tools via PydanticAI.
+`rag-tag` handles those jobs differently on purpose. It routes count/list questions to SQLite, and routes spatial or topology questions to a graph runtime backed by either NetworkX or Neo4j.
 
-## High-level architecture
+## 1. Project overview and why it exists
 
-```
-IFC -> JSONL -> SQLite + NetworkX -> Router + Graph Agent
-```
+The project turns IFC models into queryable runtime artifacts, then lets a router choose the right execution path for each question.
 
-- SQL path: deterministic counts/lists/aggregations
-- Graph path: spatial and topology reasoning over element relationships
+- SQL path: deterministic counts, lists, and aggregations
+- Graph path: adjacency, containment, connectivity, and other spatial/topological reasoning
 
-## Active pipeline commands
+## 2. Architecture / pipeline at a glance
 
-```bash
-uv run rag-tag-ifc-to-jsonl
-uv run rag-tag-jsonl-to-sql
-uv run rag-tag-jsonl-to-graph
+```text
+IFC -> JSONL -> SQLite + graph runtime -> router -> SQL executor or graph agent
 ```
 
-Ontology support commands:
+More concretely:
 
-```bash
-uv run rag-tag-refresh-ifc43-rdf
-uv run rag-tag-generate-ontology-map
-```
+1. `rag-tag-ifc-to-jsonl` reads IFC files and exports one JSONL record per element.
+2. `rag-tag-jsonl-to-sql` builds flat SQLite databases for reliable SQL generation.
+3. Graph data is built from the same JSONL records:
+    - in memory with NetworkX at app runtime, or
+    - imported into Neo4j for a database-backed graph runtime.
+4. `rag-tag` routes each question to SQL or graph execution.
 
-## Quick start
+The current graph backends are:
 
-1. Install dependencies
+- `networkx`
+- `neo4j`
+
+## 3. Key features and backend choices
+
+- Hybrid retrieval: SQL for exact counts/lists, graph for spatial reasoning
+- IFC-aware export: identity, hierarchy, property sets, quantities, and geometry
+- Two graph runtime backends: NetworkX and Neo4j
+- Checked-in config system with `config.yaml`, `config.yml`, or `config.json`
+- Secrets kept out of config and stored in `.env`
+- CLI and Textual TUI entrypoints through the same `rag-tag` command
+- Evaluation scripts for routing and graph-agent comparisons
+
+Backend selection is controlled by:
+
+- `defaults.graph_backend` in `config.yaml`, or
+- a one-off shell override such as `GRAPH_BACKEND=neo4j`
+
+## 4. Prerequisites
+
+- Python `>=3.14`
+- `uv`
+- IFC files in `IFC-Files/`, or explicit file paths passed to the conversion CLI
+- Optional: Docker Engine + Docker Compose for local Neo4j
+- Optional: model/provider credentials in `.env` depending on the profiles you use
+
+Install dev dependencies:
 
 ```bash
 uv sync --group dev
 ```
 
-2. Copy the checked-in config and env templates
+## 5. Quick start
+
+If you only need the shortest path to a working local run, choose one of these:
+
+- NetworkX only: build JSONL + SQLite, then run `rag-tag`
+- Neo4j manually: build JSONL + SQLite, import into Neo4j, then run `rag-tag`
+- Neo4j one-command flow: use `./scripts/run_neo4j_workflow.sh`
+
+### 5.1 Copy the example config
+
+Use the checked-in example as your starting point:
 
 ```bash
 cp config.example.yaml config.yaml
 cp .env.sample .env
 ```
 
-3. Put shared defaults in `config.yaml` and secrets in `.env`
+`config.example.yaml` is the recommended place for shared defaults. Keep secrets in `.env`.
 
-```bash
-DATABRICKS_TOKEN=...
-GEMINI_API_KEY=...
-COHERE_API_KEY=...
-```
-
-`config.yaml` is now the recommended place for provider settings, model profiles,
-default router/agent selections, and experiment groupings. Keep secrets and
-one-off shell overrides in `.env` or your shell environment.
-
-4. Build artifacts
-
-```bash
-uv run rag-tag-generate-ontology-map
-uv run rag-tag-ifc-to-jsonl
-uv run rag-tag-jsonl-to-sql
-uv run rag-tag-jsonl-to-graph
-```
-
-5. Run interactive agent
-
-```bash
-uv run rag-tag
-```
-
-## Neo4j backend (optional)
-
-The Neo4j backend mirrors the canonical NetworkX graph so query semantics stay
-consistent. Import always truncates and re-inserts nodes/edges.
-
-### 1) Set config + credentials
-
-Set the backend in `config.yaml`:
+For a simple local setup, make sure `config.yaml` uses a local graph-agent profile and the NetworkX backend:
 
 ```yaml
 defaults:
-  graph_backend: neo4j
+    router_profile: router-gemini-flash
+    agent_profile: cohere-command-a
+    router_mode: llm
+    graph_backend: networkx
 ```
 
-Keep only Neo4j credentials in `.env` or your shell environment:
+Example `.env` values:
 
 ```bash
-NEO4J_URI=bolt://localhost:7687
-NEO4J_USERNAME=neo4j
-NEO4J_PASSWORD=your-password
-# Optional
-NEO4J_DATABASE=neo4j
-```
-
-You can put these credentials in `.env` for local dev. For a one-off shell-only
-override, `GRAPH_BACKEND=neo4j` still takes precedence over the checked-in config.
-
-### 2) Import JSONL into Neo4j
-
-```bash
-uv run rag-tag-jsonl-to-neo4j --jsonl-dir ./output
-```
-
-Optional: import a single dataset:
-
-```bash
-uv run rag-tag-jsonl-to-neo4j --jsonl-dir ./output --dataset Building-Architecture
-```
-
-### 3) Run the app against Neo4j
-
-```bash
-uv run rag-tag
-```
-
-To confirm which backend was used, inspect the returned result bundle; it
-includes a `runtime` field set to `networkx` or `neo4j`.
-Use `config.example.yaml` as the starting point for Databricks-backed profile
-workflows and graph-model comparison runs.
-
-If you already run the app like this:
-
-```bash
-uv run rag-tag --tui --db output/Building-Architecture.db --graph-dataset Building-Architecture --trace
-```
-
-that same command still works. The new config flow changes model/provider/profile
-selection, not your normal CLI entrypoint. Keep using CLI flags for runtime session
-options such as `--tui`, `--db`, `--graph-dataset`, and `--trace`.
-
-## Configuration
-
-Checked-in config is the recommended home for non-secret runtime defaults:
-
-- `defaults` for shared router/agent profile selection, `router_mode`, and `graph_backend`
-- `providers` for named provider configuration such as Databricks hosts
-- `profiles` for reusable router and graph-agent model selections
-- `experiments` for repeatable graph comparison groups
-
-Use `.env` or shell environment variables for secrets and one-off overrides:
-
-- API keys and tokens such as `DATABRICKS_TOKEN`, `GEMINI_API_KEY`,
-  `COHERE_API_KEY`
-- machine-local overrides such as `RAG_TAG_CONFIG`
-- temporary runtime model/profile overrides such as `ROUTER_MODEL`,
-  `AGENT_MODEL`, `ROUTER_PROFILE`, `AGENT_PROFILE`
-- one-off shell overrides such as `GRAPH_BACKEND`
-
-Config discovery order:
-
-- repo-root `config.yaml`
-- repo-root `config.yml`
-- repo-root `config.json`
-
-Override the discovered config file with either:
-
-- `uv run rag-tag --config ./path/to/config.yaml`
-- `RAG_TAG_CONFIG=./path/to/config.yaml uv run rag-tag`
-
-The full checked-in example lives in `config.example.yaml`.
-
-Practical split:
-
-- `config.yaml`: shared defaults you want to edit and commit, including `graph_backend`
-- `.env`: secrets and machine-local overrides
-- CLI flags: per-run session options such as TUI mode, selected DB, dataset, and tracing
-
-The checked-in `config.yaml` defaults the graph agent to the current Cohere
-baseline and keeps the runtime graph backend on NetworkX so a normal checkout
-still runs without Databricks or Neo4j credentials. Switch to a Databricks
-profile by editing `defaults.agent_profile` or by using
-`--agent-profile` for a one-off run.
-
-Minimal setup for the same TUI command you use today:
-
-`config.yaml`
-
-```yaml
-defaults:
-  router_profile: router-gemini-flash
-  agent_profile: dbx-claude-sonnet-4-6
-  router_mode: llm
-  graph_backend: networkx
-
-providers:
-  databricks:
-    type: databricks
-    host_env: DATABRICKS_HOST
-    token_env: DATABRICKS_TOKEN
-
-profiles:
-  router-gemini-flash:
-    model: google-gla:gemini-2.5-flash
-    settings:
-      temperature: 0.0
-
-  cohere-command-a:
-    model: cohere:command-a-03-2025
-    settings:
-      temperature: 0.1
-      max_tokens: 1024
-
-  dbx-claude-sonnet-4-6:
-    provider: databricks
-    model: databricks-claude-sonnet-4-6
-    settings:
-      temperature: 0.1
-      max_tokens: 1024
-```
-
-`.env`
-
-```bash
-DATABRICKS_HOST=your-workspace-host.databricks.com
-DATABRICKS_TOKEN=your_databricks_token
 GEMINI_API_KEY=your_gemini_api_key
 COHERE_API_KEY=your_cohere_api_key
 LOGFIRE_TOKEN=your_write_logfire_token
 ```
 
-Then run the app exactly as before:
+### 5.2 Build the main artifacts
+
+Convert IFC files in `IFC-Files/` to JSONL:
 
 ```bash
-uv run rag-tag --tui --db output/Building-Architecture.db --graph-dataset Building-Architecture --trace
+uv run rag-tag-ifc-to-jsonl
 ```
 
-To switch models, either edit `defaults.agent_profile` in `config.yaml` or use a
-one-off override like:
+Build SQLite databases from the generated JSONL files:
 
 ```bash
-uv run rag-tag --tui --db output/Building-Architecture.db --graph-dataset Building-Architecture --trace --agent-profile dbx-gpt-oss-20b
+uv run rag-tag-jsonl-to-sql
 ```
 
-To switch back to the current Cohere graph agent through config, set:
-
-```yaml
-defaults:
-  agent_profile: cohere-command-a
-```
-
-or do it for one run only:
+Optional: build the NetworkX graph and HTML visualization for graph inspection:
 
 ```bash
-uv run rag-tag --tui --db output/Building-Architecture.db --graph-dataset Building-Architecture --trace --agent-profile cohere-command-a
+uv run rag-tag-jsonl-to-graph
 ```
 
-## Databricks setup
+`rag-tag-jsonl-to-graph` is optional for normal app runtime. The app can build the in-memory NetworkX graph directly from JSONL when needed. This command is mainly useful for graph build checks and visualization.
 
-Common Databricks environment variables:
+### 5.3 Run the app
+
+Launch the TUI against one dataset:
 
 ```bash
-DATABRICKS_HOST=dbc-00000000-0000.cloud.databricks.com
-DATABRICKS_TOKEN=your_databricks_token
+uv run rag-tag --tui --db ./output/Building-Architecture.db --graph-dataset Building-Architecture
 ```
 
-`DATABRICKS_TOKEN` is required for Databricks-backed profiles. `DATABRICKS_HOST`
-should now live in `.env` or your shell environment, while `config.yaml`
-references it via `host_env: DATABRICKS_HOST`.
+Add `--trace` if you want Logfire observability for that session.
 
-If you prefer to store the full OpenAI-compatible serving URL instead of the host,
-use `base_url_env` in config and define `DATABRICKS_BASE_URL` in `.env`.
+Run the basic CLI instead of the TUI:
 
-For Databricks profiles, the `model` value is the serving endpoint name that is
-resolved against the workspace's OpenAI-compatible `/serving-endpoints` base
-URL. `config.example.yaml` includes example profiles for:
+```bash
+uv run rag-tag --db ./output/Building-Architecture.db --graph-dataset Building-Architecture
+```
 
-- Cohere Command A (current baseline)
-- Claude Sonnet 4.6
-- GPT OSS 20B
-- Llama 4 Maverick
-- Gemma 3 12B
+### 5.4 Optional ontology helper commands
 
-These are example endpoint names only; update them to match your own Databricks
-serving endpoints before use.
+Refresh the IFC4.3 RDF snapshot:
 
-Databricks compatibility note:
+```bash
+uv run rag-tag-refresh-ifc43-rdf
+```
 
-- Databricks rejects the OpenAI-style `parallel_tool_calls` request field.
-- Do not add `parallel_tool_calls` to Databricks profile settings in `config.yaml`.
-- `rag-tag` strips that field automatically for Databricks-backed profiles.
+Generate the ontology map used during IFC export:
 
-## Query modes
+```bash
+uv run rag-tag-generate-ontology-map
+```
 
-- Default CLI: `uv run rag-tag`
-- Textual TUI: `uv run rag-tag --tui`
+## 6. Configuration
 
-Useful options:
+### `config.example.yaml` and `.env`
+
+Use `config.example.yaml` as the starting point for:
+
+- shared defaults
+- provider settings
+- named router and agent profiles
+- experiment groups for evaluation scripts
+
+Keep secrets and machine-local values in `.env`, for example:
+
+- `GEMINI_API_KEY`
+- `COHERE_API_KEY`
+- `DATABRICKS_HOST`
+- `DATABRICKS_TOKEN`
+- `NEO4J_URI`
+- `NEO4J_USERNAME`
+- `NEO4J_PASSWORD`
+- `LOGFIRE_TOKEN`
+
+### Config discovery order
+
+`rag-tag` looks for config files in this order:
+
+1. `config.yaml`
+2. `config.yml`
+3. `config.json`
+
+Override that selection for one run:
 
 ```bash
 uv run rag-tag --config ./config.yaml
+```
+
+Or via environment variable:
+
+```bash
+RAG_TAG_CONFIG=./config.yaml uv run rag-tag
+```
+
+### What belongs where
+
+- `config.yaml`: shared defaults you want to keep with the project
+- `.env`: secrets and machine-local values
+- CLI flags: per-run knobs such as `--tui`, `--db`, `--graph-dataset`, and `--trace`
+
+### Backend switching
+
+Set the default backend in config:
+
+```yaml
+defaults:
+    graph_backend: networkx
+```
+
+Or switch for one run without editing config:
+
+```bash
+GRAPH_BACKEND=neo4j uv run rag-tag --tui --db ./output/Building-Architecture.db --graph-dataset Building-Architecture
+```
+
+### Dataset selection and `--graph-dataset`
+
+`--graph-dataset` selects the JSONL dataset stem used by graph queries.
+
+Why it matters:
+
+- in single-dataset runs, `rag-tag` can often infer the graph dataset from `--db`
+- in multi-dataset setups, graph queries need a clear graph scope
+- Neo4j and NetworkX both use that dataset selection to avoid querying the wrong model
+
+Resolution order is:
+
+1. explicit `--graph-dataset`
+2. the stem of the selected `--db` file
+3. no dataset selected
+
+If multiple JSONL datasets are present and you do not set `--graph-dataset` or a matching `--db`, graph queries will ask for an explicit dataset.
+
+## 7. Running with NetworkX
+
+NetworkX is the default local graph runtime.
+
+### Build artifacts
+
+```bash
+uv run rag-tag-ifc-to-jsonl
+uv run rag-tag-jsonl-to-sql
+```
+
+Optional graph build and visualization check:
+
+```bash
+uv run rag-tag-jsonl-to-graph --no-viz
+```
+
+### Run with the NetworkX backend
+
+Using config:
+
+```yaml
+defaults:
+    graph_backend: networkx
+```
+
+Then run:
+
+```bash
+uv run rag-tag --tui --db ./output/Building-Architecture.db --graph-dataset Building-Architecture
+```
+
+Or force NetworkX for one run:
+
+```bash
+GRAPH_BACKEND=networkx uv run rag-tag --tui --db ./output/Building-Architecture.db --graph-dataset Building-Architecture
+```
+
+## 8. Running with Neo4j manually
+
+Use this mode when you want Neo4j as the graph runtime instead of NetworkX.
+
+If you already have Neo4j running somewhere else, you can skip the Docker Compose section and just set the connection credentials.
+
+Important: the app still needs the SQLite database path when you use Neo4j.
+
+- SQL-routed questions still execute against SQLite
+- some graph property lookups are enriched from the selected SQLite DB path
+
+So the normal Neo4j flow is:
+
+1. build JSONL
+2. build SQLite
+3. import the chosen dataset into Neo4j
+4. run `rag-tag` with `GRAPH_BACKEND=neo4j` or `defaults.graph_backend: neo4j`
+
+### Set Neo4j credentials
+
+Put these in `.env` or export them in your shell:
+
+```bash
+NEO4J_URI=bolt://localhost:7687
+NEO4J_USERNAME=neo4j
+NEO4J_PASSWORD=ragtag-dev-password
+NEO4J_DATABASE=neo4j
+```
+
+### Build JSONL and SQLite
+
+```bash
+uv run rag-tag-ifc-to-jsonl
+uv run rag-tag-jsonl-to-sql
+```
+
+### Import one dataset into Neo4j
+
+```bash
+uv run rag-tag-jsonl-to-neo4j --jsonl-dir ./output --dataset Building-Architecture
+```
+
+Import all JSONL datasets in `output/` instead:
+
+```bash
+uv run rag-tag-jsonl-to-neo4j --jsonl-dir ./output
+```
+
+`rag-tag-jsonl-to-neo4j` rebuilds the canonical graph from JSONL, then truncates and re-inserts Neo4j data on import.
+
+### Run the app with Neo4j
+
+One-off shell override:
+
+```bash
+GRAPH_BACKEND=neo4j uv run rag-tag --tui --db ./output/Building-Architecture.db --graph-dataset Building-Architecture
+```
+
+Or set it in config:
+
+```yaml
+defaults:
+    graph_backend: neo4j
+```
+
+Then run the usual command:
+
+```bash
+uv run rag-tag --tui --db ./output/Building-Architecture.db --graph-dataset Building-Architecture
+```
+
+## 9. Running Neo4j with Docker Compose
+
+The repository includes `docker-compose.neo4j.yml` for a local Neo4j instance.
+
+Start the service:
+
+```bash
+docker compose -f docker-compose.neo4j.yml up -d
+```
+
+The compose file defaults to:
+
+- username: `neo4j`
+- password: `ragtag-dev-password`
+
+Neo4j Browser is available at `http://localhost:7474`.
+
+You can override those values through environment variables such as `NEO4J_USERNAME` and `NEO4J_PASSWORD`.
+
+After the container is running, use the manual Neo4j flow:
+
+```bash
+uv run rag-tag-ifc-to-jsonl
+uv run rag-tag-jsonl-to-sql
+uv run rag-tag-jsonl-to-neo4j --jsonl-dir ./output --dataset Building-Architecture
+GRAPH_BACKEND=neo4j uv run rag-tag --tui --db ./output/Building-Architecture.db --graph-dataset Building-Architecture
+```
+
+Stop the local Neo4j service when you are done:
+
+```bash
+docker compose -f docker-compose.neo4j.yml down
+```
+
+Remove the persisted Neo4j volumes too:
+
+```bash
+docker compose -f docker-compose.neo4j.yml down -v
+```
+
+## 10. One-command Neo4j workflow script
+
+The repo also includes `scripts/run_neo4j_workflow.sh`.
+
+What it does:
+
+1. starts local Neo4j with `docker-compose.neo4j.yml`
+2. builds JSONL artifacts
+3. builds SQLite artifacts
+4. imports the selected dataset into Neo4j
+5. launches `rag-tag` in TUI mode with `GRAPH_BACKEND=neo4j`
+
+Run the default dataset (`Building-Architecture`):
+
+```bash
+./scripts/run_neo4j_workflow.sh
+```
+
+Run a specific dataset:
+
+```bash
+./scripts/run_neo4j_workflow.sh Building-Architecture
+```
+
+Pass extra `rag-tag` arguments after the dataset name:
+
+```bash
+./scripts/run_neo4j_workflow.sh Building-Architecture --agent-profile cohere-command-a
+```
+
+Notes:
+
+- the script reads `.env` if present
+- it defaults Neo4j to `bolt://localhost:7687`, `neo4j`, and `ragtag-dev-password`
+- it launches the TUI with `--db ./output/<dataset>.db --graph-dataset <dataset>`
+- it adds `--trace` by default unless you set `RAG_TAG_TRACE=0`
+- it does not stop Neo4j when you exit the app
+- it still expects your normal model/provider credentials and `config.yaml` defaults to be set correctly
+
+Stop the local service after use:
+
+```bash
+docker compose -f docker-compose.neo4j.yml down
+```
+
+## 11. Query modes / common CLI examples
+
+### Main app
+
+Start the stdin-based CLI:
+
+```bash
+uv run rag-tag
+```
+
+Start the Textual TUI:
+
+```bash
+uv run rag-tag --tui
+```
+
+Run against a specific SQLite DB:
+
+```bash
 uv run rag-tag --db ./output/Building-Architecture.db
+```
+
+Pin the graph dataset explicitly:
+
+```bash
 uv run rag-tag --graph-dataset Building-Architecture
-uv run rag-tag --router-profile router-gemini-flash
-uv run rag-tag --agent-profile dbx-gpt-oss-20b
-uv run rag-tag --input
-uv run rag-tag --verbose
+```
+
+Enable Logfire tracing:
+
+```bash
 uv run rag-tag --trace
 ```
 
-Runtime override notes:
+Show router and agent I/O on stderr:
 
-- `--router-profile` and `--agent-profile` select named config profiles for one
-  run without editing `config.yaml`.
-- `ROUTER_PROFILE` and `AGENT_PROFILE` provide the same override via env vars.
-- `ROUTER_MODEL` and `AGENT_MODEL` still bypass profile resolution for one-off
-  runs and take precedence over config-selected profiles.
-- `ROUTER_MODE` still overrides `defaults.router_mode` when set in the
-  environment.
+```bash
+uv run rag-tag --input
+```
 
-Dataset selection behavior:
+Show full JSON result details below answers:
 
-- If `--graph-dataset` is set, that JSONL stem is used for graph routing.
-- Else, if exactly one DB is selected, that DB stem is used.
-- Else, SQL queries can still merge across DBs, but graph queries require an
-  explicit dataset when multiple JSONL datasets are present.
+```bash
+uv run rag-tag --verbose
+```
 
-## Graph model comparison
+Fail closed on merged SQL errors:
 
-Use `scripts/eval_graph_models.py` to compare graph-agent behavior across
-configured profiles.
+```bash
+uv run rag-tag --strict-sql
+```
 
-Important behavior:
+Use one-off profile overrides:
 
-- the script intentionally forces `route="graph"`
-- it compares graph-agent execution, not router behavior
-- select profiles explicitly with `--profiles` or indirectly with
-  `--experiment`
-- write a JSON artifact with `--output` for later review or diffing
+```bash
+uv run rag-tag --router-profile router-gemini-flash --agent-profile cohere-command-a
+```
 
-Practical example using a config-defined experiment and JSON report output:
+### Data prep commands
+
+Convert one IFC file explicitly:
+
+```bash
+uv run rag-tag-ifc-to-jsonl --ifc-file ./IFC-Files/Building-Architecture.ifc
+```
+
+Convert one JSONL file to SQLite explicitly:
+
+```bash
+uv run rag-tag-jsonl-to-sql --jsonl-file ./output/Building-Architecture.jsonl
+```
+
+Build graph visualization output:
+
+```bash
+uv run rag-tag-jsonl-to-graph
+```
+
+Import one dataset into Neo4j:
+
+```bash
+uv run rag-tag-jsonl-to-neo4j --jsonl-dir ./output --dataset Building-Architecture
+```
+
+Refresh IFC4.3 RDF support data:
+
+```bash
+uv run rag-tag-refresh-ifc43-rdf
+```
+
+Generate the ontology map:
+
+```bash
+uv run rag-tag-generate-ontology-map
+```
+
+## 12. Evaluation scripts
+
+### Routing evaluation
+
+Evaluate router decisions and optional SQL execution:
+
+```bash
+uv run python scripts/eval_routing.py --db ./output/Building-Architecture.db --router-mode llm --strict
+```
+
+### Graph-agent comparison
+
+Compare graph-agent profiles from a config-defined experiment:
 
 ```bash
 uv run python scripts/eval_graph_models.py \
   --config ./config.yaml \
-  --experiment graph-dbx-smoke \
+  --experiment graph-agent-compare \
   --db ./output/Building-Architecture.db \
   --graph-dataset Building-Architecture \
   --output ./output/graph-model-report.json
 ```
 
-One-off comparison with explicit profiles:
+Compare an explicit list of profiles instead:
 
 ```bash
 uv run python scripts/eval_graph_models.py \
   --config ./config.yaml \
-  --profiles cohere-command-a dbx-claude-sonnet-4-6 dbx-gpt-oss-20b dbx-llama-4-maverick \
-  --questions-file ./graph-questions.json \
+  --profiles cohere-command-a dbx-claude-sonnet-4-6 dbx-gpt-oss-20b \
   --db ./output/Building-Architecture.db \
-  --output ./output/graph-model-report.json
+  --graph-dataset Building-Architecture
 ```
 
-If `--db` resolves to exactly one SQLite database, its file stem is reused as
-the graph dataset automatically. Pass `--graph-dataset` when you need to pin a
-specific JSONL graph dataset instead.
+Important notes:
 
-## Key repository paths
+- `eval_graph_models.py` forces `route="graph"`
+- it compares graph-agent behavior, not router behavior
+- if `--db` resolves to exactly one database, its stem can be reused as the graph dataset
+- use `--graph-dataset` when you want to pin a specific dataset in a multi-dataset setup
 
-```
+## 13. Project structure
+
+```text
 src/rag_tag/
-  run_agent.py                 # CLI entrypoint
+  run_agent.py                 # main CLI entrypoint
   textual_app.py               # Textual TUI
-  query_service.py             # shared routing/execution orchestration
+  query_service.py             # routing and execution orchestration
   ifc_sql_tool.py              # SQL execution helper
-  ifc_graph_tool.py            # graph query interface + filters
-  router/                      # SQL vs graph routing logic
-  agent/                       # PydanticAI graph agent + tools
+  ifc_graph_tool.py            # graph query interface
+  graph/                       # graph runtime abstraction and backends
+  router/                      # SQL vs graph routing
+  agent/                       # graph agent and tools
   parser/
     ifc_to_jsonl.py            # IFC -> JSONL
     jsonl_to_sql.py            # JSONL -> SQLite
-    jsonl_to_graph.py          # JSONL -> NetworkX graph
-    parse_bsdd_to_map.py       # RDF/registry -> ontology map JSON
-    ifc43_schema_registry.py   # IFC class/pset registry
-    ifc_geometry_parse.py      # centroid/bbox extraction helpers
+    jsonl_to_graph.py          # JSONL -> NetworkX graph + visualization
+    jsonl_to_neo4j.py          # JSONL -> Neo4j import
+
+scripts/
+  eval_routing.py
+  eval_graph_models.py
+  run_neo4j_workflow.sh
+
+IFC-Files/                     # source IFC models
+output/                        # generated JSONL, SQLite, and reports
+docker-compose.neo4j.yml       # local Neo4j service
+config.example.yaml            # recommended config starting point
 ```
 
-## JSONL ingestion notes
+## 14. Reliability / contract notes
 
-- Ingestion reads IFC schema and applies schema-aware behavior.
-- Property sets are split into `PropertySets.Official` and `PropertySets.Custom`
-  using class-specific `ValidPsets` from the ontology map.
-- Unknown/unsupported schema families degrade gracefully (no crash):
-  properties default to `Custom` and base-class expansion is empty.
-- Geometry blocks may include centroid, bounding box, mesh vertices/faces, 2D
-  footprint polygon, local placement matrix, and oriented bounding box when IFC
-  geometry extraction succeeds.
+- Counts, lists, and aggregations should come from SQLite results, not graph guesses.
+- Graph reasoning handles spatial, topological, and explicit IFC relationships.
+- `adjacent_to` is proximity-based. It is not a full topology solver.
+- `contains` and `typed_by` come from IFC relationship data.
+- If geometry is missing, graph construction degrades gracefully instead of crashing.
+- Graph actions return the stable envelope `{status,data,error}`.
+- Graph nodes expose both:
+    - `properties`: flat compatibility view
+    - `payload`: full nested JSONL record
+- SQL merge mode reports partial database failures in warnings instead of silently dropping them.
+- `uv run rag-tag --strict-sql` makes merged SQL execution fail closed.
+- Neo4j mirrors the canonical graph built from JSONL; the import path rebuilds from JSONL first, then projects into Neo4j.
 
-## SQL and graph contracts
+Relation source semantics used in graph results:
 
-- SQLite schema stays flat for reliable LLM SQL generation.
-- Graph nodes include both:
-    - `properties` (flat compatibility view)
-    - `payload` (full nested JSONL record)
+- `ifc`: explicit IFC relationship
+- `heuristic`: proximity-based spatial relation
+- `topology`: geometry/topology-derived relation
 
-### Canonical graph action contract
+## 15. Development checks
 
-- All graph actions return the stable envelope: `{status,data,error}`.
-- Canonical action names (allowlist):
-  `get_elements_in_storey`, `find_elements_by_class`, `get_adjacent_elements`,
-  `get_topology_neighbors`, `get_intersections_3d`, `find_nodes`, `traverse`,
-  `spatial_query`, `find_elements_above`, `find_elements_below`,
-  `get_element_properties`, `list_property_keys`.
-- Required `data` payload fields are stable per action (e.g.,
-  `find_nodes -> {class,elements}`, `traverse -> {start,relation,depth,results}`).
-
-### Canonical relation taxonomy + source semantics
-
-- Relation buckets:
-  - hierarchy: `aggregates`, `contains`, `contained_in`
-  - spatial: `adjacent_to`, `connected_to`
-  - topology: `above`, `below`, `overlaps_xy`, `intersects_bbox`,
-    `intersects_3d`, `touches_surface`
-  - explicit IFC: `hosts`, `hosted_by`, `ifc_connected_to`, `typed_by`,
-    `belongs_to_system`, `in_zone`, `classified_as`
-- `source` semantics for relation-bearing outputs:
-  - `ifc` = explicit IFC relation extracted from model relationships
-  - `heuristic` = spatial proximity heuristic
-  - `topology` = topology/geometry-derived relation
-  - hierarchy edges may omit source (reported as null)
-
-### Property filtering and key discovery
-
-- Graph filtering supports both:
-  - flat keys (e.g., `FireRating`)
-  - dotted keys (e.g., `Pset_WallCommon.FireRating`)
-- Key discovery is exposed via the canonical `list_property_keys` action/tool.
-- In `GRAPH_PAYLOAD_MODE=minimal`, dotted key discovery falls back to SQLite
-  when a DB path is wired into graph context.
-
-## Linting and checks
+Format check:
 
 ```bash
 uv run ruff format --check .
+```
+
+Lint:
+
+```bash
 uv run ruff check .
+```
+
+Tests:
+
+```bash
 uv run pytest
 ```
 
-## Reliability notes
+Optional pre-commit hook install:
 
-- SQL merge mode reports partial database failures in `warning.failed_db_paths`
-  and `warning.db_errors` rather than silently dropping them.
-- `uv run rag-tag --strict-sql` makes SQL count/list queries fail closed when
-  any selected database errors.
-- Graph queries support explicit IFC `typed_by` relationships when type objects
-  are present in the exported JSONL.
+```bash
+uv run pre-commit install
+```
