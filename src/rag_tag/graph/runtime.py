@@ -10,7 +10,6 @@ from typing import Any, Callable, Protocol
 import networkx as nx
 
 from rag_tag.config import GRAPH_BACKEND_ENV_VAR, load_project_config
-from rag_tag.ifc_graph_tool import query_ifc_graph
 
 
 class GraphBackend(Protocol):
@@ -35,6 +34,42 @@ class NetworkXBackend:
 
     graph: nx.DiGraph | nx.MultiDiGraph
 
+    def _delegate_runtime(self, payload_mode: str) -> Any:
+        from pathlib import Path
+
+        from rag_tag.graph.backends.networkx_backend import (  # noqa: PLC0415
+            NetworkXGraphBackend,
+        )
+        from rag_tag.graph.types import (
+            GraphRuntime as BackendGraphRuntime,  # noqa: PLC0415
+        )
+
+        backend = NetworkXGraphBackend()
+        datasets = self.graph.graph.get("datasets")
+        selected_datasets = (
+            sorted(datasets)
+            if isinstance(datasets, list)
+            and all(isinstance(item, str) for item in datasets)
+            else []
+        )
+        context_db_path = self.graph.graph.get("_db_path")
+        resolved_db_path = (
+            Path(context_db_path).expanduser().resolve()
+            if context_db_path is not None
+            else None
+        )
+        runtime_payload_mode = str(
+            self.graph.graph.get("_payload_mode", payload_mode or "full")
+        ).lower()
+        return BackendGraphRuntime(
+            backend_name=backend.name,
+            backend=backend,
+            selected_datasets=selected_datasets,
+            payload_mode=runtime_payload_mode,
+            context_db_path=resolved_db_path,
+            backend_handle=self.graph,
+        )
+
     def query(
         self,
         action: str,
@@ -42,7 +77,8 @@ class NetworkXBackend:
         *,
         payload_mode: str = "llm",
     ) -> dict[str, Any]:
-        return query_ifc_graph(self.graph, action, params, payload_mode=payload_mode)
+        runtime = self._delegate_runtime(payload_mode)
+        return runtime.backend.query(runtime, action, params, payload_mode)
 
     def get_networkx_graph(self) -> nx.DiGraph | nx.MultiDiGraph:
         return self.graph
@@ -132,6 +168,20 @@ def get_networkx_graph(
     if isinstance(runtime, GraphRuntime):
         return runtime.get_networkx_graph()
     return runtime
+
+
+def query_graph_runtime(
+    runtime: GraphRuntime | nx.DiGraph | nx.MultiDiGraph,
+    action: str,
+    params: dict[str, Any],
+    *,
+    payload_mode: str = "llm",
+) -> dict[str, Any]:
+    """Query a graph runtime or raw NetworkX graph through the active backend."""
+    resolved_runtime = (
+        runtime if isinstance(runtime, GraphRuntime) else wrap_networkx_graph(runtime)
+    )
+    return resolved_runtime.query(action, params, payload_mode=payload_mode)
 
 
 def wrap_networkx_graph(

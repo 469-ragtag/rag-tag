@@ -16,30 +16,107 @@ _CACHE_MISS = object()
 _PROPERTY_CACHE_MAX_ENTRIES = 2048
 
 
+def _graph_handle(value: Any) -> nx.DiGraph | nx.MultiDiGraph:
+    if isinstance(value, (nx.DiGraph, nx.MultiDiGraph)):
+        return value
+
+    if hasattr(value, "get_networkx_graph"):
+        graph = value.get_networkx_graph()
+        if isinstance(graph, (nx.DiGraph, nx.MultiDiGraph)):
+            return graph
+
+    graph = getattr(value, "backend_handle", None)
+    if isinstance(graph, (nx.DiGraph, nx.MultiDiGraph)):
+        return graph
+
+    raise TypeError(f"Expected graph runtime or NetworkX graph, got {type(value)!r}")
+
+
+def _cache_slot(
+    value: Any,
+    runtime_key: str,
+    graph_key: str,
+) -> tuple[dict[str, Any], str]:
+    caches = getattr(value, "caches", None)
+    if isinstance(caches, dict):
+        return caches, runtime_key
+
+    graph = _graph_handle(value)
+    return graph.graph, graph_key
+
+
 def get_property_cache(
-    G: nx.DiGraph | nx.MultiDiGraph,
+    value: Any,
 ) -> OrderedDict[tuple[str, str], Any]:
-    """Return or create the session-level property cache stored on the graph."""
-    cache_obj = G.graph.get("_property_cache")
+    """Return or create the session-level property cache."""
+    cache_store, cache_key = _cache_slot(value, "property_cache", "_property_cache")
+    cache_obj = cache_store.get(cache_key)
     if isinstance(cache_obj, OrderedDict):
         return cache_obj
     if isinstance(cache_obj, dict):
         cache: OrderedDict[tuple[str, str], Any] = OrderedDict(cache_obj.items())
     else:
         cache = OrderedDict()
-    G.graph["_property_cache"] = cache
+    cache_store[cache_key] = cache
     return cache
 
 
+def get_property_key_cache(
+    value: Any,
+) -> dict[tuple[str, str], dict[str, list[Any]]]:
+    """Return or create the dotted-key sample cache."""
+    cache_store, cache_key = _cache_slot(
+        value,
+        "property_key_cache",
+        "_property_key_cache",
+    )
+    cache_obj = cache_store.get(cache_key)
+    if isinstance(cache_obj, dict):
+        return cache_obj
+    cache: dict[tuple[str, str], dict[str, list[Any]]] = {}
+    cache_store[cache_key] = cache
+    return cache
+
+
+def clear_runtime_db_caches(value: Any) -> None:
+    """Clear DB-related caches for either a runtime or raw graph."""
+    cache_store, property_cache_key = _cache_slot(
+        value,
+        "property_cache",
+        "_property_cache",
+    )
+    _, property_key_cache_key = _cache_slot(
+        value,
+        "property_key_cache",
+        "_property_key_cache",
+    )
+
+    cache_store.pop(property_cache_key, None)
+    cache_store.pop(property_key_cache_key, None)
+
+    db_conn_key = (
+        "db_lookup_conn"
+        if property_cache_key == "property_cache"
+        else "_db_lookup_conn"
+    )
+    cached_conn = cache_store.pop(db_conn_key, None)
+    if cached_conn is not None:
+        try:
+            cached_conn.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def cached_db_lookup(
-    G: nx.DiGraph | nx.MultiDiGraph,
+    value: Any,
     node_id: str,
     db_path: Path,
     *,
     db_conn: Any | None = None,
 ) -> dict[str, Any] | None:
     """Look up element data from the SQLite DB with a graph-level cache."""
-    cache = get_property_cache(G)
+    G = _graph_handle(value)
+    cache = get_property_cache(value)
     cache_key = (str(db_path.expanduser().resolve()), node_id)
     cached = cache.get(cache_key, _CACHE_MISS)
     if cached is not _CACHE_MISS:
