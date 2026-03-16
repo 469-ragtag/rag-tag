@@ -81,10 +81,18 @@ uv run rag-tag
 The Neo4j backend mirrors the canonical NetworkX graph so query semantics stay
 consistent. Import always truncates and re-inserts nodes/edges.
 
-### 1) Set env vars
+### 1) Set config + credentials
+
+Set the backend in `config.yaml`:
+
+```yaml
+defaults:
+  graph_backend: neo4j
+```
+
+Keep only Neo4j credentials in `.env` or your shell environment:
 
 ```bash
-GRAPH_BACKEND=neo4j
 NEO4J_URI=bolt://localhost:7687
 NEO4J_USERNAME=neo4j
 NEO4J_PASSWORD=your-password
@@ -92,7 +100,8 @@ NEO4J_PASSWORD=your-password
 NEO4J_DATABASE=neo4j
 ```
 
-You can put these in `.env` for local dev.
+You can put these credentials in `.env` for local dev. For a one-off shell-only
+override, `GRAPH_BACKEND=neo4j` still takes precedence over the checked-in config.
 
 ### 2) Import JSONL into Neo4j
 
@@ -131,7 +140,7 @@ options such as `--tui`, `--db`, `--graph-dataset`, and `--trace`.
 
 Checked-in config is the recommended home for non-secret runtime defaults:
 
-- `defaults` for shared router/agent profile selection and `router_mode`
+- `defaults` for shared router/agent profile selection, `router_mode`, and `graph_backend`
 - `providers` for named provider configuration such as Databricks hosts
 - `profiles` for reusable router and graph-agent model selections
 - `experiments` for repeatable graph comparison groups
@@ -143,6 +152,7 @@ Use `.env` or shell environment variables for secrets and one-off overrides:
 - machine-local overrides such as `RAG_TAG_CONFIG`
 - temporary runtime model/profile overrides such as `ROUTER_MODEL`,
   `AGENT_MODEL`, `ROUTER_PROFILE`, `AGENT_PROFILE`
+- one-off shell overrides such as `GRAPH_BACKEND`
 
 Config discovery order:
 
@@ -159,13 +169,14 @@ The full checked-in example lives in `config.example.yaml`.
 
 Practical split:
 
-- `config.yaml`: shared defaults you want to edit and commit
+- `config.yaml`: shared defaults you want to edit and commit, including `graph_backend`
 - `.env`: secrets and machine-local overrides
 - CLI flags: per-run session options such as TUI mode, selected DB, dataset, and tracing
 
 The checked-in `config.yaml` defaults the graph agent to the current Cohere
-baseline so a normal checkout still runs without Databricks credentials. Switch
-to a Databricks profile by editing `defaults.agent_profile` or by using
+baseline and keeps the runtime graph backend on NetworkX so a normal checkout
+still runs without Databricks or Neo4j credentials. Switch to a Databricks
+profile by editing `defaults.agent_profile` or by using
 `--agent-profile` for a one-off run.
 
 Minimal setup for the same TUI command you use today:
@@ -177,6 +188,7 @@ defaults:
   router_profile: router-gemini-flash
   agent_profile: dbx-claude-sonnet-4-6
   router_mode: llm
+  graph_backend: networkx
 
 providers:
   databricks:
