@@ -33,6 +33,7 @@ from rag_tag.ifc_graph_tool import (
 from rag_tag.observability import _load_dotenv
 
 from .neo4j_cypher import (
+    MATCH_ALL_NODES,
     MATCH_CLASS,
     MATCH_DESCENDANTS_CONTAINS,
     MATCH_NODE_BY_ID,
@@ -56,6 +57,7 @@ class Neo4jBackend:
 
     graph: nx.DiGraph | nx.MultiDiGraph | None = None
     db_path: Path | None = None
+    selected_datasets: tuple[str, ...] = ()
     _catalog_graph: nx.DiGraph | nx.MultiDiGraph | None = None
     _driver: Any | None = None
     _database: str | None = None
@@ -63,6 +65,11 @@ class Neo4jBackend:
 
     def __post_init__(self) -> None:
         _load_dotenv()
+        self.selected_datasets = tuple(
+            dataset
+            for dataset in self.selected_datasets
+            if isinstance(dataset, str) and dataset
+        )
         # Lazy in-memory catalog: used for fuzzy/class helpers that still rely on
         # NetworkX semantics without forcing a full agent refactor.
         self._catalog_graph = self.graph
@@ -105,7 +112,7 @@ class Neo4jBackend:
         with self._session() as session:
             if session is None:
                 return G
-            result = session.run("MATCH (n:Node) RETURN n")
+            result = session.run(MATCH_ALL_NODES, **self._dataset_params())
             for record in result:
                 node = record["n"]
                 node_id = node.get("node_id")
@@ -128,13 +135,19 @@ class Neo4jBackend:
                     node_kind=node.get("node_kind"),
                     properties=properties,
                     payload=payload if isinstance(payload, dict) else {},
+                    dataset=node.get("dataset"),
                     **geometry,
                 )
         G.graph["_payload_mode"] = "full"
+        if self.selected_datasets:
+            G.graph["datasets"] = list(self.selected_datasets)
         if self.db_path is not None:
             G.graph["_db_path"] = self.db_path
         self._catalog_graph = G
         return G
+
+    def _dataset_params(self) -> dict[str, list[str]]:
+        return {"datasets": list(self.selected_datasets)}
 
     def _err(
         self, message: str, code: str, details: dict | None = None
@@ -169,7 +182,11 @@ class Neo4jBackend:
                 return None, {"error": "Neo4j not configured"}
 
             def _match_node_id(node_id: str) -> str | None:
-                rec = session.run(MATCH_NODE_BY_ID, node_id=node_id).single()
+                rec = session.run(
+                    MATCH_NODE_BY_ID,
+                    node_id=node_id,
+                    **self._dataset_params(),
+                ).single()
                 if rec is None:
                     return None
                 node = rec["n"]
@@ -192,8 +209,11 @@ class Neo4jBackend:
             rows = list(
                 session.run(
                     "MATCH (n:Node) WHERE n.node_id STARTS WITH 'Element::' "
-                    "AND n.global_id = $gid RETURN n.node_id AS id",
+                    "AND n.global_id = $gid "
+                    "AND (size($datasets) = 0 OR n.dataset IN $datasets) "
+                    "RETURN n.node_id AS id",
                     gid=element_id,
+                    **self._dataset_params(),
                 )
             )
             if len(rows) == 1:
@@ -219,13 +239,23 @@ class Neo4jBackend:
                 return None, {"error": "Neo4j not configured"}
 
             direct = query if query.startswith("Storey::") else f"Storey::{query}"
-            rec = session.run(MATCH_STOREY_BY_ID, node_id=direct).single()
+            rec = session.run(
+                MATCH_STOREY_BY_ID,
+                node_id=direct,
+                **self._dataset_params(),
+            ).single()
             if rec is not None:
                 node = rec["n"]
                 if node is not None:
                     return node.get("node_id"), None
 
-            rows = list(session.run(MATCH_STOREY_BY_LABEL, label=query))
+            rows = list(
+                session.run(
+                    MATCH_STOREY_BY_LABEL,
+                    label=query,
+                    **self._dataset_params(),
+                )
+            )
             if len(rows) == 1:
                 node = rows[0]["n"]
                 return node.get("node_id"), None
@@ -249,7 +279,9 @@ class Neo4jBackend:
             rows = list(
                 session.run(
                     "MATCH (n:Node) WHERE toLower(n.class_) = 'ifcbuildingstorey' "
-                    "RETURN n.node_id AS id, n.label AS label"
+                    "AND (size($datasets) = 0 OR n.dataset IN $datasets) "
+                    "RETURN n.node_id AS id, n.label AS label",
+                    **self._dataset_params(),
                 )
             )
             qn = _norm(query)
@@ -313,7 +345,11 @@ class Neo4jBackend:
             with self._session() as session:
                 if session is None:
                     return self._err("Neo4j not configured", "neo4j_not_configured")
-                result = session.run(MATCH_DESCENDANTS_CONTAINS, node_id=node)
+                result = session.run(
+                    MATCH_DESCENDANTS_CONTAINS,
+                    node_id=node,
+                    **self._dataset_params(),
+                )
                 for record in result:
                     n = record["n"]
                     if n is None:
@@ -341,7 +377,11 @@ class Neo4jBackend:
             with self._session() as session:
                 if session is None:
                     return self._err("Neo4j not configured", "neo4j_not_configured")
-                result = session.run(MATCH_CLASS, class_name=target)
+                result = session.run(
+                    MATCH_CLASS,
+                    class_name=target,
+                    **self._dataset_params(),
+                )
                 for record in result:
                     n = record["n"]
                     node_data = _node_data_from_neo4j(n)
@@ -396,7 +436,11 @@ class Neo4jBackend:
             with self._session() as session:
                 if session is None:
                     return self._err("Neo4j not configured", "neo4j_not_configured")
-                rec = session.run(MATCH_NODE_BY_ID, node_id=resolved).single()
+                rec = session.run(
+                    MATCH_NODE_BY_ID,
+                    node_id=resolved,
+                    **self._dataset_params(),
+                ).single()
                 if rec is None:
                     return self._err(f"Element not found: {element_id}", "not_found")
                 node = rec["n"]
@@ -451,6 +495,7 @@ class Neo4jBackend:
                     MATCH_SPATIAL_NEIGHBORS,
                     node_id=resolved,
                     relations=list(SPATIAL_RELATIONS),
+                    **self._dataset_params(),
                 )
                 for record in result:
                     m = record["m"]
@@ -517,6 +562,7 @@ class Neo4jBackend:
                     MATCH_TOPOLOGY_NEIGHBORS,
                     node_id=resolved,
                     relations=[relation_value],
+                    **self._dataset_params(),
                 )
                 for record in result:
                     m = record["m"]
@@ -586,6 +632,7 @@ class Neo4jBackend:
                     MATCH_TOPOLOGY_NEIGHBORS,
                     node_id=resolved,
                     relations=["intersects_3d"],
+                    **self._dataset_params(),
                 )
                 for record in result:
                     m = record["m"]
@@ -655,6 +702,7 @@ class Neo4jBackend:
                     MATCH_SPATIAL_NEIGHBORS,
                     node_id=resolved,
                     relations=list(SPATIAL_RELATIONS),
+                    **self._dataset_params(),
                 )
                 for record in result:
                     m = record["m"]
@@ -730,6 +778,7 @@ class Neo4jBackend:
                     MATCH_TOPOLOGY_NEIGHBORS,
                     node_id=resolved,
                     relations=["above"],
+                    **self._dataset_params(),
                 )
                 for record in result:
                     m = record["m"]
@@ -802,6 +851,7 @@ class Neo4jBackend:
                     MATCH_TOPOLOGY_NEIGHBORS,
                     node_id=resolved,
                     relations=["below"],
+                    **self._dataset_params(),
                 )
                 for record in result:
                     m = record["m"]
@@ -852,7 +902,11 @@ class Neo4jBackend:
             with self._session() as session:
                 if session is None:
                     return self._err("Neo4j not configured", "neo4j_not_configured")
-                exists = session.run(MATCH_NODE_BY_ID, node_id=start).single()
+                exists = session.run(
+                    MATCH_NODE_BY_ID,
+                    node_id=start,
+                    **self._dataset_params(),
+                ).single()
                 if exists is None:
                     return self._err(f"Start node not found: {start}", "not_found")
 
@@ -892,7 +946,11 @@ class Neo4jBackend:
                             "relation": relation_value,
                         }
 
-                    rows = session.run(query, **params_query)
+                    rows = session.run(
+                        query,
+                        **params_query,
+                        **self._dataset_params(),
+                    )
                     next_frontier = set()
                     for record in rows:
                         to_node = record["m"]

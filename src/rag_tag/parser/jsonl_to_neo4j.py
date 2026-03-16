@@ -122,6 +122,7 @@ def import_networkx_graph(
                         "label": data.get("label"),
                         "class_": data.get("class_"),
                         "node_kind": data.get("node_kind"),
+                        "dataset": data.get("dataset"),
                         "properties_json": _encode_json(props),
                         "payload_json": _encode_json(data.get("payload") or {}),
                         "geometry_json": _encode_json(_geometry_payload(data)),
@@ -150,6 +151,9 @@ def import_networkx_graph(
                         "to": v,
                         "relation": data.get("relation"),
                         "source": data.get("source"),
+                        "dataset": data.get("dataset")
+                        or graph.nodes[u].get("dataset")
+                        or graph.nodes[v].get("dataset"),
                         "distance": data.get("distance"),
                         "vertical_gap": data.get("vertical_gap"),
                         "overlap_area_xy": data.get("overlap_area_xy"),

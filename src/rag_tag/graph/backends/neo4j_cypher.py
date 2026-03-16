@@ -14,6 +14,7 @@ MERGE (n:Node {node_id: row.node_id})
 SET n.label = row.label,
     n.class_ = row.class_,
     n.node_kind = row.node_kind,
+    n.dataset = row.dataset,
     // Full properties/payload are stored as JSON strings (Neo4j disallows maps).
     n.properties_json = row.properties_json,
     n.payload_json = row.payload_json,
@@ -38,6 +39,7 @@ MATCH (b:Node {node_id: row.to})
 CREATE (a)-[r:REL]->(b)
 SET r.relation = row.relation,
     r.source = row.source,
+    r.dataset = row.dataset,
     r.distance = row.distance,
     r.vertical_gap = row.vertical_gap,
     r.overlap_area_xy = row.overlap_area_xy,
@@ -49,12 +51,14 @@ SET r.relation = row.relation,
 
 MATCH_NODE_BY_ID = """
 MATCH (n:Node {node_id: $node_id})
+WHERE size($datasets) = 0 OR n.dataset IN $datasets
 RETURN n
 """
 
 MATCH_STOREY_BY_ID = """
 MATCH (n:Node {node_id: $node_id})
 WHERE toLower(n.class_) = 'ifcbuildingstorey'
+  AND (size($datasets) = 0 OR n.dataset IN $datasets)
 RETURN n
 """
 
@@ -62,25 +66,35 @@ MATCH_STOREY_BY_LABEL = """
 MATCH (n:Node)
 WHERE toLower(n.class_) = 'ifcbuildingstorey'
   AND toLower(n.label) = toLower($label)
+  AND (size($datasets) = 0 OR n.dataset IN $datasets)
 RETURN n
 """
 
 MATCH_DESCENDANTS_CONTAINS = """
 MATCH (s:Node {node_id: $node_id})
+WHERE size($datasets) = 0 OR s.dataset IN $datasets
 MATCH p=(s)-[:REL*1..]->(n:Node)
 WHERE all(r in relationships(p) WHERE r.relation = 'contains')
+  AND (
+    size($datasets) = 0
+    OR all(node in nodes(p) WHERE node.dataset IN $datasets)
+  )
 RETURN DISTINCT n
 """
 
 MATCH_CLASS = """
 MATCH (n:Node)
 WHERE toLower(n.class_) = toLower($class_name)
+  AND (size($datasets) = 0 OR n.dataset IN $datasets)
 RETURN n
 """
 
 MATCH_SPATIAL_NEIGHBORS = """
 MATCH (n:Node {node_id: $node_id})-[r:REL]-(m:Node)
 WHERE r.relation IN $relations
+  AND (size($datasets) = 0 OR n.dataset IN $datasets)
+  AND (size($datasets) = 0 OR m.dataset IN $datasets)
+  AND (size($datasets) = 0 OR r.dataset IN $datasets)
 RETURN m, r
 ORDER BY r.edge_index
 """
@@ -88,6 +102,9 @@ ORDER BY r.edge_index
 MATCH_TOPOLOGY_NEIGHBORS = """
 MATCH (n:Node {node_id: $node_id})-[r:REL]-(m:Node)
 WHERE r.relation IN $relations
+  AND (size($datasets) = 0 OR n.dataset IN $datasets)
+  AND (size($datasets) = 0 OR m.dataset IN $datasets)
+  AND (size($datasets) = 0 OR r.dataset IN $datasets)
 RETURN m, r
 ORDER BY r.edge_index
 """
@@ -95,6 +112,9 @@ ORDER BY r.edge_index
 MATCH_OUTGOING_RELATIONS = """
 MATCH (n:Node)-[r:REL]->(m:Node)
 WHERE n.node_id IN $frontier AND r.relation IN $relations
+  AND (size($datasets) = 0 OR n.dataset IN $datasets)
+  AND (size($datasets) = 0 OR m.dataset IN $datasets)
+  AND (size($datasets) = 0 OR r.dataset IN $datasets)
 RETURN n.node_id AS from_id, m, r
 ORDER BY r.edge_index
 """
@@ -102,6 +122,9 @@ ORDER BY r.edge_index
 MATCH_OUTGOING_RELATION_EXACT = """
 MATCH (n:Node)-[r:REL]->(m:Node)
 WHERE n.node_id IN $frontier AND r.relation = $relation
+  AND (size($datasets) = 0 OR n.dataset IN $datasets)
+  AND (size($datasets) = 0 OR m.dataset IN $datasets)
+  AND (size($datasets) = 0 OR r.dataset IN $datasets)
 RETURN n.node_id AS from_id, m, r
 ORDER BY r.edge_index
 """
@@ -109,5 +132,12 @@ ORDER BY r.edge_index
 MATCH_BY_NODE_IDS = """
 MATCH (n:Node)
 WHERE n.node_id IN $ids
+  AND (size($datasets) = 0 OR n.dataset IN $datasets)
+RETURN n
+"""
+
+MATCH_ALL_NODES = """
+MATCH (n:Node)
+WHERE size($datasets) = 0 OR n.dataset IN $datasets
 RETURN n
 """
