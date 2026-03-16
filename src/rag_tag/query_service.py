@@ -429,8 +429,8 @@ def _ensure_graph_context(
     if existing_runtime is not None:
         return existing_runtime, agent
 
-    # Create the runtime through the configured backend factory so
-    # GRAPH_BACKEND=neo4j is honored in the live query path.
+    # Create the runtime through the configured backend factory so checked-in
+    # config defaults and one-off GRAPH_BACKEND overrides are both honored.
     runtime = GraphRuntime.from_env(graph=nx_graph, db_path=db_path)
     return runtime, agent
 

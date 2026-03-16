@@ -9,6 +9,7 @@ from typing import Any, Callable, Protocol
 
 import networkx as nx
 
+from rag_tag.config import GRAPH_BACKEND_ENV_VAR, load_project_config
 from rag_tag.ifc_graph_tool import query_ifc_graph
 
 
@@ -54,6 +55,7 @@ BackendFactory = Callable[..., GraphBackend]
 
 
 _BACKEND_REGISTRY: dict[str, BackendFactory] = {}
+_MODULE_DIR = Path(__file__).resolve().parent
 
 
 def register_backend(name: str, factory: BackendFactory) -> None:
@@ -61,8 +63,18 @@ def register_backend(name: str, factory: BackendFactory) -> None:
     _BACKEND_REGISTRY[name.strip().lower()] = factory
 
 
-def _default_backend_name() -> str:
-    return (os.environ.get("GRAPH_BACKEND") or "networkx").strip().lower()
+def _default_backend_name(start_dir: Path | None = None) -> str:
+    loaded = load_project_config(start_dir or _MODULE_DIR)
+    return _resolve_backend_name(loaded.config.defaults.graph_backend)
+
+
+def _resolve_backend_name(config_default: str | None) -> str:
+    env_name = os.environ.get(GRAPH_BACKEND_ENV_VAR)
+    if env_name is not None and env_name.strip():
+        return env_name.strip().lower()
+    if config_default is not None and config_default.strip():
+        return config_default.strip().lower()
+    return "networkx"
 
 
 class GraphRuntime:
@@ -78,8 +90,9 @@ class GraphRuntime:
         *,
         graph: nx.DiGraph | nx.MultiDiGraph | None = None,
         db_path: Path | None = None,
+        start_dir: Path | None = None,
     ) -> "GraphRuntime":
-        name = _default_backend_name()
+        name = _default_backend_name(start_dir)
         factory = _BACKEND_REGISTRY.get(name)
         if factory is None:
             raise ValueError(f"Unknown GRAPH_BACKEND: {name}")
