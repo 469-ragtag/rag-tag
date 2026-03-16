@@ -26,6 +26,7 @@ DEFAULT_CONFIG_FILENAMES = ("config.yaml", "config.yml", "config.json")
 CONFIG_PATH_ENV_VAR = "RAG_TAG_CONFIG"
 ROUTER_PROFILE_ENV_VAR = "ROUTER_PROFILE"
 AGENT_PROFILE_ENV_VAR = "AGENT_PROFILE"
+GRAPH_BACKEND_ENV_VAR = "GRAPH_BACKEND"
 
 
 class ProviderConfig(BaseModel):
@@ -72,6 +73,7 @@ class DefaultsConfig(BaseModel):
     router_profile: str | None = None
     agent_profile: str | None = None
     router_mode: str | None = None
+    graph_backend: str | None = None
 
 
 class AppConfig(BaseModel):

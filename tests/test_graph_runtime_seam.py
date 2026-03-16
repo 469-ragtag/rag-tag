@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import networkx as nx
 import pytest
 
+from rag_tag.graph import runtime as graph_runtime_module
 from rag_tag.graph import wrap_networkx_graph
 from rag_tag.query_service import (
     _ensure_graph_context,
@@ -104,11 +107,51 @@ def test_ensure_graph_context_reuses_existing_runtime() -> None:
 
 
 def test_ensure_graph_context_honors_graph_backend_env(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     graph = _build_graph()
     sentinel_agent = object()
+    _write_project_marker(tmp_path)
+    (tmp_path / "config.yaml").write_text(
+        "defaults:\n  graph_backend: networkx\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        graph_runtime_module,
+        "_MODULE_DIR",
+        tmp_path / "src" / "rag_tag" / "graph",
+    )
     monkeypatch.setenv("GRAPH_BACKEND", "neo4j")
+
+    runtime, resolved_agent = _ensure_graph_context(
+        graph,
+        sentinel_agent,
+        False,
+    )
+
+    assert runtime.backend_name == "neo4j"
+    assert runtime.get_networkx_graph() is graph
+    assert resolved_agent is sentinel_agent
+
+
+def test_ensure_graph_context_uses_graph_backend_from_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph = _build_graph()
+    sentinel_agent = object()
+    _write_project_marker(tmp_path)
+    (tmp_path / "config.yaml").write_text(
+        "defaults:\n  graph_backend: neo4j\n",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("GRAPH_BACKEND", raising=False)
+    monkeypatch.setattr(
+        graph_runtime_module,
+        "_MODULE_DIR",
+        tmp_path / "src" / "rag_tag" / "graph",
+    )
 
     runtime, resolved_agent = _ensure_graph_context(
         graph,
@@ -166,3 +209,10 @@ def test_execute_query_reuses_existing_runtime_without_private_graph_access(
     assert captured["agent"] is sentinel_agent
     assert bundle["runtime"] is runtime
     assert bundle["graph"] is runtime
+
+
+def _write_project_marker(project_root: Path) -> None:
+    project_root.mkdir(parents=True, exist_ok=True)
+    (project_root / "pyproject.toml").write_text(
+        "[project]\nname = 'test'\n", encoding="utf-8"
+    )

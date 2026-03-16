@@ -81,6 +81,7 @@ def test_load_project_config_parses_yaml_structure(tmp_path: Path) -> None:
         "defaults:\n"
         "  router_profile: router-default\n"
         "  agent_profile: dbx-agent\n"
+        "  graph_backend: neo4j\n"
         "providers:\n"
         "  databricks:\n"
         "    type: databricks\n"
@@ -107,6 +108,7 @@ def test_load_project_config_parses_yaml_structure(tmp_path: Path) -> None:
     assert loaded.config_path == config_path
     assert loaded.config.defaults.router_profile == "router-default"
     assert loaded.config.defaults.agent_profile == "dbx-agent"
+    assert loaded.config.defaults.graph_backend == "neo4j"
     assert loaded.config.providers["databricks"].base_url == (
         "https://workspace.example.com/serving-endpoints"
     )
@@ -203,6 +205,7 @@ def test_checked_in_config_example_matches_app_config_schema() -> None:
     assert "cohere-command-a" in config.profiles
     assert config.providers["databricks"].host_env == "DATABRICKS_HOST"
     assert config.providers["databricks"].host is None
+    assert config.defaults.graph_backend == "networkx"
     assert config.defaults.router_profile in config.profiles
     assert config.defaults.agent_profile in config.profiles
     for experiment_name in ("graph-dbx-smoke", "graph-agent-compare"):
@@ -221,6 +224,7 @@ def test_checked_in_runtime_config_keeps_cohere_as_safe_default() -> None:
     config = AppConfig.model_validate(payload)
 
     assert config.providers["databricks"].host_env == "DATABRICKS_HOST"
+    assert config.defaults.graph_backend == "networkx"
     assert config.defaults.router_profile == "router-gemini-flash"
     assert config.defaults.agent_profile == "cohere-command-a"
     assert config.defaults.agent_profile in config.profiles
