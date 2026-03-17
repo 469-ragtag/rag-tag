@@ -5,7 +5,7 @@ from pydantic_ai import Agent
 from rag_tag.llm.pydantic_ai import get_router_model, get_router_model_settings
 
 from .llm_models import LlmRouteResponse
-from .models import RouteDecision, SqlRequest
+from .models import RouteDecision, SqlFieldRef, SqlRequest, SqlValueFilter
 
 
 class LlmRouterError(RuntimeError):
@@ -71,6 +71,38 @@ def route_with_llm(question: str, *, debug_llm_io: bool = False) -> RouteDecisio
         intent=response.intent,
         ifc_class=response.ifc_class,
         level_like=response.level_like,
+        predefined_type=response.predefined_type,
+        type_name=response.type_name,
+        property_filters=tuple(
+            SqlValueFilter(
+                field=item.field,
+                op=item.op,
+                value=_coerce_filter_value(item.value),
+            )
+            for item in response.property_filters
+        ),
+        quantity_filters=tuple(
+            SqlValueFilter(
+                field=item.field,
+                op=item.op,
+                value=_coerce_filter_value(item.value),
+            )
+            for item in response.quantity_filters
+        ),
+        aggregate_op=response.aggregate_op,
+        aggregate_field=(
+            SqlFieldRef(
+                source=response.aggregate_field.source,
+                field=response.aggregate_field.field,
+            )
+            if response.aggregate_field is not None
+            else None
+        ),
+        group_by=(
+            SqlFieldRef(source=response.group_by.source, field=response.group_by.field)
+            if response.group_by is not None
+            else None
+        ),
         limit=limit,
     )
     return RouteDecision("sql", response.reason, request)
@@ -84,20 +116,38 @@ def _build_system_prompt() -> str:
     """
     return (
         "You are a router for IFC/BIM questions. Your job is to pick the best "
-        "execution lane: sql for simple counts/lists by class and/or level, or "
+        "execution lane: sql for bounded deterministic database questions, or "
         "graph for spatial/topological/multi-hop queries or anything involving "
         "adjacency, connectivity, paths, or vague relationships.\n\n"
         "Decision criteria:\n"
-        "- route='sql': Use for simple aggregations or lists by IFC class "
-        "and/or building level. Examples: counts, existence checks, lists.\n"
+        "- route='sql': Use for deterministic counts, lists, aggregates, and "
+        "groupings over the known SQLite schema: elements, properties, and "
+        "quantities. Allowed filters include IFC class, level, predefined_type, "
+        "type_name, property filters, and quantity filters.\n"
         "- route='graph': Use for spatial relations, adjacency, connectivity, "
         "paths, property-based constraints, or any multi-hop traversals.\n\n"
+        "Important SQL rules:\n"
+        "- Never generate raw SQL text.\n"
+        "- Only emit structured fields.\n"
+        "- For aggregate intent, set aggregate_op and aggregate_field when "
+        "needed. aggregate_field is optional only for aggregate_op='count'.\n"
+        "- For group intent, set group_by. Group queries return grouped counts.\n"
+        "- Use aggregate_field/group_by source='element' only for core columns "
+        "like ifc_class, level, predefined_type, type_name, or name.\n"
+        "- Use source='property' or source='quantity' for property/quantity "
+        "lookups. Prefer canonical field keys like FireRating, UValue, "
+        "Pset_DoorCommon.FireRating, NetVolume, or "
+        "Qto_WallBaseQuantities.NetVolume.\n\n"
         "Fields to populate:\n"
         "- route: 'sql' or 'graph'\n"
-        "- intent: 'count' (for aggregations), 'list' (for entity lists), "
-        "or 'none' (for graph queries)\n"
+        "- intent: 'count', 'list', 'aggregate', 'group', or 'none'\n"
         "- ifc_class: IFC class name like 'IfcDoor', 'IfcWindow', or null\n"
         "- level_like: level/storey/floor identifier or null\n"
+        "- predefined_type/type_name: optional exact filters\n"
+        "- property_filters/quantity_filters: optional structured filters\n"
+        "- aggregate_op: 'count', 'sum', 'avg', 'min', or 'max'\n"
+        "- aggregate_field: source+field for aggregate intent when needed\n"
+        "- group_by: source+field for group intent\n"
         "- reason: brief explanation of routing decision\n\n"
         "Examples:\n"
         "Q: How many doors are on Level 2?\n"
@@ -106,6 +156,21 @@ def _build_system_prompt() -> str:
         "Q: List all windows on the ground floor.\n"
         "A: route='sql', intent='list', ifc_class='IfcWindow', "
         "level_like='ground floor', reason='simple list by class and level'\n\n"
+        "Q: What is the total net volume of walls on level 2?\n"
+        "A: route='sql', intent='aggregate', ifc_class='IfcWall', "
+        "level_like='level 2', aggregate_op='sum', aggregate_field={source='quantity', "
+        "field='NetVolume'}, "
+        "reason='deterministic quantity aggregation by class and level'\n\n"
+        "Q: Group the doors on level 1 by fire rating.\n"
+        "A: route='sql', intent='group', ifc_class='IfcDoor', level_like='level 1', "
+        "group_by={source='property', field='FireRating'}, "
+        "reason='deterministic grouping by property'\n\n"
+        "Q: Average UValue of windows on the ground floor.\n"
+        "A: route='sql', intent='aggregate', "
+        "ifc_class='IfcWindow', level_like='ground floor', "
+        "aggregate_op='avg', aggregate_field={source='property', "
+        "field='UValue'}, "
+        "reason='deterministic property aggregation by class and level'\n\n"
         "Q: Are there any windows in the building?\n"
         "A: route='sql', intent='count', ifc_class='IfcWindow', "
         "level_like=null, reason='existence check for class'\n\n"
@@ -119,3 +184,18 @@ def _build_system_prompt() -> str:
         "A: route='graph', intent='none', ifc_class=null, "
         "level_like=null, reason='spatial proximity query'"
     )
+
+
+def _coerce_filter_value(value: str) -> str | int | float | bool:
+    cleaned = value.strip()
+    lowered = cleaned.lower()
+    if lowered == "true":
+        return True
+    if lowered == "false":
+        return False
+    try:
+        if "." in cleaned:
+            return float(cleaned)
+        return int(cleaned)
+    except ValueError:
+        return cleaned

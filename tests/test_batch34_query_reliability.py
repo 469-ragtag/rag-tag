@@ -10,7 +10,7 @@ from pydantic_ai.models.test import TestModel
 from rag_tag.agent.graph_agent import GraphAgent
 from rag_tag.graph import GraphRuntime, wrap_networkx_graph
 from rag_tag.query_service import execute_query, execute_sql_query
-from rag_tag.router.models import RouteDecision, SqlRequest
+from rag_tag.router.models import RouteDecision, SqlFieldRef, SqlRequest
 
 
 def _sql_decision() -> RouteDecision:
@@ -172,3 +172,141 @@ def test_graph_agent_honors_usage_limit(monkeypatch: pytest.MonkeyPatch) -> None
     assert "max_steps=1" in warning
     assert isinstance(data, dict)
     assert data.get("max_steps") == 1
+
+
+def test_sql_merge_weighted_average_for_aggregate(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from rag_tag import query_service
+
+    db_a = tmp_path / "a.db"
+    db_b = tmp_path / "b.db"
+    db_a.write_text("", encoding="utf-8")
+    db_b.write_text("", encoding="utf-8")
+
+    def fake_query_ifc_sql(db_path: Path, request: SqlRequest) -> dict[str, object]:
+        if db_path == db_a:
+            return {
+                "status": "ok",
+                "data": {
+                    "intent": request.intent,
+                    "filters": {},
+                    "aggregate_op": "avg",
+                    "aggregate_field": {"source": "property", "field": "UValue"},
+                    "aggregate_value": 1.5,
+                    "matched_value_count": 2,
+                    "missing_value_count": 0,
+                    "total_elements": 2,
+                    "evidence": [],
+                    "summary": "Computed avg of UValue for IfcWindow: 1.5.",
+                    "merge_state": {
+                        "sum": 3.0,
+                        "matched_value_count": 2,
+                        "missing_value_count": 0,
+                        "total_elements": 2,
+                    },
+                    "sql": {"query": "SELECT 1", "params": []},
+                },
+                "error": None,
+            }
+        return {
+            "status": "ok",
+            "data": {
+                "intent": request.intent,
+                "filters": {},
+                "aggregate_op": "avg",
+                "aggregate_field": {"source": "property", "field": "UValue"},
+                "aggregate_value": 0.9,
+                "matched_value_count": 1,
+                "missing_value_count": 0,
+                "total_elements": 1,
+                "evidence": [],
+                "summary": "Computed avg of UValue for IfcWindow: 0.9.",
+                "merge_state": {
+                    "sum": 0.9,
+                    "matched_value_count": 1,
+                    "missing_value_count": 0,
+                    "total_elements": 1,
+                },
+                "sql": {"query": "SELECT 1", "params": []},
+            },
+            "error": None,
+        }
+
+    monkeypatch.setattr(query_service, "query_ifc_sql", fake_query_ifc_sql)
+
+    decision = RouteDecision(
+        route="sql",
+        reason="sql aggregate route",
+        sql_request=SqlRequest(
+            intent="aggregate",
+            ifc_class="IfcWindow",
+            level_like=None,
+            aggregate_op="avg",
+            aggregate_field=SqlFieldRef(source="property", field="UValue"),
+            limit=0,
+        ),
+    )
+
+    result = execute_sql_query(decision, [db_a, db_b])
+
+    assert result["answer"] == "Computed avg of UValue for IfcWindow: 1.3."
+    assert result["data"]["aggregate_value"] == 1.3
+    assert result["data"]["matched_value_count"] == 3
+    assert result["data"]["missing_value_count"] == 0
+
+
+def test_sql_merge_combines_group_counts(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from rag_tag import query_service
+
+    db_a = tmp_path / "a.db"
+    db_b = tmp_path / "b.db"
+    db_a.write_text("", encoding="utf-8")
+    db_b.write_text("", encoding="utf-8")
+
+    def fake_query_ifc_sql(db_path: Path, request: SqlRequest) -> dict[str, object]:
+        if db_path == db_a:
+            groups = [{"group": "EI30", "count": 2}, {"group": "EI60", "count": 1}]
+        else:
+            groups = [{"group": "EI30", "count": 1}, {"group": "EI90", "count": 1}]
+        return {
+            "status": "ok",
+            "data": {
+                "intent": request.intent,
+                "filters": {},
+                "group_by": {"source": "property", "field": "FireRating"},
+                "groups": groups,
+                "matched_element_count": sum(group["count"] for group in groups),
+                "missing_value_count": 0,
+                "total_elements": sum(group["count"] for group in groups),
+                "evidence": [],
+                "summary": "Grouped IfcDoor by FireRating, showing 2 groups.",
+                "sql": {"query": "SELECT 1", "params": []},
+            },
+            "error": None,
+        }
+
+    monkeypatch.setattr(query_service, "query_ifc_sql", fake_query_ifc_sql)
+
+    decision = RouteDecision(
+        route="sql",
+        reason="sql group route",
+        sql_request=SqlRequest(
+            intent="group",
+            ifc_class="IfcDoor",
+            level_like=None,
+            group_by=SqlFieldRef(source="property", field="FireRating"),
+            limit=10,
+        ),
+    )
+
+    result = execute_sql_query(decision, [db_a, db_b])
+
+    assert result["data"]["groups"] == [
+        {"group": "EI30", "count": 3},
+        {"group": "EI60", "count": 1},
+        {"group": "EI90", "count": 1},
+    ]
+    assert result["data"]["matched_element_count"] == 5
