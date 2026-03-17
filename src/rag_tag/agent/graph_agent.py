@@ -55,8 +55,9 @@ multi-hop reasoning explicitly: identify anchors, inspect evidence, branch to
 follow-up tools, verify ambiguous results, then synthesize.
 
 CRITICAL: your final response must be a `final_result` tool call, not plain
-assistant text. Do not output markdown, prose paragraphs, bullet lists, or a
-JSON code block directly to the user channel.
+assistant text. Do not output prose, Markdown, or a JSON code block directly
+to the user channel outside the `final_result` tool call. Lightweight Markdown
+is allowed inside the `answer` field of `final_result`.
 
 ---
 
@@ -187,6 +188,15 @@ Tool node payloads use:
 - `get_elements_in_storey(storey)`
   - storey-only helper; use for `IfcBuildingStorey`, not for room names
 
+- `find_container_elements_excluding(container_id, exclude_container_ids?, depth?)`
+  - best for set-difference questions such as "elements in the building but not
+    on the ground floor"
+  - prefer this over unconstrained `traverse(..., depth=5)` once you know the
+    main container and the container(s) to exclude
+  - returns non-container members from `contains` / `aggregates`, and for
+    `IfcZone` / `IfcSpatialZone` also incoming `in_zone` members, minus
+    excluded container members
+
 - `get_adjacent_elements(element_id)`
   - good first choice for near/adjacent/neighbour questions
 
@@ -301,6 +311,17 @@ Examples: "What type is this door?", "Which doors share the same type?"
 3. Read the requested value from returned evidence.
 4. If multiple candidates exist, compare them explicitly before answering.
 
+### H. Negative location / exclusion questions
+
+Examples: "What is in the building but not on the ground floor?", "Which
+elements belong to this zone but not this room?"
+
+1. Resolve the main container and the container(s) to exclude.
+2. Use `find_container_elements_excluding`.
+3. Do not fall back to broad unconstrained traversal unless the helper fails.
+4. Once the helper returns the needed set, stop and answer; do not keep
+   exploring unrelated edges.
+
 ---
 
 ## 7. Fallback Rules
@@ -316,11 +337,21 @@ If a first attempt fails, try the next best path:
 Before concluding "none found", make at least one reasonable alternate attempt
 when the question is clearly answerable in principle.
 
+Avoid unconstrained `traverse(..., depth>3)` unless you still lack the basic
+container anchors. Broad traversal is a last resort because it wastes tool
+budget and floods the context window.
+
 ---
 
 ## 8. Answer Construction Rules
 
-- Use plain natural language in `answer`.
+- Use lightweight Markdown in `answer` when it improves readability.
+- Good formats: short paragraphs, `##`/`###` headings, bullet lists, and valid
+  Markdown tables.
+- Do not use ASCII-art tables, inline pipe-delimited rows, or malformed
+  pseudo-Markdown.
+- If you present multiple entities, prefer short Markdown sections over one long
+  paragraph.
 - Include `data` when it helps: IDs, sample records, counts from returned sets,
   compared candidates, or relation evidence.
 - If you count results, count only what tools actually returned.
@@ -368,7 +399,7 @@ _SCHEMA_CORRECTION_HINT = (
     "NO list/array wrapper, NO tool-call envelope "
     "(tool_call_id / tool_name / parameters are NOT output fields).\n"
     "Required schema:\n"
-    "  answer   string       required — plain natural-language text\n"
+    "  answer   string       required — lightweight Markdown allowed\n"
     "  data     object|null  optional\n"
     "  warning  string|null  optional\n"
     'Example: {"answer": "There are 5 walls.", "data": null, "warning": null}'
@@ -652,12 +683,15 @@ def _polish_answer_with_data(answer: str, data: object | None) -> str:
 
 
 def _sanitize_model_text(value: object | None) -> str | None:
-    """Strip provider annotation tags and normalize whitespace."""
+    """Strip provider annotation tags while preserving meaningful line breaks."""
     if value is None:
         return None
     text = str(value)
     text = re.sub(r"</?co:[^>]+>", "", text)
-    text = re.sub(r"\s+", " ", text).strip()
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = re.sub(r"[^\S\n]+", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    text = "\n".join(line.rstrip() for line in text.split("\n")).strip()
     return text or None
 
 
