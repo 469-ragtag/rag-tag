@@ -28,3 +28,6 @@ def test_system_prompt_allows_lightweight_markdown_answers() -> None:
     assert "find_shortest_path" in SYSTEM_PROMPT
     assert "find_by_classification" in SYSTEM_PROMPT
     assert "find_equipment_serving_space" in SYSTEM_PROMPT
+    assert "aggregate_elements" in SYSTEM_PROMPT
+    assert "group_elements_by_property" in SYSTEM_PROMPT
+    assert "do not count or sum mentally" in SYSTEM_PROMPT

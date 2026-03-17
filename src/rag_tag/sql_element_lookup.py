@@ -23,6 +23,28 @@ from typing import Any
 _logger = logging.getLogger(__name__)
 _TYPED_JSON_PREFIX = "json:"
 _LEGACY_FLOAT_RE = re.compile(r"^-?(?:\d+\.\d*|\.\d+)(?:[eE][+-]?\d+)?$")
+_MISSING = object()
+_CORE_FIELD_ALIASES: dict[str, tuple[str, str]] = {
+    "expressid": ("ExpressId", "express_id"),
+    "express_id": ("ExpressId", "express_id"),
+    "globalid": ("GlobalId", "global_id"),
+    "global_id": ("GlobalId", "global_id"),
+    "class": ("Class", "ifc_class"),
+    "ifcclass": ("Class", "ifc_class"),
+    "ifc_class": ("Class", "ifc_class"),
+    "predefinedtype": ("PredefinedType", "predefined_type"),
+    "predefined_type": ("PredefinedType", "predefined_type"),
+    "name": ("Name", "name"),
+    "description": ("Description", "description"),
+    "objecttype": ("ObjectType", "object_type"),
+    "object_type": ("ObjectType", "object_type"),
+    "tag": ("Tag", "tag"),
+    "level": ("Level", "level"),
+    "levelkey": ("LevelKey", "level_key"),
+    "level_key": ("LevelKey", "level_key"),
+    "typename": ("TypeName", "type_name"),
+    "type_name": ("TypeName", "type_name"),
+}
 
 
 # ---------------------------------------------------------------------------
@@ -121,6 +143,123 @@ def lookup_element_by_express_id(
     finally:
         if owns_connection:
             active_conn.close()
+
+
+def lookup_elements_by_identifiers(
+    conn: sqlite3.Connection,
+    *,
+    global_ids: list[str] | tuple[str, ...] = (),
+    express_ids: list[int] | tuple[int, ...] = (),
+) -> list[sqlite3.Row]:
+    """Look up element rows by GlobalId and/or ExpressId.
+
+    Returns rows from ``elements`` only. Empty identifier inputs yield an empty
+    result without querying the database.
+    """
+    normalized_global_ids = [str(value) for value in global_ids if str(value).strip()]
+    normalized_express_ids = [int(value) for value in express_ids]
+    if not normalized_global_ids and not normalized_express_ids:
+        return []
+
+    clauses: list[str] = []
+    params: list[Any] = []
+    if normalized_global_ids:
+        placeholders = ", ".join("?" for _ in normalized_global_ids)
+        clauses.append(f"global_id IN ({placeholders})")
+        params.extend(normalized_global_ids)
+    if normalized_express_ids:
+        placeholders = ", ".join("?" for _ in normalized_express_ids)
+        clauses.append(f"express_id IN ({placeholders})")
+        params.extend(normalized_express_ids)
+
+    sql = (
+        "SELECT express_id, global_id, ifc_class, predefined_type, name, "
+        "description, object_type, tag, level, level_key, type_name "
+        f"FROM elements WHERE {' OR '.join(clauses)}"
+    )
+    return list(conn.execute(sql, tuple(params)).fetchall())
+
+
+def fetch_element_field_values(
+    conn: sqlite3.Connection,
+    *,
+    express_ids: list[int] | tuple[int, ...],
+    field: str,
+) -> dict[str, Any]:
+    """Fetch one field value for each requested element row.
+
+    Args:
+        conn: Open SQLite lookup connection.
+        express_ids: Exact element rows to inspect.
+        field: Core column key (for example ``Name`` or ``Level``) or a dotted
+            property/quantity key such as ``Pset_DoorCommon.FireRating`` or
+            ``Qto_WallBaseQuantities.NetVolume``.
+
+    Returns:
+        Dict with ``field``, ``field_source``, and ``values`` keyed by
+        ``express_id``.
+
+    Raises:
+        ValueError: If the field is invalid or unsupported.
+    """
+    normalized_ids = [int(value) for value in express_ids]
+    if not normalized_ids:
+        return {"field": field, "field_source": None, "values": {}}
+
+    field_spec = _resolve_field_spec(field)
+    if field_spec["kind"] == "core":
+        return {
+            "field": field_spec["field"],
+            "field_source": "core",
+            "values": _fetch_core_field_values(
+                conn,
+                express_ids=normalized_ids,
+                column=str(field_spec["column"]),
+            ),
+        }
+
+    container_name = str(field_spec["container"])
+    item_name = str(field_spec["item"])
+    nested_path = tuple(str(part) for part in field_spec["nested_path"])
+    property_values = _fetch_dotted_property_values(
+        conn,
+        express_ids=normalized_ids,
+        container_name=container_name,
+        item_name=item_name,
+        nested_path=nested_path,
+    )
+    quantity_values = _fetch_dotted_quantity_values(
+        conn,
+        express_ids=normalized_ids,
+        container_name=container_name,
+        item_name=item_name,
+        nested_path=nested_path,
+    )
+
+    if property_values and quantity_values:
+        if container_name.lower().startswith("qto_"):
+            return {
+                "field": field_spec["field"],
+                "field_source": "quantity",
+                "values": quantity_values,
+            }
+        raise ValueError(
+            (
+                f"Ambiguous dotted field '{field}': it matches both properties "
+                "and quantities."
+            )
+        )
+    if quantity_values:
+        return {
+            "field": field_spec["field"],
+            "field_source": "quantity",
+            "values": quantity_values,
+        }
+    return {
+        "field": field_spec["field"],
+        "field_source": "property",
+        "values": property_values,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -243,6 +382,135 @@ def _fetch_element(
         payload["Quantities"] = quantities
 
     return {"properties": properties, "payload": payload}
+
+
+def _resolve_field_spec(field: str) -> dict[str, Any]:
+    raw_field = field.strip()
+    if not raw_field:
+        raise ValueError("Field must be a non-empty string.")
+
+    normalized_core = _CORE_FIELD_ALIASES.get(_normalize_field_alias(raw_field))
+    if normalized_core is not None:
+        canonical_field, column_name = normalized_core
+        return {
+            "kind": "core",
+            "field": canonical_field,
+            "column": column_name,
+        }
+
+    container_name, separator, remainder = raw_field.partition(".")
+    if not separator or not container_name.strip() or not remainder.strip():
+        raise ValueError(
+            "Field must be a supported core column or dotted property/quantity key."
+        )
+
+    path_parts = [part.strip() for part in remainder.split(".") if part.strip()]
+    if not path_parts:
+        raise ValueError(
+            "Field must be a supported core column or dotted property/quantity key."
+        )
+
+    return {
+        "kind": "dotted",
+        "field": raw_field,
+        "container": container_name.strip(),
+        "item": path_parts[0],
+        "nested_path": path_parts[1:],
+    }
+
+
+def _normalize_field_alias(value: str) -> str:
+    return re.sub(r"[^a-z0-9_]+", "", value.strip().lower())
+
+
+def _in_clause(values: list[Any] | tuple[Any, ...]) -> str:
+    return ", ".join("?" for _ in values)
+
+
+def _fetch_core_field_values(
+    conn: sqlite3.Connection,
+    *,
+    express_ids: list[int],
+    column: str,
+) -> dict[int, Any]:
+    rows = conn.execute(
+        "SELECT express_id, "
+        f"{column} AS field_value "
+        f"FROM elements WHERE express_id IN ({_in_clause(express_ids)})",
+        tuple(express_ids),
+    ).fetchall()
+    return {int(row["express_id"]): row["field_value"] for row in rows}
+
+
+def _fetch_dotted_property_values(
+    conn: sqlite3.Connection,
+    *,
+    express_ids: list[int],
+    container_name: str,
+    item_name: str,
+    nested_path: tuple[str, ...],
+) -> dict[int, Any]:
+    rows = conn.execute(
+        "SELECT element_id, value "
+        "FROM properties "
+        f"WHERE element_id IN ({_in_clause(express_ids)}) "
+        "AND pset_name = ? AND property_name = ? "
+        "ORDER BY element_id, is_official DESC, id ASC",
+        (*express_ids, container_name, item_name),
+    ).fetchall()
+
+    values: dict[int, Any] = {}
+    for row in rows:
+        express_id = int(row["element_id"])
+        if express_id in values:
+            continue
+        decoded = decode_db_value(row["value"])
+        extracted = _extract_nested_value(decoded, nested_path)
+        if extracted is _MISSING:
+            continue
+        values[express_id] = extracted
+    return values
+
+
+def _fetch_dotted_quantity_values(
+    conn: sqlite3.Connection,
+    *,
+    express_ids: list[int],
+    container_name: str,
+    item_name: str,
+    nested_path: tuple[str, ...],
+) -> dict[int, Any]:
+    rows = conn.execute(
+        "SELECT element_id, value "
+        "FROM quantities "
+        f"WHERE element_id IN ({_in_clause(express_ids)}) "
+        "AND qto_name = ? AND quantity_name = ? "
+        "ORDER BY element_id, is_official DESC, id ASC",
+        (*express_ids, container_name, item_name),
+    ).fetchall()
+
+    values: dict[int, Any] = {}
+    for row in rows:
+        express_id = int(row["element_id"])
+        if express_id in values:
+            continue
+        extracted = _extract_nested_value(row["value"], nested_path)
+        if extracted is _MISSING:
+            continue
+        values[express_id] = extracted
+    return values
+
+
+def _extract_nested_value(value: Any, nested_path: tuple[str, ...]) -> Any:
+    if not nested_path:
+        return value
+
+    current = value
+    for part in nested_path:
+        if not isinstance(current, dict) or part not in current:
+            return _MISSING
+        current = current[part]
+    return current
 
 
 def _set_if_not_none(target: dict[str, Any], key: str, value: Any) -> None:

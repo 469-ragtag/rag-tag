@@ -628,3 +628,46 @@ def register_graph_tools(agent: Any) -> None:
                 "max_results": max_results,
             },
         )
+
+    @agent.tool
+    def aggregate_elements(
+        ctx: RunContext[GraphRuntime],
+        element_ids: list[str],
+        metric: str,
+        field: str | None = None,
+    ) -> dict[str, Any]:
+        """Aggregate an exact graph-discovered element set via the SQLite context.
+
+        Use this after graph tools return element IDs or GlobalIds and the user
+        asks for a deterministic count, sum, average, minimum, or maximum over
+        that exact set. Do not count or sum in the prompt when this tool fits.
+        """
+        params: dict[str, Any] = {
+            "element_ids": element_ids,
+            "metric": metric,
+        }
+        if field is not None:
+            params["field"] = field
+        return query_ifc_graph(ctx.deps, "aggregate_elements", params)
+
+    @agent.tool
+    def group_elements_by_property(
+        ctx: RunContext[GraphRuntime],
+        element_ids: list[str],
+        property_key: str,
+        max_groups: int = 20,
+    ) -> dict[str, Any]:
+        """Group an exact graph-discovered element set by one DB-backed field.
+
+        Use this after graph discovery when the user asks for a deterministic
+        breakdown by level, type, property, or quantity value.
+        """
+        return query_ifc_graph(
+            ctx.deps,
+            "group_elements_by_property",
+            {
+                "element_ids": element_ids,
+                "property_key": property_key,
+                "max_groups": max_groups,
+            },
+        )

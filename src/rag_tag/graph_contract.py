@@ -198,14 +198,23 @@ ACTION_DATA_DEFAULTS: dict[str, dict[str, Any]] = {
         "evidence": [],
     },
     "aggregate_elements": {
-        "group_by": None,
-        "filters": {},
-        "aggregates": [],
+        "metric": None,
+        "field": None,
+        "field_source": None,
+        "aggregate_value": None,
+        "matched_element_count": 0,
+        "unmatched_element_count": 0,
+        "missing_value_count": 0,
+        "sample": [],
         "evidence": [],
     },
     "group_elements_by_property": {
         "property_key": None,
+        "field_source": None,
         "groups": [],
+        "matched_element_count": 0,
+        "unmatched_element_count": 0,
+        "missing_value_count": 0,
         "evidence": [],
     },
 }
@@ -229,8 +238,8 @@ ACTION_EVIDENCE_FIELDS: dict[str, tuple[str, ...]] = {
     "find_equipment_serving_space": ("equipment",),
     "find_shortest_path": ("path",),
     "find_by_classification": ("elements",),
-    "aggregate_elements": ("aggregates",),
-    "group_elements_by_property": ("groups",),
+    "aggregate_elements": (),
+    "group_elements_by_property": (),
 }
 
 

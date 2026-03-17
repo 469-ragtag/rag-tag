@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import logging
 import re
+import sqlite3
 from collections import deque
 from typing import Any, Iterable
 
@@ -666,6 +668,185 @@ class NetworkXGraphBackend:
                 return None, {"error": "Ambiguous space", "candidates": norm_matches}
 
             return None, {"error": f"Space not found: {space_query}"}
+
+        def open_context_db_connection(
+            *,
+            action_name: str,
+        ) -> tuple[sqlite3.Connection | None, dict[str, Any] | None]:
+            db_path = runtime.context_db_path
+            if db_path is None:
+                return None, {
+                    "error": (
+                        "No SQLite context DB is wired into the graph runtime. "
+                        "Provide or build the SQLite DB context before calling "
+                        f"{action_name}."
+                    ),
+                    "code": "missing_context_db",
+                }
+
+            from rag_tag.sql_element_lookup import (  # noqa: PLC0415
+                open_lookup_connection,
+            )
+
+            conn = open_lookup_connection(db_path)
+            if conn is None:
+                return None, {
+                    "error": f"SQLite context DB is unavailable: {db_path}",
+                    "code": "db_unavailable",
+                }
+            return conn, None
+
+        def resolve_requested_element_refs(
+            raw_element_ids: Any,
+        ) -> tuple[list[dict[str, Any]], list[str], dict[str, Any] | None]:
+            if not isinstance(raw_element_ids, list) or not all(
+                isinstance(item, str) for item in raw_element_ids
+            ):
+                return (
+                    [],
+                    [],
+                    {
+                        "error": (
+                            "Invalid param: element_ids must be an array of strings"
+                        ),
+                        "code": "invalid",
+                    },
+                )
+            if not raw_element_ids:
+                return (
+                    [],
+                    [],
+                    {
+                        "error": "element_ids must contain at least one element ID",
+                        "code": "invalid",
+                    },
+                )
+
+            seen_node_ids: set[str] = set()
+            resolved_refs: list[dict[str, Any]] = []
+            unresolved_ids: list[str] = []
+
+            for requested_id in raw_element_ids:
+                resolved_id, err = resolve_element_id(requested_id)
+                if resolved_id is None or err is not None:
+                    unresolved_ids.append(requested_id)
+                    continue
+                if resolved_id in seen_node_ids:
+                    continue
+
+                seen_node_ids.add(resolved_id)
+                node_data = G.nodes[resolved_id]
+                node_props = node_data.get("properties") or {}
+                express_id_raw = node_props.get("ExpressId")
+                express_id: int | None = None
+                if express_id_raw not in {None, ""}:
+                    try:
+                        express_id_text = str(express_id_raw)
+                        express_id = int(express_id_text)
+                    except (TypeError, ValueError):
+                        express_id = None
+
+                resolved_refs.append(
+                    {
+                        "requested_id": requested_id,
+                        "node_id": resolved_id,
+                        "global_id": node_global_id(resolved_id),
+                        "express_id": express_id,
+                        "label": node_data.get("label"),
+                        "class_": node_data.get("class_"),
+                    }
+                )
+
+            return resolved_refs, unresolved_ids, None
+
+        def resolve_db_element_refs(
+            db_conn: sqlite3.Connection,
+            element_refs: list[dict[str, Any]],
+        ) -> tuple[list[dict[str, Any]], list[str]]:
+            if not element_refs:
+                return [], []
+
+            from rag_tag.sql_element_lookup import (  # noqa: PLC0415
+                lookup_elements_by_identifiers,
+            )
+
+            global_ids = [
+                str(ref["global_id"])
+                for ref in element_refs
+                if ref.get("global_id") not in {None, ""}
+            ]
+            express_ids = [
+                int(ref["express_id"])
+                for ref in element_refs
+                if ref.get("express_id") is not None
+            ]
+            rows = lookup_elements_by_identifiers(
+                db_conn,
+                global_ids=global_ids,
+                express_ids=express_ids,
+            )
+
+            rows_by_global_id = {
+                str(row["global_id"]): row
+                for row in rows
+                if row["global_id"] not in {None, ""}
+            }
+            rows_by_express_id = {int(row["express_id"]): row for row in rows}
+
+            matched_refs: list[dict[str, Any]] = []
+            unmatched_ids: list[str] = []
+            for ref in element_refs:
+                row = None
+                global_id = ref.get("global_id")
+                if global_id not in {None, ""}:
+                    row = rows_by_global_id.get(str(global_id))
+                if row is None and ref.get("express_id") is not None:
+                    row = rows_by_express_id.get(int(ref["express_id"]))
+                if row is None:
+                    unmatched_ids.append(str(ref["requested_id"]))
+                    continue
+
+                matched_ref = dict(ref)
+                matched_ref["db_express_id"] = int(row["express_id"])
+                matched_ref["db_global_id"] = row["global_id"]
+                matched_ref["db_label"] = row["name"]
+                matched_ref["db_class_"] = row["ifc_class"]
+                matched_refs.append(matched_ref)
+
+            return matched_refs, unmatched_ids
+
+        def make_bridge_sample_item(
+            ref: dict[str, Any],
+            *,
+            field_value: Any | None = None,
+            include_field_value: bool = False,
+        ) -> dict[str, Any]:
+            sample = compact_node(str(ref["node_id"]))
+            if include_field_value:
+                sample["field_value"] = field_value
+            return sample
+
+        def merge_requested_ids(*groups: list[str]) -> list[str]:
+            merged: list[str] = []
+            seen: set[str] = set()
+            for group in groups:
+                for value in group:
+                    if value in seen:
+                        continue
+                    seen.add(value)
+                    merged.append(value)
+            return merged
+
+        def is_numeric_scalar(value: Any) -> bool:
+            return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+        def normalize_group_value(value: Any) -> Any:
+            if isinstance(value, (dict, list)):
+                return json.dumps(value, sort_keys=True, separators=(",", ":"))
+            return value
+
+        def group_sort_key(group: dict[str, Any]) -> tuple[int, str]:
+            return (-int(group["count"]), str(group.get("value")))
 
         def parse_relation_filters(
             *,
@@ -1642,6 +1823,338 @@ class NetworkXGraphBackend:
                     payload_mode=INTERNAL_PAYLOAD_MODE,
                 ),
             )
+
+        if action == "aggregate_elements":
+            metric = params.get("metric")
+            field = params.get("field")
+            if not isinstance(metric, str):
+                return _err("Invalid param: metric must be a string", "invalid")
+            metric_value = metric.strip().lower()
+            if metric_value not in {"count", "sum", "avg", "min", "max"}:
+                return _err(
+                    "Unsupported metric for aggregate_elements",
+                    "invalid",
+                    {"allowed_metrics": ["count", "sum", "avg", "min", "max"]},
+                )
+            if field is not None and not isinstance(field, str):
+                return _err("Invalid param: field must be a string", "invalid")
+            if metric_value != "count" and not field:
+                return _err(
+                    f"Field is required for metric '{metric_value}'",
+                    "missing_param",
+                )
+
+            element_refs, unresolved_ids, ref_err = resolve_requested_element_refs(
+                params.get("element_ids")
+            )
+            if ref_err is not None:
+                return _err(str(ref_err["error"]), str(ref_err["code"]))
+
+            db_conn, db_err = open_context_db_connection(action_name=action)
+            if db_err is not None:
+                return _err(str(db_err["error"]), str(db_err["code"]))
+            assert db_conn is not None
+
+            try:
+                matched_refs, db_unmatched_ids = resolve_db_element_refs(
+                    db_conn,
+                    element_refs,
+                )
+                unmatched_ids = merge_requested_ids(unresolved_ids, db_unmatched_ids)
+                if not matched_refs:
+                    return _err(
+                        (
+                            "None of the provided element IDs could be resolved in "
+                            "the SQLite context DB."
+                        ),
+                        "not_found",
+                        {"unmatched_element_ids": unmatched_ids[:10]},
+                    )
+
+                sample: list[dict[str, Any]] = []
+                evidence: list[dict[str, Any]] = []
+                warnings: list[str] = []
+                field_source: str | None = None
+                missing_value_count = 0
+                aggregate_value: Any = None
+                canonical_field = field if isinstance(field, str) else None
+
+                if field:
+                    from rag_tag.sql_element_lookup import (  # noqa: PLC0415
+                        fetch_element_field_values,
+                    )
+
+                    try:
+                        field_result = fetch_element_field_values(
+                            db_conn,
+                            express_ids=[
+                                int(ref["db_express_id"]) for ref in matched_refs
+                            ],
+                            field=field,
+                        )
+                    except ValueError as exc:
+                        return _err(str(exc), "invalid")
+
+                    field_source = str(field_result.get("field_source") or "") or None
+                    canonical_field = str(field_result.get("field") or field)
+                    values_by_express_id = field_result.get("values") or {}
+
+                    valued_refs: list[tuple[dict[str, Any], Any]] = []
+                    missing_refs: list[dict[str, Any]] = []
+                    for ref in matched_refs:
+                        value = values_by_express_id.get(int(ref["db_express_id"]))
+                        if value is None:
+                            missing_refs.append(ref)
+                            continue
+                        valued_refs.append((ref, value))
+
+                    missing_value_count = len(missing_refs)
+                    sample = [
+                        make_bridge_sample_item(
+                            ref,
+                            field_value=value,
+                            include_field_value=True,
+                        )
+                        for ref, value in valued_refs[:3]
+                    ]
+                    evidence = collect_evidence(sample, source_tool=action)
+
+                    if unmatched_ids:
+                        warnings.append(
+                            (
+                                f"{len(unmatched_ids)} requested element ID(s) were "
+                                "not matched in the graph or SQLite context."
+                            )
+                        )
+                    if missing_value_count:
+                        warnings.append(
+                            (
+                                f"{missing_value_count} matched element(s) had no "
+                                f"value for {canonical_field}."
+                            )
+                        )
+
+                    if metric_value == "count":
+                        aggregate_value = len(valued_refs)
+                    elif not valued_refs:
+                        warnings.append(
+                            f"No non-null values were found for {canonical_field}."
+                        )
+                        aggregate_value = None
+                    else:
+                        non_numeric_records = [
+                            make_bridge_sample_item(
+                                ref,
+                                field_value=value,
+                                include_field_value=True,
+                            )
+                            for ref, value in valued_refs
+                            if not is_numeric_scalar(value)
+                        ]
+                        if non_numeric_records:
+                            return _err(
+                                (
+                                    f"Metric '{metric_value}' requires numeric "
+                                    f"values, but {canonical_field} is not numeric "
+                                    "for all matched elements."
+                                ),
+                                "invalid",
+                                {"sample": non_numeric_records[:3]},
+                            )
+
+                        numeric_values = [float(value) for _ref, value in valued_refs]
+                        if metric_value == "sum":
+                            aggregate_value = sum(numeric_values)
+                        elif metric_value == "avg":
+                            aggregate_value = sum(numeric_values) / len(numeric_values)
+                        elif metric_value == "min":
+                            aggregate_value = min(numeric_values)
+                        elif metric_value == "max":
+                            aggregate_value = max(numeric_values)
+                else:
+                    aggregate_value = len(matched_refs)
+                    sample = [make_bridge_sample_item(ref) for ref in matched_refs[:3]]
+                    evidence = collect_evidence(sample, source_tool=action)
+                    if unmatched_ids:
+                        warnings.append(
+                            (
+                                f"{len(unmatched_ids)} requested element ID(s) were "
+                                "not matched in the graph or SQLite context."
+                            )
+                        )
+
+                data = {
+                    "metric": metric_value,
+                    "field": canonical_field,
+                    "field_source": field_source,
+                    "aggregate_value": aggregate_value,
+                    "matched_element_count": len(matched_refs),
+                    "unmatched_element_count": len(unmatched_ids),
+                    "missing_value_count": missing_value_count,
+                    "sample": sample,
+                    "evidence": evidence,
+                }
+                if unmatched_ids:
+                    data["unmatched_element_ids"] = unmatched_ids[:10]
+                if warnings:
+                    data["warnings"] = warnings
+                return _ok_action(action, data)
+            finally:
+                db_conn.close()
+
+        if action == "group_elements_by_property":
+            property_key = params.get("property_key")
+            if not isinstance(property_key, str):
+                return _err("Invalid param: property_key must be a string", "invalid")
+            if not property_key.strip():
+                return _err("property_key must be a non-empty string", "invalid")
+
+            try:
+                max_groups = int(params.get("max_groups", 20))
+            except (TypeError, ValueError):
+                return _err("Invalid param: max_groups must be an integer", "invalid")
+            if max_groups < 1:
+                return _err("max_groups must be >= 1", "invalid")
+            max_groups = min(max_groups, 50)
+
+            element_refs, unresolved_ids, ref_err = resolve_requested_element_refs(
+                params.get("element_ids")
+            )
+            if ref_err is not None:
+                return _err(str(ref_err["error"]), str(ref_err["code"]))
+
+            db_conn, db_err = open_context_db_connection(action_name=action)
+            if db_err is not None:
+                return _err(str(db_err["error"]), str(db_err["code"]))
+            assert db_conn is not None
+
+            try:
+                matched_refs, db_unmatched_ids = resolve_db_element_refs(
+                    db_conn,
+                    element_refs,
+                )
+                unmatched_ids = merge_requested_ids(unresolved_ids, db_unmatched_ids)
+                if not matched_refs:
+                    return _err(
+                        (
+                            "None of the provided element IDs could be resolved in "
+                            "the SQLite context DB."
+                        ),
+                        "not_found",
+                        {"unmatched_element_ids": unmatched_ids[:10]},
+                    )
+
+                from rag_tag.sql_element_lookup import (  # noqa: PLC0415
+                    fetch_element_field_values,
+                )
+
+                try:
+                    field_result = fetch_element_field_values(
+                        db_conn,
+                        express_ids=[int(ref["db_express_id"]) for ref in matched_refs],
+                        field=property_key,
+                    )
+                except ValueError as exc:
+                    return _err(str(exc), "invalid")
+
+                canonical_field = str(field_result.get("field") or property_key)
+                field_source = str(field_result.get("field_source") or "") or None
+                values_by_express_id = field_result.get("values") or {}
+
+                groups_by_value: dict[str, dict[str, Any]] = {}
+                missing_value_count = 0
+                for ref in matched_refs:
+                    raw_value = values_by_express_id.get(int(ref["db_express_id"]))
+                    if raw_value is None:
+                        missing_value_count += 1
+                        continue
+
+                    value = normalize_group_value(raw_value)
+                    bucket_key = json.dumps(
+                        value,
+                        sort_keys=True,
+                        ensure_ascii=True,
+                        default=str,
+                    )
+                    group = groups_by_value.setdefault(
+                        bucket_key,
+                        {
+                            "value": value,
+                            "members": [],
+                        },
+                    )
+                    group["members"].append(
+                        make_bridge_sample_item(
+                            ref,
+                            field_value=value,
+                            include_field_value=True,
+                        )
+                    )
+
+                groups: list[dict[str, Any]] = []
+                for group_data in groups_by_value.values():
+                    members = group_data["members"]
+                    match_reason = f"value={group_data['value']}"
+                    group_evidence = collect_evidence(
+                        members[:2],
+                        source_tool=action,
+                        match_reason_builder=lambda _item, mr=match_reason: mr,
+                    )
+                    groups.append(
+                        {
+                            "value": group_data["value"],
+                            "count": len(members),
+                            "sample": members[:2],
+                            "evidence": group_evidence,
+                        }
+                    )
+
+                groups.sort(key=group_sort_key)
+                selected_groups = groups[:max_groups]
+                warnings: list[str] = []
+                if unmatched_ids:
+                    warnings.append(
+                        (
+                            f"{len(unmatched_ids)} requested element ID(s) were not "
+                            "matched in the graph or SQLite context."
+                        )
+                    )
+                if missing_value_count:
+                    warnings.append(
+                        (
+                            f"{missing_value_count} matched element(s) had no value "
+                            f"for {canonical_field}."
+                        )
+                    )
+                if len(groups) > max_groups:
+                    warnings.append(
+                        f"Grouping truncated to {max_groups} group(s) to stay compact."
+                    )
+
+                evidence = merge_evidence_items(
+                    *[
+                        group.get("evidence")
+                        for group in selected_groups
+                        if isinstance(group.get("evidence"), list)
+                    ]
+                )
+                data = {
+                    "property_key": canonical_field,
+                    "field_source": field_source,
+                    "groups": selected_groups,
+                    "matched_element_count": len(matched_refs),
+                    "unmatched_element_count": len(unmatched_ids),
+                    "missing_value_count": missing_value_count,
+                    "total_groups": len(groups),
+                    "evidence": evidence,
+                }
+                if unmatched_ids:
+                    data["unmatched_element_ids"] = unmatched_ids[:10]
+                if warnings:
+                    data["warnings"] = warnings
+                return _ok_action(action, data)
+            finally:
+                db_conn.close()
 
         if action == "trace_distribution_network":
             start = params.get("start") or params.get("element_id")

@@ -242,6 +242,21 @@ Tool node payloads use:
   - schema discovery only
   - do not use it to read values for a specific target element
 
+### Graph-to-SQL bridge tools
+
+- `aggregate_elements(element_ids, metric, field?)`
+  - use after graph discovery when the user asks for an exact count, sum,
+    average, minimum, or maximum over a returned element set
+  - pass the exact tool-returned IDs/GlobalIds; do not count or sum mentally in
+    the prompt
+  - use `metric="count"` with no field for exact set size; use `field` for core
+    columns, dotted property keys, or dotted quantity keys
+
+- `group_elements_by_property(element_ids, property_key, max_groups?)`
+  - use after graph discovery when the user asks for a breakdown by level,
+    type, property, quantity, or other DB-backed field
+  - do not bucket/group results manually in context when this tool fits
+
 ### Tool envelope
 
 Every tool returns:
@@ -270,9 +285,11 @@ For difficult questions, follow this loop:
 2. Find or verify the anchor node(s).
 3. Pull nearby/related candidates with the most specific tool available.
 4. If needed, inspect candidate properties with `get_element_properties`.
-5. If needed, run another traversal/search from the newly discovered nodes.
-6. Repeat until you can support the answer with evidence.
-7. Summarize only what the tool evidence supports.
+5. If the question asks for exact set math or breakdowns over discovered
+   elements, call `aggregate_elements` or `group_elements_by_property`.
+6. If needed, run another traversal/search from the newly discovered nodes.
+7. Repeat until you can support the answer with evidence.
+8. Summarize only what the tool evidence supports.
 
 Do not stop after one tool call if the question clearly requires composition.
 It is correct to call several tools in sequence.
@@ -362,6 +379,18 @@ elements belong to this zone but not this room?"
 4. Once the helper returns the needed set, stop and answer; do not keep
    exploring unrelated edges.
 
+### J. Aggregation / grouping over discovered graph sets
+
+Examples: "How many of these are fire-rated?", "Sum the net volume of the
+walls around this room.", "Group the found doors by level."
+
+1. First discover the exact element set with graph/search tools.
+2. Reuse the exact returned IDs or GlobalIds.
+3. Call `aggregate_elements` for count/sum/avg/min/max.
+4. Call `group_elements_by_property` for deterministic grouped breakdowns.
+5. Do not do set math, counting, summing, averaging, or grouping in the prompt
+   when one of these bridge tools applies.
+
 ---
 
 ## 7. Fallback Rules
@@ -396,7 +425,8 @@ budget and floods the context window.
   present, otherwise use `data.evidence[].id` or other exact tool-returned IDs.
 - Include `data` when it helps: `evidence`, IDs, sample records, counts from
   returned sets, compared candidates, or relation evidence.
-- If you count results, count only what tools actually returned.
+- If you count, sum, average, min/max, or group results, use the dedicated tool
+  outputs rather than doing the math in-context.
 - If uncertainty remains, keep the answer accurate and put the caveat in
   `warning`.
 - Do not mention hidden chain-of-thought. Report conclusions and evidence only.
