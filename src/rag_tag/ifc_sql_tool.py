@@ -5,6 +5,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+from rag_tag.graph_contract import EVIDENCE_LIMIT, collect_evidence
 from rag_tag.ifc_class_taxonomy import expand_ifc_class_filter
 from rag_tag.level_normalization import canonicalize_level
 from rag_tag.router import SqlRequest
@@ -61,6 +62,18 @@ def query_ifc_sql(db_path: Path, request: SqlRequest) -> dict[str, Any]:
             query = f"SELECT COUNT(*) AS count FROM elements{where_sql}"
             row = conn.execute(query, params).fetchone()
             count = int(row["count"]) if row else 0
+            sample_limit = min(EVIDENCE_LIMIT, 3)
+            sample_query = (
+                "SELECT express_id, global_id, ifc_class, name, level, type_name "
+                f"FROM elements{where_sql} ORDER BY name LIMIT ?"
+            )
+            sample_params = [*params, sample_limit]
+            sample_rows = conn.execute(sample_query, sample_params).fetchall()
+            evidence = collect_evidence(
+                [_sql_item_payload(sample_row) for sample_row in sample_rows],
+                source_tool="query_ifc_sql",
+                match_reason_builder=lambda _item: "representative_match",
+            )
             summary = _count_summary(request, count)
             return {
                 "status": "ok",
@@ -68,8 +81,14 @@ def query_ifc_sql(db_path: Path, request: SqlRequest) -> dict[str, Any]:
                     "intent": request.intent,
                     "filters": _filters_payload(request, resolved_ifc_classes),
                     "count": count,
+                    "evidence": evidence,
                     "summary": summary,
-                    "sql": {"query": query, "params": params},
+                    "sql": {
+                        "query": query,
+                        "params": params,
+                        "sample_query": sample_query,
+                        "sample_params": sample_params,
+                    },
                 },
                 "error": None,
             }
@@ -86,7 +105,8 @@ def query_ifc_sql(db_path: Path, request: SqlRequest) -> dict[str, Any]:
             )
             list_params = [*params, limit]
             rows = conn.execute(list_query, list_params).fetchall()
-            items = [dict(row) for row in rows]
+            items = [_sql_item_payload(row) for row in rows]
+            evidence = collect_evidence(items, source_tool="query_ifc_sql")
             summary = _list_summary(request, total_count, limit)
             return {
                 "status": "ok",
@@ -96,6 +116,7 @@ def query_ifc_sql(db_path: Path, request: SqlRequest) -> dict[str, Any]:
                     "total_count": total_count,
                     "limit": limit,
                     "items": items,
+                    "evidence": evidence,
                     "summary": summary,
                     "sql": {
                         "query": list_query,
@@ -125,6 +146,17 @@ def _filters_payload(
     if resolved_level:
         payload["resolved_level"] = resolved_level
     return payload
+
+
+def _sql_item_payload(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "express_id": row["express_id"],
+        "global_id": row["global_id"],
+        "ifc_class": row["ifc_class"],
+        "name": row["name"],
+        "level": row["level"],
+        "type_name": row["type_name"],
+    }
 
 
 def _count_summary(request: SqlRequest, count: int) -> str:

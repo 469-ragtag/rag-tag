@@ -42,6 +42,15 @@ def test_sql_merge_returns_warning_for_partial_failures(
                 "intent": request.intent,
                 "filters": {},
                 "count": 2,
+                "evidence": [
+                    {
+                        "global_id": "door-1",
+                        "id": 101,
+                        "label": "Door 1",
+                        "class_": "IfcDoor",
+                        "source_tool": "query_ifc_sql",
+                    }
+                ],
                 "summary": "Found 2 IfcDoor.",
                 "sql": {"query": "SELECT 1", "params": []},
             },
@@ -53,6 +62,15 @@ def test_sql_merge_returns_warning_for_partial_failures(
     result = execute_sql_query(_sql_decision(), [ok_db, bad_db])
 
     assert result["answer"] == "Found 2 IfcDoor."
+    assert result["data"]["evidence"] == [
+        {
+            "global_id": "door-1",
+            "id": 101,
+            "label": "Door 1",
+            "class_": "IfcDoor",
+            "source_tool": "query_ifc_sql",
+        }
+    ]
     assert result["warning"]["failed_db_paths"] == [str(bad_db)]
 
 
@@ -75,6 +93,15 @@ def test_sql_merge_strict_mode_fails_closed(
                 "intent": request.intent,
                 "filters": {},
                 "count": 2,
+                "evidence": [
+                    {
+                        "global_id": "door-1",
+                        "id": 101,
+                        "label": "Door 1",
+                        "class_": "IfcDoor",
+                        "source_tool": "query_ifc_sql",
+                    }
+                ],
                 "summary": "Found 2 IfcDoor.",
                 "sql": {"query": "SELECT 1", "params": []},
             },

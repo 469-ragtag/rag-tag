@@ -13,8 +13,12 @@ from rag_tag.graph_contract import (
     EXPLICIT_IFC_RELATIONS,
     HIERARCHY_RELATIONS,
     KNOWN_RELATION_SOURCES,
+    ROADMAP_ACTIONS,
     SPATIAL_RELATIONS,
+    build_evidence_item,
+    ensure_action_data_fields,
     has_valid_envelope_shape,
+    is_allowed_action,
     missing_required_action_fields,
     normalize_relation_name,
     normalize_relation_source,
@@ -450,6 +454,16 @@ def test_graph_contract_smoke_parity() -> None:
     assert has_valid_envelope_shape(result)
     assert result["status"] == "ok"
     assert not missing_required_action_fields("traverse", result["data"])
+    assert result["data"]["evidence"] == [
+        {
+            "global_id": "TERM1",
+            "id": "Element::TERMINAL1",
+            "label": "Terminal 1",
+            "class_": "IfcFlowTerminal",
+            "source_tool": "traverse",
+            "relation": "ifc_connected_to",
+        }
+    ]
     assert all(
         normalize_relation_name(item["relation"]) in CANONICAL_RELATION_SET
         for item in result["data"]["results"]
@@ -464,6 +478,16 @@ def test_graph_contract_smoke_parity() -> None:
     assert all(
         item["relation"] in SPATIAL_RELATIONS for item in adj["data"]["adjacent"]
     )
+    assert adj["data"]["evidence"] == [
+        {
+            "global_id": "WALL1",
+            "id": "Element::WALL1",
+            "label": "Wall 1",
+            "class_": "IfcWall",
+            "source_tool": "get_adjacent_elements",
+            "relation": "adjacent_to",
+        }
+    ]
     assert all(
         _source_matches_bucket_semantics(item) for item in adj["data"]["adjacent"]
     )
@@ -478,3 +502,33 @@ def test_graph_contract_smoke_parity() -> None:
             non_hierarchy_sources_ok = False
             break
     assert non_hierarchy_sources_ok
+
+
+def test_graph_contract_scaffolds_batch1_roadmap_actions() -> None:
+    for action in ROADMAP_ACTIONS:
+        assert is_allowed_action(action) is True
+        payload = ensure_action_data_fields(action, None)
+        assert "evidence" in payload
+        assert not missing_required_action_fields(action, payload)
+
+
+def test_build_evidence_item_prefers_global_id_with_internal_id_fallback() -> None:
+    evidence = build_evidence_item(
+        {
+            "id": "Element::WALL1",
+            "label": "Wall 1",
+            "class_": "IfcWall",
+            "properties": {"GlobalId": "WALL1"},
+        },
+        source_tool="find_nodes",
+        match_reason="exact_match",
+    )
+
+    assert evidence == {
+        "global_id": "WALL1",
+        "id": "Element::WALL1",
+        "label": "Wall 1",
+        "class_": "IfcWall",
+        "source_tool": "find_nodes",
+        "match_reason": "exact_match",
+    }

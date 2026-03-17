@@ -24,3 +24,7 @@ def test_system_prompt_allows_lightweight_markdown_answers() -> None:
     assert "Do not use ASCII-art tables" in SYSTEM_PROMPT
     assert "Lightweight Markdown\nis allowed inside the `answer` field" in SYSTEM_PROMPT
     assert "find_container_elements_excluding" in SYSTEM_PROMPT
+    assert "trace_distribution_network" in SYSTEM_PROMPT
+    assert "find_shortest_path" in SYSTEM_PROMPT
+    assert "find_by_classification" in SYSTEM_PROMPT
+    assert "find_equipment_serving_space" in SYSTEM_PROMPT

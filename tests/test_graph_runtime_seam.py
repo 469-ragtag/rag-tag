@@ -149,3 +149,11 @@ def test_graph_agent_deps_and_tool_helpers_use_graph_runtime(
     fuzzy = _fuzzy_find_nodes_impl(runtime, "plumbing wall")
     assert fuzzy["status"] == "ok"
     assert fuzzy["data"]["matches"][0]["id"] == "Element::wall-occ"
+    assert fuzzy["data"]["evidence"][0] == {
+        "global_id": "wall-occ",
+        "id": "Element::wall-occ",
+        "label": "plumbing wall",
+        "class_": "IfcWall",
+        "source_tool": "fuzzy_find_nodes",
+        "match_reason": "fuzzy_score=100.0",
+    }

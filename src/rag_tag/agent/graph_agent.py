@@ -180,10 +180,32 @@ Tool node payloads use:
 
 - `traverse(start, relation?, depth?)`
   - generic multi-hop traversal
+  - use this as a fallback when no more specific macro tool fits
   - use `contains` to go from container to contents
   - use `contained_in` to move from element to enclosing structure
   - use explicit relations such as `hosts`, `typed_by`, `belongs_to_system`,
     `in_zone`, `classified_as`, `ifc_connected_to` when appropriate
+
+- `trace_distribution_network(start, max_depth?, relations?, max_results?)`
+  - preferred macro tool for bounded network/system tracing
+  - use this instead of repeated `traverse(..., relation="ifc_connected_to")`
+    when the user wants a connected branch, network summary, or downstream/upstream
+    connectivity set
+
+- `find_shortest_path(start, end, max_path_length?, relations?)`
+  - preferred tool when the user explicitly asks for the path/connection between
+    two anchors
+  - use this instead of manually chaining `traverse` calls hop by hop
+
+- `find_by_classification(classification, max_results?)`
+  - preferred tool for classification/code/reference label questions
+  - use this instead of raw `traverse(..., relation="classified_as")` unless you
+    already have the exact classification node and only need one tiny follow-up
+
+- `find_equipment_serving_space(space, max_depth?, max_results?)`
+  - preferred macro tool for "what serves this room/space" questions
+  - use this before composing room boundaries, terminals, systems, and network
+    traversal by hand
 
 - `get_elements_in_storey(storey)`
   - storey-only helper; use for `IfcBuildingStorey`, not for room names
@@ -226,6 +248,10 @@ Every tool returns:
 ```json
 { "status": "ok|error", "data": <payload|null>, "error": <object|null> }
 ```
+
+Many tool payloads also include `data.evidence`: a compact grounding list with
+`global_id` when available, an internal `id` fallback, plus `label`, `class_`,
+and sometimes `relation`, `source_tool`, or `match_reason`.
 
 If `status="error"`, try another path unless the error proves the question is
 unanswerable from the current graph.
@@ -285,33 +311,47 @@ Examples: "What type is this door?", "Which doors share the same type?"
 ### D. System/zone/classification questions
 
 1. Resolve the anchor element or context node.
-2. Use `traverse` with `belongs_to_system`, `in_zone`, or `classified_as`.
+2. Use `find_by_classification` when the question is driven by a
+   classification label/reference.
+3. Otherwise use `traverse` with `belongs_to_system`, `in_zone`, or
+   `classified_as`.
 3. If the context node is named in the question, you may resolve it first with
    `fuzzy_find_nodes` or `find_nodes`, then traverse in the direction supported
    by the graph evidence.
 
 ### E. Host/connectivity questions
 
-1. Use `traverse` with `hosts`, `hosted_by`, or `ifc_connected_to`.
-2. If the user asks for path-like or network connectivity, consider
-   `get_topology_neighbors(..., relation="path_connected_to")` or repeated
-   `traverse` / connectivity exploration.
+1. Use `trace_distribution_network` for bounded network tracing from one anchor.
+2. Use `find_shortest_path` when the user asks for the path between two anchors.
+3. Use `traverse` with `hosts`, `hosted_by`, or `ifc_connected_to` only for
+   small targeted follow-up inspection.
+4. If the user asks for path-like topology specifically, consider
+   `get_topology_neighbors(..., relation="path_connected_to")`.
 
-### F. Vertical/contact/overlap questions
+### F. Space served-by questions
+
+Examples: "What equipment serves Room 101?", "Which unit supplies the kitchen?"
+
+1. Resolve the space anchor, usually with `fuzzy_find_nodes` if the room is named.
+2. Use `find_equipment_serving_space`.
+3. Only fall back to manual composition if the macro tool returns weak/empty
+   evidence and you need to inspect one specific candidate.
+
+### G. Vertical/contact/overlap questions
 
 1. Prefer `find_elements_above`, `find_elements_below`,
    `get_topology_neighbors`, or `get_intersections_3d`.
 2. Use `spatial_query` only as fallback for looser proximity answers.
 3. Keep `intersects_bbox` and `intersects_3d` distinct in your explanation.
 
-### G. Exact property questions
+### H. Exact property questions
 
 1. Resolve the target element first.
 2. Call `get_element_properties`.
 3. Read the requested value from returned evidence.
 4. If multiple candidates exist, compare them explicitly before answering.
 
-### H. Negative location / exclusion questions
+### I. Negative location / exclusion questions
 
 Examples: "What is in the building but not on the ground floor?", "Which
 elements belong to this zone but not this room?"
@@ -352,8 +392,10 @@ budget and floods the context window.
   pseudo-Markdown.
 - If you present multiple entities, prefer short Markdown sections over one long
   paragraph.
-- Include `data` when it helps: IDs, sample records, counts from returned sets,
-  compared candidates, or relation evidence.
+- Ground claims with tool-returned IDs. Prefer `data.evidence[].global_id` when
+  present, otherwise use `data.evidence[].id` or other exact tool-returned IDs.
+- Include `data` when it helps: `evidence`, IDs, sample records, counts from
+  returned sets, compared candidates, or relation evidence.
 - If you count results, count only what tools actually returned.
 - If uncertainty remains, keep the answer accurate and put the caveat in
   `warning`.
@@ -410,7 +452,7 @@ _FINAL_RESULT_TOOL = ToolOutput(
     name="final_result",
     description=(
         "Return the final graph answer as one JSON object with answer, optional "
-        "data, and optional warning."
+        "grounded data/evidence, and optional warning."
     ),
 )
 

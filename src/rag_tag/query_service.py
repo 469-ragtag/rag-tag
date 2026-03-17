@@ -9,6 +9,7 @@ import networkx as nx
 
 from rag_tag.agent import GraphAgent
 from rag_tag.graph import GraphRuntime, ensure_graph_runtime, load_graph_runtime
+from rag_tag.graph_contract import merge_evidence_items
 from rag_tag.ifc_sql_tool import SqlQueryError, query_ifc_sql
 from rag_tag.paths import find_project_root
 from rag_tag.router import RouteDecision, route_question
@@ -145,6 +146,7 @@ def execute_sql_query(
     combined_count = 0
     combined_total = 0
     combined_items: list[Any] = []
+    combined_evidence: list[dict[str, Any]] = []
     last_payload: dict[str, Any] = {}
     failed_db_paths: list[str] = []
     db_errors: list[dict[str, str]] = []
@@ -186,6 +188,10 @@ def execute_sql_query(
         combined_count += payload.get("count", 0)
         combined_total += payload.get("total_count", 0)
         combined_items.extend(payload.get("items") or [])
+        combined_evidence = merge_evidence_items(
+            combined_evidence,
+            payload.get("evidence"),
+        )
 
     if not last_payload:
         return _sql_error(
@@ -235,6 +241,7 @@ def execute_sql_query(
             # Return the canonical effective limit, not a per-DB artifact.
             "limit": effective_limit,
             "items": combined_items,
+            "evidence": combined_evidence,
         },
         "sql": last_payload.get("sql"),
     }
