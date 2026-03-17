@@ -5,12 +5,14 @@ from __future__ import annotations
 import json
 import logging
 import re
+from pathlib import Path
 
 from pydantic_ai import Agent, ModelRetry, RunContext, UnexpectedModelBehavior
 from pydantic_ai.exceptions import ModelHTTPError, UsageLimitExceeded
 from pydantic_ai.output import ToolOutput
 from pydantic_ai.usage import UsageLimits
 
+from rag_tag.config import get_default_graph_output_retries
 from rag_tag.graph import GraphRuntime
 from rag_tag.llm.pydantic_ai import get_agent_model, get_agent_model_settings
 
@@ -23,6 +25,7 @@ from .models import (
 )
 
 _logger = logging.getLogger(__name__)
+_MODULE_DIR = Path(__file__).resolve().parent
 
 # Maximum number of *additional* retry attempts when the provider returns
 # INVALID_TOOL_GENERATION (HTTP 422).  The first attempt is attempt 0, so the
@@ -512,14 +515,24 @@ _FINAL_RESULT_TOOL = ToolOutput(
 class GraphAgent:
     """Graph agent using PydanticAI with tool calling."""
 
-    def __init__(self, *, debug_llm_io: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        debug_llm_io: bool = False,
+        output_retries: int | None = None,
+    ) -> None:
         """Initialise graph agent with PydanticAI.
 
         Args:
             debug_llm_io: Enable debug printing (unused for PydanticAI;
                           kept for API compatibility).
+            output_retries: Structured-output validation retries. When None,
+                uses the checked-in config default or the built-in fallback.
         """
         self._debug_llm_io = debug_llm_io
+        resolved_output_retries = output_retries
+        if resolved_output_retries is None:
+            resolved_output_retries = get_default_graph_output_retries(_MODULE_DIR)
 
         model = get_agent_model()
         try:
@@ -538,10 +551,7 @@ class GraphAgent:
             system_prompt=SYSTEM_PROMPT,
             model_settings=model_settings,
             retries=2,
-            # Extra retries specifically for output schema validation.
-            # Increased from 3 to 5 to give the model more chances to
-            # produce valid JSON when it initially returns prose or extra keys.
-            output_retries=5,
+            output_retries=resolved_output_retries,
         )
 
         register_graph_tools(self._agent)

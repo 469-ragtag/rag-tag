@@ -9,6 +9,8 @@ defaults:
     router_profile: router-gemini-flash
     agent_profile: cohere-command-a
     router_mode: llm
+    graph_max_steps: 20
+    graph_output_retries: 5
 
 providers:
     databricks:

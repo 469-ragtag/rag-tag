@@ -8,11 +8,14 @@ from typing import Any
 import networkx as nx
 
 from rag_tag.agent import GraphAgent
+from rag_tag.config import get_default_graph_max_steps
 from rag_tag.graph import GraphRuntime, ensure_graph_runtime, load_graph_runtime
 from rag_tag.graph_contract import merge_evidence_items
 from rag_tag.ifc_sql_tool import SqlQueryError, query_ifc_sql
 from rag_tag.paths import find_project_root
 from rag_tag.router import RouteDecision, SqlRequest, route_question
+
+_MODULE_DIR = Path(__file__).resolve().parent
 
 
 def find_sqlite_dbs() -> list[Path]:
@@ -448,7 +451,7 @@ def execute_graph_query(
     agent: GraphAgent,
     decision: RouteDecision,
     *,
-    max_steps: int = 20,
+    max_steps: int | None = None,
 ) -> dict[str, Any]:
     """Execute graph query via agent.
 
@@ -461,7 +464,11 @@ def execute_graph_query(
     Returns:
         Result dict with answer, data, or error
     """
-    agent_result = agent.run(question, runtime, max_steps=max_steps)
+    resolved_max_steps = max_steps
+    if resolved_max_steps is None:
+        resolved_max_steps = get_default_graph_max_steps(_MODULE_DIR)
+
+    agent_result = agent.run(question, runtime, max_steps=resolved_max_steps)
     return {
         "route": "graph",
         "decision": decision.reason,
@@ -481,7 +488,7 @@ def execute_query(
     context_db: Path | None = None,
     payload_mode: str | None = None,
     strict_sql: bool = False,
-    graph_max_steps: int = 20,
+    graph_max_steps: int | None = None,
     graph: GraphRuntime | nx.DiGraph | nx.MultiDiGraph | None = None,
 ) -> dict[str, Any]:
     """Execute a query through the full pipeline (routing + execution).

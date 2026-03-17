@@ -26,6 +26,8 @@ DEFAULT_CONFIG_FILENAMES = ("config.yaml", "config.yml", "config.json")
 CONFIG_PATH_ENV_VAR = "RAG_TAG_CONFIG"
 ROUTER_PROFILE_ENV_VAR = "ROUTER_PROFILE"
 AGENT_PROFILE_ENV_VAR = "AGENT_PROFILE"
+DEFAULT_GRAPH_MAX_STEPS = 20
+DEFAULT_GRAPH_OUTPUT_RETRIES = 5
 
 
 class ProviderConfig(BaseModel):
@@ -72,6 +74,8 @@ class DefaultsConfig(BaseModel):
     router_profile: str | None = None
     agent_profile: str | None = None
     router_mode: str | None = None
+    graph_max_steps: int | None = Field(default=None, ge=1)
+    graph_output_retries: int | None = Field(default=None, ge=0)
 
 
 class AppConfig(BaseModel):
@@ -156,6 +160,24 @@ def load_project_config(
         config_path=resolved_config_path,
         config=AppConfig.model_validate(payload),
     )
+
+
+def get_default_graph_max_steps(start_dir: Path | None = None) -> int:
+    """Return the configured graph step budget or the built-in default."""
+
+    configured = load_project_config(start_dir).config.defaults.graph_max_steps
+    if configured is None:
+        return DEFAULT_GRAPH_MAX_STEPS
+    return configured
+
+
+def get_default_graph_output_retries(start_dir: Path | None = None) -> int:
+    """Return the configured graph output retries or the built-in default."""
+
+    configured = load_project_config(start_dir).config.defaults.graph_output_retries
+    if configured is None:
+        return DEFAULT_GRAPH_OUTPUT_RETRIES
+    return configured
 
 
 def _resolve_config_path(

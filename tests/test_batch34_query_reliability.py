@@ -195,6 +195,66 @@ def test_graph_agent_honors_usage_limit(monkeypatch: pytest.MonkeyPatch) -> None
     assert data.get("max_steps") == 1
 
 
+def test_execute_graph_query_uses_configured_step_budget(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rag_tag import query_service
+
+    (tmp_path / "pyproject.toml").write_text(
+        "[project]\nname = 'test'\n", encoding="utf-8"
+    )
+    (tmp_path / "config.yaml").write_text(
+        "defaults:\n  graph_max_steps: 7\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        query_service,
+        "_MODULE_DIR",
+        tmp_path / "src" / "rag_tag",
+    )
+
+    captured: dict[str, object] = {}
+
+    class FakeAgent:
+        def run(
+            self,
+            question: str,
+            runtime: GraphRuntime,
+            *,
+            max_steps: int = 20,
+            trace: object | None = None,
+            run_id: str | None = None,
+        ) -> dict[str, object]:
+            captured["question"] = question
+            captured["runtime"] = runtime
+            captured["max_steps"] = max_steps
+            return {"answer": "ok"}
+
+    runtime = wrap_networkx_graph(nx.MultiDiGraph())
+    result = query_service.execute_graph_query(
+        "question",
+        runtime,
+        FakeAgent(),
+        RouteDecision(route="graph", reason="graph route", sql_request=None),
+    )
+
+    assert result["answer"] == "ok"
+    assert captured["question"] == "question"
+    assert captured["runtime"] is runtime
+    assert captured["max_steps"] == 7
+
+    query_service.execute_graph_query(
+        "question",
+        runtime,
+        FakeAgent(),
+        RouteDecision(route="graph", reason="graph route", sql_request=None),
+        max_steps=3,
+    )
+
+    assert captured["max_steps"] == 3
+
+
 def test_sql_merge_weighted_average_for_aggregate(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
