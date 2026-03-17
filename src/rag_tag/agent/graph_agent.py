@@ -486,11 +486,12 @@ immediately. Do not restate the answer outside the tool call first.
 # Precise schema reminder embedded in ModelRetry messages so the model
 # receives actionable correction guidance within the same run_sync call.
 _SCHEMA_CORRECTION_HINT = (
-    "Do NOT reply with plain assistant text. Your next response must be the "
+    "Your previous response was invalid. Your next response must be a real "
     "final_result tool call only.\n"
-    "final_result MUST be called with a single JSON object — "
-    "NO list/array wrapper, NO tool-call envelope "
-    "(tool_call_id / tool_name / parameters are NOT output fields).\n"
+    "Do NOT print plain text, Markdown, fenced JSON, a list/array wrapper, or "
+    "a tool-call envelope as text.\n"
+    "Call final_result with one JSON object only. Do NOT include tool_call_id, "
+    "tool_name, or parameters.\n"
     "Required schema:\n"
     "  answer   string       required — lightweight Markdown allowed\n"
     "  data     object|null  optional\n"

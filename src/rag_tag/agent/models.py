@@ -18,6 +18,7 @@ _JSON_CODE_BLOCK_RE = re.compile(
 _FRAMEWORK_ERROR_MARKERS = (
     "validation error",
     "invalid json",
+    "please include your response in a tool call",
     "fix the errors and try again",
 )
 

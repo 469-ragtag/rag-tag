@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from rag_tag.agent.graph_agent import SYSTEM_PROMPT, _sanitize_model_text
+from rag_tag.agent.graph_agent import (
+    _SCHEMA_CORRECTION_HINT,
+    SYSTEM_PROMPT,
+    _sanitize_model_text,
+)
 
 
 def test_sanitize_model_text_preserves_markdown_line_breaks() -> None:
@@ -50,4 +54,13 @@ def test_system_prompt_makes_macro_first_preferences_explicit_and_ordered() -> N
     assert "do not count or sum mentally" in SYSTEM_PROMPT
     assert (
         "do not count, sum,\n   average, min/max, or group in-context" in SYSTEM_PROMPT
+    )
+
+
+def test_schema_correction_hint_is_explicit_about_real_tool_calls() -> None:
+    assert "real final_result tool call only" in _SCHEMA_CORRECTION_HINT
+    assert "Do NOT print plain text, Markdown, fenced JSON" in _SCHEMA_CORRECTION_HINT
+    assert (
+        "Do NOT include tool_call_id, tool_name, or parameters"
+        in _SCHEMA_CORRECTION_HINT
     )
