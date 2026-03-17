@@ -255,3 +255,58 @@ def test_find_equipment_serving_space_returns_terminal_fallback_warning() -> Non
     assert data["equipment"][0]["id"] == "Element::terminal-201"
     assert data["equipment"][0]["candidate_type"] == "terminal"
     assert any("returning terminal-level" in warning for warning in data["warnings"])
+
+
+def test_find_equipment_serving_space_replaces_weaker_path_with_stronger_one() -> None:
+    graph = nx.MultiDiGraph()
+    graph.add_node(
+        "Element::space-301",
+        label="Room 301",
+        class_="IfcSpace",
+        properties={"GlobalId": "SPACE301"},
+    )
+    graph.add_node(
+        "Element::ahu-301",
+        label="AHU 301",
+        class_="IfcUnitaryEquipment",
+        properties={"GlobalId": "AHU301"},
+    )
+    graph.add_node(
+        "Element::terminal-301",
+        label="Diffuser 301",
+        class_="IfcFlowTerminal",
+        properties={"GlobalId": "TERM301"},
+    )
+
+    graph.add_edge(
+        "Element::space-301",
+        "Element::ahu-301",
+        relation="contains",
+    )
+    graph.add_edge(
+        "Element::space-301",
+        "Element::terminal-301",
+        relation="contains",
+    )
+    graph.add_edge(
+        "Element::terminal-301",
+        "Element::ahu-301",
+        relation="ifc_connected_to",
+        source="ifc",
+    )
+
+    result = query_ifc_graph(
+        graph,
+        "find_equipment_serving_space",
+        {"space": "Element::space-301", "max_depth": 3, "max_results": 5},
+    )
+
+    assert result["status"] == "ok"
+    equipment = result["data"]["equipment"]
+    assert equipment[0]["id"] == "Element::ahu-301"
+    assert equipment[0]["score"] == 7
+    assert [item["id"] for item in equipment[0]["path"]] == [
+        "Element::space-301",
+        "Element::terminal-301",
+        "Element::ahu-301",
+    ]

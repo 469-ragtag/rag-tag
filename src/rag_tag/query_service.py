@@ -234,9 +234,12 @@ def _merge_sql_payloads(
 
     if req.intent == "list":
         combined_total = sum(int(payload.get("total_count", 0)) for payload in payloads)
-        combined_items: list[Any] = []
+        combined_items: list[dict[str, Any]] = []
         for payload in payloads:
-            combined_items.extend(payload.get("items") or [])
+            merge_state = payload.get("merge_state") or {}
+            full_items = merge_state.get("items") or payload.get("items") or []
+            combined_items.extend(item for item in full_items if isinstance(item, dict))
+        combined_items.sort(key=_sql_list_item_sort_key)
         combined_items = combined_items[:effective_limit]
         shown = len(combined_items)
         if req.level_like:
@@ -345,6 +348,27 @@ def _merge_aggregate_payloads(
     }
 
 
+def _sql_list_item_sort_key(item: dict[str, Any]) -> tuple[int, str, str, str, int]:
+    name = item.get("name")
+    express_id = item.get("express_id")
+    if isinstance(express_id, int):
+        normalized_express_id = express_id
+    elif isinstance(express_id, str):
+        try:
+            normalized_express_id = int(express_id)
+        except ValueError:
+            normalized_express_id = -1
+    else:
+        normalized_express_id = -1
+    return (
+        0 if name is None else 1,
+        "" if name is None else str(name),
+        str(item.get("ifc_class") or ""),
+        str(item.get("global_id") or ""),
+        normalized_express_id,
+    )
+
+
 def _merge_group_payloads(
     payloads: list[dict[str, Any]],
     req: SqlRequest,
@@ -359,7 +383,9 @@ def _merge_group_payloads(
         total_elements += int(payload.get("total_elements", 0))
         matched_element_count += int(payload.get("matched_element_count", 0))
         missing_value_count += int(payload.get("missing_value_count", 0))
-        for group in payload.get("groups") or []:
+        merge_state = payload.get("merge_state") or {}
+        full_groups = merge_state.get("groups") or payload.get("groups") or []
+        for group in full_groups:
             key = group.get("group")
             grouped_counts[key] = grouped_counts.get(key, 0) + int(
                 group.get("count", 0)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import networkx as nx
@@ -9,6 +10,7 @@ from pydantic_ai.models.test import TestModel
 
 from rag_tag.agent.graph_agent import GraphAgent
 from rag_tag.graph import GraphRuntime, wrap_networkx_graph
+from rag_tag.parser.jsonl_to_sql import jsonl_to_sql
 from rag_tag.query_service import execute_query, execute_sql_query
 from rag_tag.router.models import RouteDecision, SqlFieldRef, SqlRequest
 
@@ -21,6 +23,25 @@ def _sql_decision() -> RouteDecision:
             intent="count", ifc_class="IfcDoor", level_like=None, limit=0
         ),
     )
+
+
+def _write_jsonl(path: Path, records: list[dict[str, object]]) -> None:
+    path.write_text(
+        "".join(json.dumps(record) + "\n" for record in records),
+        encoding="utf-8",
+    )
+
+
+def _build_test_db(
+    tmp_path: Path,
+    stem: str,
+    records: list[dict[str, object]],
+) -> Path:
+    jsonl_path = tmp_path / f"{stem}.jsonl"
+    db_path = tmp_path / f"{stem}.db"
+    _write_jsonl(jsonl_path, records)
+    jsonl_to_sql(jsonl_path, db_path)
+    return db_path
 
 
 def test_sql_merge_returns_warning_for_partial_failures(
@@ -310,3 +331,131 @@ def test_sql_merge_combines_group_counts(
         {"group": "EI90", "count": 1},
     ]
     assert result["data"]["matched_element_count"] == 5
+
+
+def test_sql_merge_list_applies_limit_after_global_sort(tmp_path: Path) -> None:
+    db_a = _build_test_db(
+        tmp_path,
+        "doors_a",
+        [
+            {
+                "ExpressId": 1,
+                "GlobalId": "door-m",
+                "IfcType": "IfcDoor",
+                "Name": "M Door",
+            },
+            {
+                "ExpressId": 2,
+                "GlobalId": "door-z",
+                "IfcType": "IfcDoor",
+                "Name": "Z Door",
+            },
+        ],
+    )
+    db_b = _build_test_db(
+        tmp_path,
+        "doors_b",
+        [
+            {
+                "ExpressId": 1,
+                "GlobalId": "door-a",
+                "IfcType": "IfcDoor",
+                "Name": "A Door",
+            },
+            {
+                "ExpressId": 2,
+                "GlobalId": "door-b",
+                "IfcType": "IfcDoor",
+                "Name": "B Door",
+            },
+        ],
+    )
+
+    decision = RouteDecision(
+        route="sql",
+        reason="sql list route",
+        sql_request=SqlRequest(
+            intent="list",
+            ifc_class="IfcDoor",
+            level_like=None,
+            limit=2,
+        ),
+    )
+
+    result = execute_sql_query(decision, [db_a, db_b])
+
+    assert result["data"]["total_count"] == 4
+    assert [item["name"] for item in result["data"]["items"]] == [
+        "A Door",
+        "B Door",
+    ]
+
+
+def test_sql_merge_group_applies_limit_after_full_histogram_merge(
+    tmp_path: Path,
+) -> None:
+    db_a = _build_test_db(
+        tmp_path,
+        "group_a",
+        [
+            {
+                "ExpressId": express_id,
+                "GlobalId": f"door-a-{express_id}",
+                "IfcType": "IfcDoor",
+                "Name": f"Door A {express_id}",
+                "PropertySets": {
+                    "Official": {"Pset_DoorCommon": {"FireRating": fire_rating}}
+                },
+            }
+            for express_id, fire_rating in enumerate(
+                ["EI30", "EI30", "EI30", "EI30", "EI60", "EI60", "EI60"],
+                start=1,
+            )
+        ],
+    )
+    db_b = _build_test_db(
+        tmp_path,
+        "group_b",
+        [
+            {
+                "ExpressId": express_id,
+                "GlobalId": f"door-b-{express_id}",
+                "IfcType": "IfcDoor",
+                "Name": f"Door B {express_id}",
+                "PropertySets": {
+                    "Official": {"Pset_DoorCommon": {"FireRating": fire_rating}}
+                },
+            }
+            for express_id, fire_rating in enumerate(
+                [
+                    "EI30",
+                    "EI30",
+                    "EI30",
+                    "EI30",
+                    "EI90",
+                    "EI90",
+                    "EI90",
+                    "EI90",
+                    "EI90",
+                ],
+                start=1,
+            )
+        ],
+    )
+
+    decision = RouteDecision(
+        route="sql",
+        reason="sql group route",
+        sql_request=SqlRequest(
+            intent="group",
+            ifc_class="IfcDoor",
+            level_like=None,
+            group_by=SqlFieldRef(source="property", field="FireRating"),
+            limit=1,
+        ),
+    )
+
+    result = execute_sql_query(decision, [db_a, db_b])
+
+    assert result["data"]["groups"] == [{"group": "EI30", "count": 8}]
+    assert result["data"]["matched_element_count"] == 16

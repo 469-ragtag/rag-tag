@@ -9,6 +9,7 @@ from rag_tag.graph_contract import EVIDENCE_LIMIT, collect_evidence
 from rag_tag.ifc_class_taxonomy import expand_ifc_class_filter
 from rag_tag.level_normalization import canonicalize_level
 from rag_tag.router import SqlFieldRef, SqlRequest, SqlValueFilter
+from rag_tag.sql_element_lookup import decode_db_value
 
 _ELEMENT_GROUP_FIELDS: dict[str, str] = {
     "ifc_class": "e.ifc_class",
@@ -18,6 +19,7 @@ _ELEMENT_GROUP_FIELDS: dict[str, str] = {
     "name": "e.name",
 }
 _TYPED_JSON_PREFIX = "json:"
+_NUMERIC_AGGREGATE_OPS = frozenset({"sum", "avg", "min", "max"})
 
 
 class SqlQueryError(RuntimeError):
@@ -127,11 +129,12 @@ def _execute_list(
         "SELECT e.express_id, e.global_id, e.ifc_class, e.name, e.level, e.type_name "
         f"FROM elements e{scope['joins']}{scope['where_sql']} "
         "GROUP BY e.express_id, e.global_id, e.ifc_class, e.name, e.level, e.type_name "
-        "ORDER BY e.name LIMIT ?"
+        "ORDER BY e.name"
     )
-    list_params = [*count_params, limit]
+    list_params = list(count_params)
     rows = conn.execute(list_query, list_params).fetchall()
-    items = [_sql_item_payload(row) for row in rows]
+    full_items = [_sql_item_payload(row) for row in rows]
+    items = full_items[:limit]
     evidence = collect_evidence(items, source_tool="query_ifc_sql")
     summary = _list_summary(request, total_count, limit)
     return {
@@ -144,6 +147,7 @@ def _execute_list(
             "items": items,
             "evidence": evidence,
             "summary": summary,
+            "merge_state": {"items": full_items},
             "sql": {
                 "query": list_query,
                 "params": list_params,
@@ -178,6 +182,7 @@ def _execute_aggregate(
     aggregate_join_params: list[object] = []
     aggregate_value_expr = None
     aggregate_count_expr = "COUNT(DISTINCT e.express_id)"
+    compiled_field: dict[str, Any] | None = None
 
     if request.aggregate_field is not None:
         compiled_field = _compile_field_join("aggf", request.aggregate_field)
@@ -185,6 +190,21 @@ def _execute_aggregate(
         aggregate_join_params = compiled_field["params"]
         aggregate_value_expr = compiled_field["value_expr"]
         aggregate_count_expr = f"COUNT({aggregate_value_expr})"
+
+    if (
+        aggregate_op in _NUMERIC_AGGREGATE_OPS
+        and request.aggregate_field is not None
+        and request.aggregate_field.source == "property"
+        and compiled_field is not None
+    ):
+        _validate_numeric_property_aggregate(
+            conn,
+            request,
+            scope,
+            compiled_field,
+            aggregate_join_sql,
+            aggregate_join_params,
+        )
 
     if aggregate_op == "count":
         query = (
@@ -211,7 +231,7 @@ def _execute_aggregate(
     row = conn.execute(query, params).fetchone()
 
     aggregate_value = row["aggregate_value"] if row else None
-    if aggregate_value is not None and aggregate_op in {"sum", "avg", "min", "max"}:
+    if aggregate_value is not None and aggregate_op in _NUMERIC_AGGREGATE_OPS:
         aggregate_value = float(aggregate_value)
 
     if request.aggregate_field is None:
@@ -300,22 +320,22 @@ def _execute_group(
         "FROM elements e"
         f"{scope['joins']}{compiled_field['join_sql']}{scope['where_sql']} "
         f"AND {group_presence_expr} "
-        "GROUP BY group_value ORDER BY count DESC, group_value LIMIT ?"
+        "GROUP BY group_value ORDER BY count DESC, group_value"
     )
     params = [
         *scope["join_params"],
         *compiled_field["params"],
         *scope["where_params"],
-        limit,
     ]
     rows = conn.execute(query, params).fetchall()
-    groups = [
+    all_groups = [
         {
             "group": row["group_value"],
             "count": int(row["count"]),
         }
         for row in rows
     ]
+    groups = all_groups[:limit]
     matched_count_query = (
         "SELECT COUNT(DISTINCT e.express_id) AS matched_element_count "
         "FROM elements e"
@@ -368,6 +388,7 @@ def _execute_group(
             "limit": limit,
             "evidence": evidence,
             "summary": summary,
+            "merge_state": {"groups": all_groups},
             "sql": {
                 "query": query,
                 "params": params,
@@ -493,7 +514,7 @@ def _compile_field_join(alias: str, field: SqlFieldRef) -> dict[str, Any]:
     if field.source == "property":
         key_sql, key_params = _compile_property_key_conditions(field.field, "src")
         join_sql = (
-            " LEFT JOIN (SELECT element_id, "
+            " LEFT JOIN (SELECT element_id, src.value AS raw_value, "
             f"{_property_value_expr('src')} AS field_value, "
             "ROW_NUMBER() OVER (PARTITION BY element_id "
             "ORDER BY is_official DESC, id ASC) AS rn "
@@ -506,6 +527,7 @@ def _compile_field_join(alias: str, field: SqlFieldRef) -> dict[str, Any]:
             "select_expr": f"{alias}.field_value",
             "value_expr": f"CAST({alias}.field_value AS REAL)",
             "presence_expr": f"{alias}.field_value IS NOT NULL",
+            "raw_value_expr": f"{alias}.raw_value",
         }
 
     key_sql, key_params = _compile_quantity_key_conditions(field.field, "src")
@@ -522,7 +544,46 @@ def _compile_field_join(alias: str, field: SqlFieldRef) -> dict[str, Any]:
         "select_expr": f"{alias}.field_value",
         "value_expr": f"CAST({alias}.field_value AS REAL)",
         "presence_expr": f"{alias}.field_value IS NOT NULL",
+        "raw_value_expr": None,
     }
+
+
+def _validate_numeric_property_aggregate(
+    conn: sqlite3.Connection,
+    request: SqlRequest,
+    scope: dict[str, Any],
+    compiled_field: dict[str, Any],
+    aggregate_join_sql: str,
+    aggregate_join_params: list[object],
+) -> None:
+    raw_value_expr = compiled_field.get("raw_value_expr")
+    if not raw_value_expr:
+        return
+
+    query = (
+        f"SELECT {raw_value_expr} AS raw_value "
+        f"FROM elements e{scope['joins']}{aggregate_join_sql}{scope['where_sql']} "
+        f"AND {compiled_field['presence_expr']}"
+    )
+    params = [
+        *scope["join_params"],
+        *aggregate_join_params,
+        *scope["where_params"],
+    ]
+    for row in conn.execute(query, params):
+        if _is_numeric_aggregate_value(decode_db_value(row["raw_value"])):
+            continue
+        field_name = (
+            request.aggregate_field.field if request.aggregate_field else "field"
+        )
+        raise SqlQueryError(
+            f"Aggregate field '{field_name}' is not numeric; "
+            f"{request.aggregate_op} only supports numeric property or quantity fields."
+        )
+
+
+def _is_numeric_aggregate_value(value: Any) -> bool:
+    return isinstance(value, int | float) and not isinstance(value, bool)
 
 
 def _compile_property_key_conditions(

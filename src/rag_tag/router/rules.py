@@ -120,10 +120,16 @@ _LEVEL_STOP_WORDS = re.compile(
 _BUILDING_CONTEXT_RE = re.compile(
     r"\b(?:in|inside|within|of)\s+the\s+(?:building|house|structure|model|project)\b"
 )
-_PREDEFINED_TYPE_RE = re.compile(
-    r"\bpredefined\s+type\s+([A-Za-z0-9_ -]+)", re.IGNORECASE
+_PREDEFINED_TYPE_RE = re.compile(r"\bpredefined\s+type\s+(?P<value>.+)", re.IGNORECASE)
+_TYPE_NAME_RE = re.compile(r"\btype\s+name\s+(?P<value>.+)", re.IGNORECASE)
+_NAMED_FILTER_BOUNDARY_RE = re.compile(
+    r"(?:,|;|[.?!:])|\s+(?:"
+    r"on\s+(?:level|storey|story|floor)\b|"
+    r"where\b|with\b|having\b|whose\b|without\b|and\b|or\b|"
+    r"near\b|adjacent\b|connected\b"
+    r")",
+    re.IGNORECASE,
 )
-_TYPE_NAME_RE = re.compile(r"\btype\s+name\s+([A-Za-z0-9_ -]+)", re.IGNORECASE)
 
 _PROPERTY_FIELD_ALIASES: tuple[tuple[str, str], ...] = (
     ("thermal transmittance", "ThermalTransmittance"),
@@ -175,19 +181,27 @@ def route_question_rule(question: str) -> RouteDecision:
     if sql_intent is None:
         return RouteDecision("graph", "No SQL intent detected", None)
 
+    predefined_type, predefined_type_span = _detect_named_filter_match(
+        q, _PREDEFINED_TYPE_RE
+    )
+    type_name, type_name_span = _detect_named_filter_match(q, _TYPE_NAME_RE)
     property_filters, quantity_filters = _detect_structured_filters(q)
     if (
         sql_intent in {"count", "list"}
         and _has_property_cues(q_lower)
+        and predefined_type is None
+        and type_name is None
         and not property_filters
         and not quantity_filters
     ):
         return RouteDecision("graph", "Property/constraint cue detected", None)
 
     level_like = _detect_level_like(q_lower)
-    predefined_type = _detect_named_filter(q, _PREDEFINED_TYPE_RE)
-    type_name = _detect_named_filter(q, _TYPE_NAME_RE)
     suppressed_spans = _suppressed_class_alias_spans(q_lower)
+    if predefined_type_span is not None:
+        suppressed_spans.append(predefined_type_span)
+    if type_name_span is not None:
+        suppressed_spans.append(type_name_span)
     ifc_classes = _detect_ifc_classes(q, ignored_spans=suppressed_spans)
     if len(ifc_classes) > 1:
         return RouteDecision("graph", "Multiple IFC classes mentioned", None)
@@ -333,7 +347,7 @@ def _suppressed_class_alias_spans(question_lower: str) -> list[tuple[int, int]]:
     match = _LEVEL_RE.search(question_lower)
     if match:
         raw = match.group(2).strip()
-        trimmed = _LEVEL_STOP_WORDS.split(raw)[0].strip()
+        trimmed = _LEVEL_STOP_WORDS.split(raw)[0].strip().rstrip(".,;:?!")
         if trimmed:
             spans.append((match.start(1), match.start(2) + len(trimmed)))
 
@@ -356,7 +370,7 @@ def _detect_level_like(question_lower: str) -> str | None:
         return None
     level_kind = match.group(1).strip().lower()
     raw = match.group(2).strip()
-    raw = _LEVEL_STOP_WORDS.split(raw)[0].strip()
+    raw = _LEVEL_STOP_WORDS.split(raw)[0].strip().rstrip(".,;:?!")
     if not raw:
         return None
     if level_kind in {"storey", "story", "floor"}:
@@ -462,11 +476,34 @@ def _normalize_filter_value(value: str) -> str | int | float | bool:
 
 
 def _detect_named_filter(question: str, pattern: re.Pattern[str]) -> str | None:
+    value, _span = _detect_named_filter_match(question, pattern)
+    return value
+
+
+def _detect_named_filter_match(
+    question: str,
+    pattern: re.Pattern[str],
+) -> tuple[str | None, tuple[int, int] | None]:
     match = pattern.search(question)
     if not match:
-        return None
-    cleaned = match.group(1).strip()
-    return cleaned or None
+        return None, None
+
+    raw_value = match.group("value")
+    leading_trimmed = raw_value.lstrip()
+    leading_offset = len(raw_value) - len(leading_trimmed)
+    boundary_match = _NAMED_FILTER_BOUNDARY_RE.search(leading_trimmed)
+    candidate = (
+        leading_trimmed[: boundary_match.start()]
+        if boundary_match is not None
+        else leading_trimmed
+    )
+    cleaned = candidate.rstrip(" ,.;:?!")
+    if not cleaned:
+        return None, None
+
+    value_start = match.start("value") + leading_offset
+    value_end = value_start + len(cleaned)
+    return cleaned, (value_start, value_end)
 
 
 def _mentions_generic_elements(question_lower: str) -> bool:

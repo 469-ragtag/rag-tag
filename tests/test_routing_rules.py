@@ -75,3 +75,29 @@ def test_average_property_routes_to_sql_aggregate() -> None:
     assert decision.sql_request.aggregate_field is not None
     assert decision.sql_request.aggregate_field.source == "property"
     assert decision.sql_request.aggregate_field.field == "UValue"
+
+
+def test_predefined_type_filter_routes_to_sql_without_greedy_capture() -> None:
+    decision = route_question_rule(
+        "List doors with predefined type SINGLE_SWING_LEFT on level 1."
+    )
+
+    assert decision.route == "sql"
+    assert decision.sql_request is not None
+    assert decision.sql_request.ifc_class == "IfcDoor"
+    assert decision.sql_request.predefined_type == "SINGLE_SWING_LEFT"
+    assert decision.sql_request.level_like == "level 1"
+
+
+def test_type_name_filter_stops_at_clause_boundaries() -> None:
+    decision = route_question_rule(
+        "List windows with type name Triple Glazed Unit, where property UValue <= 1.0"
+    )
+
+    assert decision.route == "sql"
+    assert decision.sql_request is not None
+    assert decision.sql_request.ifc_class == "IfcWindow"
+    assert decision.sql_request.type_name == "Triple Glazed Unit"
+    assert decision.sql_request.property_filters[0].field == "UValue"
+    assert decision.sql_request.property_filters[0].op == "lte"
+    assert decision.sql_request.property_filters[0].value == 1.0

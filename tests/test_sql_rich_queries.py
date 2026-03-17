@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from rag_tag.ifc_sql_tool import query_ifc_sql
+import pytest
+
+from rag_tag.ifc_sql_tool import SqlQueryError, query_ifc_sql
 from rag_tag.parser.jsonl_to_sql import jsonl_to_sql
 from rag_tag.router.models import SqlFieldRef, SqlRequest, SqlValueFilter
 
@@ -198,3 +200,19 @@ def test_quantity_filters_work_for_count_queries(tmp_path: Path) -> None:
     )
 
     assert result["data"]["count"] == 1
+
+
+def test_non_numeric_property_aggregate_raises_clear_error(tmp_path: Path) -> None:
+    db_path = _build_test_db(tmp_path)
+
+    with pytest.raises(SqlQueryError, match="is not numeric"):
+        query_ifc_sql(
+            db_path,
+            SqlRequest(
+                intent="aggregate",
+                ifc_class="IfcDoor",
+                level_like="Level 1",
+                aggregate_op="avg",
+                aggregate_field=SqlFieldRef(source="property", field="FireRating"),
+            ),
+        )

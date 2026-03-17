@@ -2677,7 +2677,7 @@ class NetworkXGraphBackend:
                     candidate_index[node_id] = existing
                     return
 
-                existing["score"] = max(int(existing["score"]), score)
+                previous_score = int(existing.get("score", 0))
                 existing["candidate_type"] = (
                     "equipment"
                     if existing["candidate_type"] == "equipment"
@@ -2693,13 +2693,15 @@ class NetworkXGraphBackend:
                 ):
                     existing["seed_nodes"].append(seed_record)
                 current_path_length = int(existing.get("path_length", 999))
-                if (
-                    score > int(existing["score"])
-                    or len(full_path_ids) - 1 < current_path_length
-                ):
+                next_path_length = len(full_path_ids) - 1
+                should_replace_path = score > previous_score or (
+                    score == previous_score and next_path_length < current_path_length
+                )
+                existing["score"] = max(previous_score, score)
+                if should_replace_path:
                     existing["path"] = grounded_path
                     existing["steps"] = steps
-                    existing["path_length"] = len(full_path_ids) - 1
+                    existing["path_length"] = next_path_length
 
             relation_graph = build_relation_graph(_SERVING_SPACE_NETWORK_RELATIONS)
             for seed_id, seed in seed_map.items():
