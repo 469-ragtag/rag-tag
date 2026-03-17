@@ -161,7 +161,22 @@ def test_aggregate_elements_counts_exact_ids_and_reports_unmatched(
     assert data["matched_element_count"] == 2
     assert data["unmatched_element_count"] == 1
     assert data["unmatched_element_ids"] == ["missing-id"]
-    assert data["evidence"][0]["global_id"] == "WALLA"
+    assert data["evidence"] == [
+        {
+            "global_id": "WALLA",
+            "id": "Element::wall-a",
+            "label": "Wall A",
+            "class_": "IfcWall",
+            "source_tool": "aggregate_elements",
+        },
+        {
+            "global_id": "WALLB",
+            "id": "Element::wall-b",
+            "label": "Wall B",
+            "class_": "IfcWall",
+            "source_tool": "aggregate_elements",
+        },
+    ]
 
 
 def test_aggregate_elements_supports_quantity_sum(tmp_path: Path) -> None:
@@ -228,7 +243,50 @@ def test_group_elements_by_property_groups_by_core_column(tmp_path: Path) -> Non
         ("Level 2", 1),
     ]
     assert data["groups"][0]["sample"][0]["field_value"] == "Level 1"
-    assert data["evidence"][0]["global_id"] == "WALLA"
+    assert data["evidence"] == [
+        {
+            "global_id": "WALLA",
+            "id": "Element::wall-a",
+            "label": "Wall A",
+            "class_": "IfcWall",
+            "source_tool": "group_elements_by_property",
+            "match_reason": "value=Level 1",
+        },
+        {
+            "global_id": "DOORA",
+            "id": "Element::door-a",
+            "label": "Door A",
+            "class_": "IfcDoor",
+            "source_tool": "group_elements_by_property",
+            "match_reason": "value=Level 1",
+        },
+        {
+            "global_id": "WALLB",
+            "id": "Element::wall-b",
+            "label": "Wall B",
+            "class_": "IfcWall",
+            "source_tool": "group_elements_by_property",
+            "match_reason": "value=Level 2",
+        },
+    ]
+    assert data["groups"][0]["evidence"] == [
+        {
+            "global_id": "WALLA",
+            "id": "Element::wall-a",
+            "label": "Wall A",
+            "class_": "IfcWall",
+            "source_tool": "group_elements_by_property",
+            "match_reason": "value=Level 1",
+        },
+        {
+            "global_id": "DOORA",
+            "id": "Element::door-a",
+            "label": "Door A",
+            "class_": "IfcDoor",
+            "source_tool": "group_elements_by_property",
+            "match_reason": "value=Level 1",
+        },
+    ]
 
 
 def test_bridge_tools_require_sqlite_context_db() -> None:

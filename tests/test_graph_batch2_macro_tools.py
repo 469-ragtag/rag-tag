@@ -140,6 +140,58 @@ def test_trace_distribution_network_returns_bounded_grounded_results() -> None:
     assert data["evidence"][0]["match_reason"] == "start_node"
 
 
+def test_trace_distribution_network_orders_same_depth_results_deterministically() -> (
+    None
+):
+    graph = nx.MultiDiGraph()
+    graph.add_node(
+        "Element::root",
+        label="Root",
+        class_="IfcPipeSegment",
+        properties={"GlobalId": "ROOT"},
+    )
+    graph.add_node(
+        "Element::zulu",
+        label="Zulu branch",
+        class_="IfcPipeSegment",
+        properties={"GlobalId": "ZULU"},
+    )
+    graph.add_node(
+        "Element::alpha",
+        label="Alpha branch",
+        class_="IfcPipeSegment",
+        properties={"GlobalId": "ALPHA"},
+    )
+    graph.add_edge(
+        "Element::root",
+        "Element::zulu",
+        relation="ifc_connected_to",
+        source="ifc",
+    )
+    graph.add_edge(
+        "Element::root",
+        "Element::alpha",
+        relation="ifc_connected_to",
+        source="ifc",
+    )
+
+    result = query_ifc_graph(
+        graph,
+        "trace_distribution_network",
+        {
+            "start": "Element::root",
+            "max_depth": 1,
+            "relations": ["ifc_connected_to"],
+        },
+    )
+
+    assert result["status"] == "ok"
+    assert [item["id"] for item in result["data"]["results"]] == [
+        "Element::alpha",
+        "Element::zulu",
+    ]
+
+
 def test_find_shortest_path_returns_ordered_path_and_steps() -> None:
     graph = _build_batch2_graph()
 
@@ -172,6 +224,34 @@ def test_find_shortest_path_returns_ordered_path_and_steps() -> None:
         "belongs_to_system",
     ]
     assert data["path_length"] == 4
+    assert data["evidence"][0] == {
+        "global_id": "PIPEA",
+        "id": "Element::pipe-a",
+        "label": "Pipe A",
+        "class_": "IfcPipeSegment",
+        "source_tool": "find_shortest_path",
+        "match_reason": "start_node",
+    }
+    assert data["evidence"][1] == {
+        "global_id": "AHU1",
+        "id": "Element::ahu-1",
+        "label": "AHU 1",
+        "class_": "IfcUnitaryEquipment",
+        "source_tool": "find_shortest_path",
+        "match_reason": "end_node",
+    }
+    assert any(
+        item
+        == {
+            "global_id": "PIPEB",
+            "id": "Element::pipe-b",
+            "label": "Pipe B",
+            "class_": "IfcPipeSegment",
+            "source_tool": "find_shortest_path",
+            "match_reason": "step=1",
+        }
+        for item in data["evidence"]
+    )
 
 
 def test_find_by_classification_matches_normalized_label_and_context_evidence() -> None:
@@ -194,6 +274,12 @@ def test_find_by_classification_matches_normalized_label_and_context_evidence() 
     assert data["matched_classifications"][0]["id"] == "Classification::Pr_70_70_63"
     assert any(
         item.get("id") == "Classification::Pr_70_70_63" for item in data["evidence"]
+    )
+    assert any(
+        item.get("id") == "Classification::Pr_70_70_63"
+        and item.get("match_reason") == "normalized_label"
+        and item.get("source_tool") == "find_by_classification"
+        for item in data["evidence"]
     )
 
 
@@ -222,6 +308,14 @@ def test_find_equipment_serving_space_finds_upstream_equipment() -> None:
         "System::Supply Air",
         "Element::ahu-1",
     ]
+    assert data["evidence"][0] == {
+        "global_id": "SPACE101",
+        "id": "Element::space-101",
+        "label": "Room 101",
+        "class_": "IfcSpace",
+        "source_tool": "find_equipment_serving_space",
+        "match_reason": "space_anchor",
+    }
 
 
 def test_find_equipment_serving_space_returns_terminal_fallback_warning() -> None:

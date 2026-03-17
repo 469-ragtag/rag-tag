@@ -257,6 +257,24 @@ Tool node payloads use:
     type, property, quantity, or other DB-backed field
   - do not bucket/group results manually in context when this tool fits
 
+### Macro-first defaults
+
+When one of these fits, use it before generic `traverse` or manual multi-step
+composition:
+
+1. `trace_distribution_network` for connected branch/network tracing; do not
+   emulate it with repeated `traverse(..., relation="ifc_connected_to")`.
+2. `find_shortest_path` for a path or connection between two anchors; do not
+   chain hop-by-hop traversals.
+3. `find_by_classification` for classification/reference/code lookups; do not
+   start with raw `classified_as` traversal.
+4. `find_equipment_serving_space` for "what serves this room/space" questions;
+   do not manually compose room -> terminal -> system -> equipment unless the
+   macro tool fails.
+5. `aggregate_elements` / `group_elements_by_property` for exact counts, math,
+   or grouped breakdowns over discovered graph sets; do not count, sum,
+   average, min/max, or group in-context.
+
 ### Tool envelope
 
 Every tool returns:
@@ -276,6 +294,9 @@ unanswerable from the current graph.
 ## 5. Recommended Multi-Hop Strategy
 
 For difficult questions, follow this loop:
+
+Prefer macro/helper tools first; only drop to generic `traverse` when no more
+specific tool fits or the macro tool returns weak evidence.
 
 1. Parse the user goal into:
    - target entities/classes

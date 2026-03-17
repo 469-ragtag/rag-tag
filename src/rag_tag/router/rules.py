@@ -90,6 +90,12 @@ _AVG_CUES = ("average", "avg", "mean")
 _MIN_CUES = ("minimum", "min", "lowest", "smallest")
 _MAX_CUES = ("maximum", "max", "highest", "largest")
 _SUM_CUES = ("sum of", "summed", "total")
+_GRAPH_MACRO_CUES = (
+    "classification",
+    "classified",
+    "serves",
+    "served by",
+)
 _GROUP_CUES = (
     re.compile(r"\bgroup\b.*\bby\b"),
     re.compile(r"\bbreak\s+down\b.*\bby\b"),
@@ -171,7 +177,11 @@ def route_question_rule(question: str) -> RouteDecision:
     q = question.strip()
     q_lower = q.lower()
 
-    if _has_spatial_cues(q_lower) or _has_relation_cues(q_lower):
+    if (
+        _has_spatial_cues(q_lower)
+        or _has_relation_cues(q_lower)
+        or _has_macro_graph_cues(q_lower)
+    ):
         return RouteDecision("graph", "Spatial/relationship cue detected", None)
 
     measure_field = _detect_measure_field(q)
@@ -251,6 +261,10 @@ def _has_spatial_cues(question_lower: str) -> bool:
 
 def _has_relation_cues(question_lower: str) -> bool:
     return "contains" in question_lower or "contained" in question_lower
+
+
+def _has_macro_graph_cues(question_lower: str) -> bool:
+    return any(cue in question_lower for cue in _GRAPH_MACRO_CUES)
 
 
 def _has_property_cues(question_lower: str) -> bool:
@@ -434,7 +448,10 @@ def _detect_structured_filters(
         scope = match.group(1).strip().lower()
         field = normalize_sql_field_key(match.group(2))
         op = _normalize_filter_op(match.group(3))
-        value = _normalize_filter_value(match.group(4))
+        raw_value = _trim_clause_value(match.group(4))
+        if raw_value is None:
+            continue
+        value = _normalize_filter_value(raw_value)
         filter_item = SqlValueFilter(field=field, op=op, value=value)
         if scope == "property":
             property_filters.append(filter_item)
@@ -475,6 +492,18 @@ def _normalize_filter_value(value: str) -> str | int | float | bool:
         return cleaned
 
 
+def _trim_clause_value(raw_value: str) -> str | None:
+    leading_trimmed = raw_value.lstrip()
+    boundary_match = _NAMED_FILTER_BOUNDARY_RE.search(leading_trimmed)
+    candidate = (
+        leading_trimmed[: boundary_match.start()]
+        if boundary_match is not None
+        else leading_trimmed
+    )
+    cleaned = candidate.rstrip(" ,.;:?!")
+    return cleaned or None
+
+
 def _detect_named_filter(question: str, pattern: re.Pattern[str]) -> str | None:
     value, _span = _detect_named_filter_match(question, pattern)
     return value
@@ -489,18 +518,12 @@ def _detect_named_filter_match(
         return None, None
 
     raw_value = match.group("value")
-    leading_trimmed = raw_value.lstrip()
-    leading_offset = len(raw_value) - len(leading_trimmed)
-    boundary_match = _NAMED_FILTER_BOUNDARY_RE.search(leading_trimmed)
-    candidate = (
-        leading_trimmed[: boundary_match.start()]
-        if boundary_match is not None
-        else leading_trimmed
-    )
-    cleaned = candidate.rstrip(" ,.;:?!")
+    cleaned = _trim_clause_value(raw_value)
     if not cleaned:
         return None, None
 
+    leading_trimmed = raw_value.lstrip()
+    leading_offset = len(raw_value) - len(leading_trimmed)
     value_start = match.start("value") + leading_offset
     value_end = value_start + len(cleaned)
     return cleaned, (value_start, value_end)

@@ -23,6 +23,23 @@ def test_system_prompt_allows_lightweight_markdown_answers() -> None:
     assert "Use lightweight Markdown in `answer`" in SYSTEM_PROMPT
     assert "Do not use ASCII-art tables" in SYSTEM_PROMPT
     assert "Lightweight Markdown\nis allowed inside the `answer` field" in SYSTEM_PROMPT
+
+
+def test_system_prompt_makes_macro_first_preferences_explicit_and_ordered() -> None:
+    assert "### Macro-first defaults" in SYSTEM_PROMPT
+    assert "use it before generic `traverse` or manual multi-step" in SYSTEM_PROMPT
+    assert "Prefer macro/helper tools first" in SYSTEM_PROMPT
+
+    ordered_preferences = [
+        "1. `trace_distribution_network`",
+        "2. `find_shortest_path`",
+        "3. `find_by_classification`",
+        "4. `find_equipment_serving_space`",
+        "5. `aggregate_elements` / `group_elements_by_property`",
+    ]
+    positions = [SYSTEM_PROMPT.index(item) for item in ordered_preferences]
+
+    assert positions == sorted(positions)
     assert "find_container_elements_excluding" in SYSTEM_PROMPT
     assert "trace_distribution_network" in SYSTEM_PROMPT
     assert "find_shortest_path" in SYSTEM_PROMPT
@@ -31,3 +48,6 @@ def test_system_prompt_allows_lightweight_markdown_answers() -> None:
     assert "aggregate_elements" in SYSTEM_PROMPT
     assert "group_elements_by_property" in SYSTEM_PROMPT
     assert "do not count or sum mentally" in SYSTEM_PROMPT
+    assert (
+        "do not count, sum,\n   average, min/max, or group in-context" in SYSTEM_PROMPT
+    )
