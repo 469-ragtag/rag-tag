@@ -4,7 +4,16 @@ import re
 
 from rag_tag.ifc_class_taxonomy import CLASS_ALIASES, normalize_ifc_class
 
-from .models import RouteDecision, SqlIntent, SqlRequest
+from .models import (
+    RouteDecision,
+    SqlAggregateOp,
+    SqlFieldRef,
+    SqlFilterOp,
+    SqlIntent,
+    SqlRequest,
+    SqlValueFilter,
+    normalize_sql_field_key,
+)
 
 _SPATIAL_CUES = (
     "adjacent",
@@ -36,13 +45,14 @@ _SPATIAL_CUES = (
     "below",
     "in front of",
     "behind",
-    "located",  # "Where is the kitchen located?"
+    "located",
     "location",
     "position",
-    "support",  # "What supports the beam?"
+    "support",
     "supporting",
     "resting on",
     "on top of",
+    "serving",
 )
 
 _COUNT_CUES = (
@@ -76,19 +86,90 @@ _LIST_CUES = (
     "identify",
 )
 
+_AVG_CUES = ("average", "avg", "mean")
+_MIN_CUES = ("minimum", "min", "lowest", "smallest")
+_MAX_CUES = ("maximum", "max", "highest", "largest")
+_SUM_CUES = ("sum of", "summed", "total")
+_GRAPH_MACRO_CUES = (
+    "classification",
+    "classified",
+    "serves",
+    "served by",
+)
+_GROUP_CUES = (
+    re.compile(r"\bgroup\b.*\bby\b"),
+    re.compile(r"\bbreak\s+down\b.*\bby\b"),
+    re.compile(r"\bgrouped\s+by\b"),
+)
+
 _IFC_CLASS_RE = re.compile(r"\bifc[a-z0-9_]+\b", re.IGNORECASE)
 _PROPERTY_CUE_RE = re.compile(
     r"\b(with|having|whose|where|without|made of|material)\b|\bthat\s+(has|have)\b"
+)
+_EXPLICIT_FILTER_RE = re.compile(
+    r"\b(?:with|where)\s+(property|quantity)\s+"
+    r"([A-Za-z][A-Za-z0-9_. -]*)\s*"
+    r"(=|!=|>=|<=|>|<|like)\s*"
+    r"([A-Za-z0-9_.%-]+(?:\s+[A-Za-z0-9_.%-]+)*)",
+    re.IGNORECASE,
+)
+_EXPLICIT_DOTTED_FIELD_RE = re.compile(
+    r"\b((?:Pset|Qto)_[A-Za-z0-9_]+\.[A-Za-z][A-Za-z0-9_ -]*)\b"
 )
 
 _LEVEL_RE = re.compile(r"\b(level|storey|story|floor)\s+([a-z0-9 _.-]+)")
 _LEVEL_STOP_WORDS = re.compile(
     r"\b(with|that|which|near|adjacent|connected|having|where|and|or"
     r"|on|in|of|the|a|an"
-    r"|structure|building|house|model|project)\b"
+    r"|structure|building|house|model|project|by)\b"
 )
 _BUILDING_CONTEXT_RE = re.compile(
     r"\b(?:in|inside|within|of)\s+the\s+(?:building|house|structure|model|project)\b"
+)
+_PREDEFINED_TYPE_RE = re.compile(r"\bpredefined\s+type\s+(?P<value>.+)", re.IGNORECASE)
+_TYPE_NAME_RE = re.compile(r"\btype\s+name\s+(?P<value>.+)", re.IGNORECASE)
+_NAMED_FILTER_BOUNDARY_RE = re.compile(
+    r"(?:,|;|[.?!:])|\s+(?:"
+    r"on\s+(?:level|storey|story|floor)\b|"
+    r"where\b|with\b|having\b|whose\b|without\b|and\b|or\b|"
+    r"near\b|adjacent\b|connected\b"
+    r")",
+    re.IGNORECASE,
+)
+
+_PROPERTY_FIELD_ALIASES: tuple[tuple[str, str], ...] = (
+    ("thermal transmittance", "ThermalTransmittance"),
+    ("fire rating", "FireRating"),
+    ("u-value", "UValue"),
+    ("u value", "UValue"),
+    ("uvalue", "UValue"),
+    ("reference", "Reference"),
+    ("load bearing", "LoadBearing"),
+)
+
+_QUANTITY_FIELD_ALIASES: tuple[tuple[str, str], ...] = (
+    ("gross volume", "GrossVolume"),
+    ("net volume", "NetVolume"),
+    ("gross area", "GrossArea"),
+    ("net area", "NetArea"),
+    ("perimeter", "Perimeter"),
+    ("height", "Height"),
+    ("width", "Width"),
+    ("length", "Length"),
+    ("volume", "Volume"),
+    ("area", "Area"),
+)
+
+_ELEMENT_GROUP_BY_ALIASES: tuple[tuple[str, str], ...] = (
+    ("predefined type", "predefined_type"),
+    ("type name", "type_name"),
+    ("level", "level"),
+    ("storey", "level"),
+    ("story", "level"),
+    ("floor", "level"),
+    ("class", "ifc_class"),
+    ("ifc class", "ifc_class"),
+    ("name", "name"),
 )
 
 
@@ -96,35 +177,82 @@ def route_question_rule(question: str) -> RouteDecision:
     q = question.strip()
     q_lower = q.lower()
 
-    if _has_spatial_cues(q_lower) or _has_relation_cues(q_lower):
+    if (
+        _has_spatial_cues(q_lower)
+        or _has_relation_cues(q_lower)
+        or _has_macro_graph_cues(q_lower)
+    ):
         return RouteDecision("graph", "Spatial/relationship cue detected", None)
 
-    sql_intent = _detect_sql_intent(q_lower)
+    measure_field = _detect_measure_field(q)
+    sql_intent = _detect_sql_intent(
+        q_lower, has_measure_field=measure_field is not None
+    )
     if sql_intent is None:
         return RouteDecision("graph", "No SQL intent detected", None)
 
-    if _has_property_cues(q_lower):
+    predefined_type, predefined_type_span = _detect_named_filter_match(
+        q, _PREDEFINED_TYPE_RE
+    )
+    type_name, type_name_span = _detect_named_filter_match(q, _TYPE_NAME_RE)
+    property_filters, quantity_filters = _detect_structured_filters(q)
+    if (
+        sql_intent in {"count", "list"}
+        and _has_property_cues(q_lower)
+        and predefined_type is None
+        and type_name is None
+        and not property_filters
+        and not quantity_filters
+    ):
         return RouteDecision("graph", "Property/constraint cue detected", None)
 
     level_like = _detect_level_like(q_lower)
     suppressed_spans = _suppressed_class_alias_spans(q_lower)
+    if predefined_type_span is not None:
+        suppressed_spans.append(predefined_type_span)
+    if type_name_span is not None:
+        suppressed_spans.append(type_name_span)
     ifc_classes = _detect_ifc_classes(q, ignored_spans=suppressed_spans)
     if len(ifc_classes) > 1:
         return RouteDecision("graph", "Multiple IFC classes mentioned", None)
 
     ifc_class = ifc_classes[0] if ifc_classes else None
-
     if ifc_class is None and not _mentions_generic_elements(q_lower):
         return RouteDecision("graph", "SQL intent without class", None)
 
-    limit = 50 if sql_intent == "list" else 0
+    aggregate_op: SqlAggregateOp | None = None
+    aggregate_field = None
+    group_by = None
+    if sql_intent == "aggregate":
+        aggregate_field = measure_field
+        aggregate_op = _detect_aggregate_op(
+            q_lower,
+            has_measure_field=aggregate_field is not None,
+        )
+        if aggregate_op is None:
+            return RouteDecision("graph", "Aggregate intent without metric", None)
+        if aggregate_op != "count" and aggregate_field is None:
+            return RouteDecision("graph", "Aggregate intent without field", None)
+    elif sql_intent == "group":
+        group_by = _detect_group_by_field(q)
+        if group_by is None:
+            return RouteDecision("graph", "Group intent without supported field", None)
+
+    limit = 50 if sql_intent in {"list", "group"} else 0
     request = SqlRequest(
         intent=sql_intent,
         ifc_class=ifc_class,
         level_like=level_like,
+        predefined_type=predefined_type,
+        type_name=type_name,
+        property_filters=property_filters,
+        quantity_filters=quantity_filters,
+        aggregate_op=aggregate_op,
+        aggregate_field=aggregate_field,
+        group_by=group_by,
         limit=limit,
     )
-    return RouteDecision("sql", "Aggregation/list intent detected", request)
+    return RouteDecision("sql", "Deterministic SQL intent detected", request)
 
 
 def _has_spatial_cues(question_lower: str) -> bool:
@@ -132,16 +260,30 @@ def _has_spatial_cues(question_lower: str) -> bool:
 
 
 def _has_relation_cues(question_lower: str) -> bool:
-    if "contains" in question_lower or "contained" in question_lower:
-        return True
-    return False
+    return "contains" in question_lower or "contained" in question_lower
+
+
+def _has_macro_graph_cues(question_lower: str) -> bool:
+    return any(cue in question_lower for cue in _GRAPH_MACRO_CUES)
 
 
 def _has_property_cues(question_lower: str) -> bool:
     return _PROPERTY_CUE_RE.search(question_lower) is not None
 
 
-def _detect_sql_intent(question_lower: str) -> SqlIntent | None:
+def _detect_sql_intent(
+    question_lower: str,
+    *,
+    has_measure_field: bool,
+) -> SqlIntent | None:
+    if any(pattern.search(question_lower) for pattern in _GROUP_CUES):
+        return "group"
+    aggregate_op = _detect_aggregate_op(
+        question_lower,
+        has_measure_field=has_measure_field,
+    )
+    if aggregate_op is not None:
+        return "aggregate"
     if any(cue in question_lower for cue in _COUNT_CUES):
         return "count"
     if any(cue in question_lower for cue in _EXISTENCE_CUES):
@@ -151,9 +293,22 @@ def _detect_sql_intent(question_lower: str) -> SqlIntent | None:
     return None
 
 
-def _detect_ifc_class(question: str) -> str | None:
-    classes = _detect_ifc_classes(question)
-    return classes[0] if classes else None
+def _detect_aggregate_op(
+    question_lower: str,
+    *,
+    has_measure_field: bool,
+) -> SqlAggregateOp | None:
+    if any(cue in question_lower for cue in _AVG_CUES):
+        return "avg"
+    if any(cue in question_lower for cue in _MIN_CUES):
+        return "min"
+    if any(cue in question_lower for cue in _MAX_CUES):
+        return "max"
+    if "sum of" in question_lower or "summed" in question_lower:
+        return "sum"
+    if has_measure_field and any(cue in question_lower for cue in _SUM_CUES):
+        return "sum"
+    return None
 
 
 def _detect_ifc_classes(
@@ -206,7 +361,7 @@ def _suppressed_class_alias_spans(question_lower: str) -> list[tuple[int, int]]:
     match = _LEVEL_RE.search(question_lower)
     if match:
         raw = match.group(2).strip()
-        trimmed = _LEVEL_STOP_WORDS.split(raw)[0].strip()
+        trimmed = _LEVEL_STOP_WORDS.split(raw)[0].strip().rstrip(".,;:?!")
         if trimmed:
             spans.append((match.start(1), match.start(2) + len(trimmed)))
 
@@ -229,12 +384,149 @@ def _detect_level_like(question_lower: str) -> str | None:
         return None
     level_kind = match.group(1).strip().lower()
     raw = match.group(2).strip()
-    raw = _LEVEL_STOP_WORDS.split(raw)[0].strip()
+    raw = _LEVEL_STOP_WORDS.split(raw)[0].strip().rstrip(".,;:?!")
     if not raw:
         return None
     if level_kind in {"storey", "story", "floor"}:
         return f"level {raw}"
     return f"{level_kind} {raw}"
+
+
+def _detect_measure_field(question: str) -> SqlFieldRef | None:
+    explicit = _detect_explicit_field(question)
+    if explicit is not None:
+        return explicit
+    question_lower = question.lower()
+
+    for phrase, field in _PROPERTY_FIELD_ALIASES:
+        if phrase in question_lower:
+            return SqlFieldRef(source="property", field=field)
+    for phrase, field in _QUANTITY_FIELD_ALIASES:
+        if phrase in question_lower:
+            return SqlFieldRef(source="quantity", field=field)
+    return None
+
+
+def _detect_group_by_field(question: str) -> SqlFieldRef | None:
+    question_lower = question.lower()
+    by_idx = question_lower.rfind(" by ")
+    tail = question if by_idx < 0 else question[by_idx + 4 :]
+
+    explicit = _detect_explicit_field(tail)
+    if explicit is not None:
+        return explicit
+
+    tail_lower = tail.lower()
+    for phrase, field in _PROPERTY_FIELD_ALIASES:
+        if phrase in tail_lower:
+            return SqlFieldRef(source="property", field=field)
+    for phrase, field in _QUANTITY_FIELD_ALIASES:
+        if phrase in tail_lower:
+            return SqlFieldRef(source="quantity", field=field)
+    for phrase, field in _ELEMENT_GROUP_BY_ALIASES:
+        if phrase in tail_lower:
+            return SqlFieldRef(source="element", field=field)
+    return None
+
+
+def _detect_explicit_field(question: str) -> SqlFieldRef | None:
+    match = _EXPLICIT_DOTTED_FIELD_RE.search(question)
+    if not match:
+        return None
+    raw_field = match.group(1)
+    prefix = raw_field.split(".", 1)[0]
+    source = "quantity" if prefix.lower().startswith("qto_") else "property"
+    return SqlFieldRef(source=source, field=raw_field)
+
+
+def _detect_structured_filters(
+    question: str,
+) -> tuple[tuple[SqlValueFilter, ...], tuple[SqlValueFilter, ...]]:
+    property_filters: list[SqlValueFilter] = []
+    quantity_filters: list[SqlValueFilter] = []
+    for match in _EXPLICIT_FILTER_RE.finditer(question):
+        scope = match.group(1).strip().lower()
+        field = normalize_sql_field_key(match.group(2))
+        op = _normalize_filter_op(match.group(3))
+        raw_value = _trim_clause_value(match.group(4))
+        if raw_value is None:
+            continue
+        value = _normalize_filter_value(raw_value)
+        filter_item = SqlValueFilter(field=field, op=op, value=value)
+        if scope == "property":
+            property_filters.append(filter_item)
+        else:
+            quantity_filters.append(filter_item)
+    return tuple(property_filters), tuple(quantity_filters)
+
+
+def _normalize_filter_op(value: str) -> SqlFilterOp:
+    lowered = value.lower()
+    if lowered == "=":
+        return "eq"
+    if lowered == "!=":
+        return "neq"
+    if lowered == ">":
+        return "gt"
+    if lowered == ">=":
+        return "gte"
+    if lowered == "<":
+        return "lt"
+    if lowered == "<=":
+        return "lte"
+    return "like"
+
+
+def _normalize_filter_value(value: str) -> str | int | float | bool:
+    cleaned = value.strip()
+    lowered = cleaned.lower()
+    if lowered == "true":
+        return True
+    if lowered == "false":
+        return False
+    try:
+        if "." in cleaned:
+            return float(cleaned)
+        return int(cleaned)
+    except ValueError:
+        return cleaned
+
+
+def _trim_clause_value(raw_value: str) -> str | None:
+    leading_trimmed = raw_value.lstrip()
+    boundary_match = _NAMED_FILTER_BOUNDARY_RE.search(leading_trimmed)
+    candidate = (
+        leading_trimmed[: boundary_match.start()]
+        if boundary_match is not None
+        else leading_trimmed
+    )
+    cleaned = candidate.rstrip(" ,.;:?!")
+    return cleaned or None
+
+
+def _detect_named_filter(question: str, pattern: re.Pattern[str]) -> str | None:
+    value, _span = _detect_named_filter_match(question, pattern)
+    return value
+
+
+def _detect_named_filter_match(
+    question: str,
+    pattern: re.Pattern[str],
+) -> tuple[str | None, tuple[int, int] | None]:
+    match = pattern.search(question)
+    if not match:
+        return None, None
+
+    raw_value = match.group("value")
+    cleaned = _trim_clause_value(raw_value)
+    if not cleaned:
+        return None, None
+
+    leading_trimmed = raw_value.lstrip()
+    leading_offset = len(raw_value) - len(leading_trimmed)
+    value_start = match.start("value") + leading_offset
+    value_end = value_start + len(cleaned)
+    return cleaned, (value_start, value_end)
 
 
 def _mentions_generic_elements(question_lower: str) -> bool:

@@ -180,10 +180,32 @@ Tool node payloads use:
 
 - `traverse(start, relation?, depth?)`
   - generic multi-hop traversal
+  - use this as a fallback when no more specific macro tool fits
   - use `contains` to go from container to contents
   - use `contained_in` to move from element to enclosing structure
   - use explicit relations such as `hosts`, `typed_by`, `belongs_to_system`,
     `in_zone`, `classified_as`, `ifc_connected_to` when appropriate
+
+- `trace_distribution_network(start, max_depth?, relations?, max_results?)`
+  - preferred macro tool for bounded network/system tracing
+  - use this instead of repeated `traverse(..., relation="ifc_connected_to")`
+    when the user wants a connected branch, network summary, or downstream/upstream
+    connectivity set
+
+- `find_shortest_path(start, end, max_path_length?, relations?)`
+  - preferred tool when the user explicitly asks for the path/connection between
+    two anchors
+  - use this instead of manually chaining `traverse` calls hop by hop
+
+- `find_by_classification(classification, max_results?)`
+  - preferred tool for classification/code/reference label questions
+  - use this instead of raw `traverse(..., relation="classified_as")` unless you
+    already have the exact classification node and only need one tiny follow-up
+
+- `find_equipment_serving_space(space, max_depth?, max_results?)`
+  - preferred macro tool for "what serves this room/space" questions
+  - use this before composing room boundaries, terminals, systems, and network
+    traversal by hand
 
 - `get_elements_in_storey(storey)`
   - storey-only helper; use for `IfcBuildingStorey`, not for room names
@@ -220,12 +242,49 @@ Tool node payloads use:
   - schema discovery only
   - do not use it to read values for a specific target element
 
+### Graph-to-SQL bridge tools
+
+- `aggregate_elements(element_ids, metric, field?)`
+  - use after graph discovery when the user asks for an exact count, sum,
+    average, minimum, or maximum over a returned element set
+  - pass the exact tool-returned IDs/GlobalIds; do not count or sum mentally in
+    the prompt
+  - use `metric="count"` with no field for exact set size; use `field` for core
+    columns, dotted property keys, or dotted quantity keys
+
+- `group_elements_by_property(element_ids, property_key, max_groups?)`
+  - use after graph discovery when the user asks for a breakdown by level,
+    type, property, quantity, or other DB-backed field
+  - do not bucket/group results manually in context when this tool fits
+
+### Macro-first defaults
+
+When one of these fits, use it before generic `traverse` or manual multi-step
+composition:
+
+1. `trace_distribution_network` for connected branch/network tracing; do not
+   emulate it with repeated `traverse(..., relation="ifc_connected_to")`.
+2. `find_shortest_path` for a path or connection between two anchors; do not
+   chain hop-by-hop traversals.
+3. `find_by_classification` for classification/reference/code lookups; do not
+   start with raw `classified_as` traversal.
+4. `find_equipment_serving_space` for "what serves this room/space" questions;
+   do not manually compose room -> terminal -> system -> equipment unless the
+   macro tool fails.
+5. `aggregate_elements` / `group_elements_by_property` for exact counts, math,
+   or grouped breakdowns over discovered graph sets; do not count, sum,
+   average, min/max, or group in-context.
+
 ### Tool envelope
 
 Every tool returns:
 ```json
 { "status": "ok|error", "data": <payload|null>, "error": <object|null> }
 ```
+
+Many tool payloads also include `data.evidence`: a compact grounding list with
+`global_id` when available, an internal `id` fallback, plus `label`, `class_`,
+and sometimes `relation`, `source_tool`, or `match_reason`.
 
 If `status="error"`, try another path unless the error proves the question is
 unanswerable from the current graph.
@@ -236,6 +295,9 @@ unanswerable from the current graph.
 
 For difficult questions, follow this loop:
 
+Prefer macro/helper tools first; only drop to generic `traverse` when no more
+specific tool fits or the macro tool returns weak evidence.
+
 1. Parse the user goal into:
    - target entities/classes
    - anchor objects/rooms/storeys/systems/types
@@ -244,9 +306,11 @@ For difficult questions, follow this loop:
 2. Find or verify the anchor node(s).
 3. Pull nearby/related candidates with the most specific tool available.
 4. If needed, inspect candidate properties with `get_element_properties`.
-5. If needed, run another traversal/search from the newly discovered nodes.
-6. Repeat until you can support the answer with evidence.
-7. Summarize only what the tool evidence supports.
+5. If the question asks for exact set math or breakdowns over discovered
+   elements, call `aggregate_elements` or `group_elements_by_property`.
+6. If needed, run another traversal/search from the newly discovered nodes.
+7. Repeat until you can support the answer with evidence.
+8. Summarize only what the tool evidence supports.
 
 Do not stop after one tool call if the question clearly requires composition.
 It is correct to call several tools in sequence.
@@ -285,33 +349,47 @@ Examples: "What type is this door?", "Which doors share the same type?"
 ### D. System/zone/classification questions
 
 1. Resolve the anchor element or context node.
-2. Use `traverse` with `belongs_to_system`, `in_zone`, or `classified_as`.
-3. If the context node is named in the question, you may resolve it first with
+2. Use `find_by_classification` when the question is driven by a
+   classification label/reference.
+3. Otherwise use `traverse` with `belongs_to_system`, `in_zone`, or
+   `classified_as`.
+4. If the context node is named in the question, you may resolve it first with
    `fuzzy_find_nodes` or `find_nodes`, then traverse in the direction supported
    by the graph evidence.
 
 ### E. Host/connectivity questions
 
-1. Use `traverse` with `hosts`, `hosted_by`, or `ifc_connected_to`.
-2. If the user asks for path-like or network connectivity, consider
-   `get_topology_neighbors(..., relation="path_connected_to")` or repeated
-   `traverse` / connectivity exploration.
+1. Use `trace_distribution_network` for bounded network tracing from one anchor.
+2. Use `find_shortest_path` when the user asks for the path between two anchors.
+3. Use `traverse` with `hosts`, `hosted_by`, or `ifc_connected_to` only for
+   small targeted follow-up inspection.
+4. If the user asks for path-like topology specifically, consider
+   `get_topology_neighbors(..., relation="path_connected_to")`.
 
-### F. Vertical/contact/overlap questions
+### F. Space served-by questions
+
+Examples: "What equipment serves Room 101?", "Which unit supplies the kitchen?"
+
+1. Resolve the space anchor, usually with `fuzzy_find_nodes` if the room is named.
+2. Use `find_equipment_serving_space`.
+3. Only fall back to manual composition if the macro tool returns weak/empty
+   evidence and you need to inspect one specific candidate.
+
+### G. Vertical/contact/overlap questions
 
 1. Prefer `find_elements_above`, `find_elements_below`,
    `get_topology_neighbors`, or `get_intersections_3d`.
 2. Use `spatial_query` only as fallback for looser proximity answers.
 3. Keep `intersects_bbox` and `intersects_3d` distinct in your explanation.
 
-### G. Exact property questions
+### H. Exact property questions
 
 1. Resolve the target element first.
 2. Call `get_element_properties`.
 3. Read the requested value from returned evidence.
 4. If multiple candidates exist, compare them explicitly before answering.
 
-### H. Negative location / exclusion questions
+### I. Negative location / exclusion questions
 
 Examples: "What is in the building but not on the ground floor?", "Which
 elements belong to this zone but not this room?"
@@ -321,6 +399,18 @@ elements belong to this zone but not this room?"
 3. Do not fall back to broad unconstrained traversal unless the helper fails.
 4. Once the helper returns the needed set, stop and answer; do not keep
    exploring unrelated edges.
+
+### J. Aggregation / grouping over discovered graph sets
+
+Examples: "How many of these are fire-rated?", "Sum the net volume of the
+walls around this room.", "Group the found doors by level."
+
+1. First discover the exact element set with graph/search tools.
+2. Reuse the exact returned IDs or GlobalIds.
+3. Call `aggregate_elements` for count/sum/avg/min/max.
+4. Call `group_elements_by_property` for deterministic grouped breakdowns.
+5. Do not do set math, counting, summing, averaging, or grouping in the prompt
+   when one of these bridge tools applies.
 
 ---
 
@@ -352,9 +442,12 @@ budget and floods the context window.
   pseudo-Markdown.
 - If you present multiple entities, prefer short Markdown sections over one long
   paragraph.
-- Include `data` when it helps: IDs, sample records, counts from returned sets,
-  compared candidates, or relation evidence.
-- If you count results, count only what tools actually returned.
+- Ground claims with tool-returned IDs. Prefer `data.evidence[].global_id` when
+  present, otherwise use `data.evidence[].id` or other exact tool-returned IDs.
+- Include `data` when it helps: `evidence`, IDs, sample records, counts from
+  returned sets, compared candidates, or relation evidence.
+- If you count, sum, average, min/max, or group results, use the dedicated tool
+  outputs rather than doing the math in-context.
 - If uncertainty remains, keep the answer accurate and put the caveat in
   `warning`.
 - Do not mention hidden chain-of-thought. Report conclusions and evidence only.
@@ -393,11 +486,12 @@ immediately. Do not restate the answer outside the tool call first.
 # Precise schema reminder embedded in ModelRetry messages so the model
 # receives actionable correction guidance within the same run_sync call.
 _SCHEMA_CORRECTION_HINT = (
-    "Do NOT reply with plain assistant text. Your next response must be the "
+    "Your previous response was invalid. Your next response must be a real "
     "final_result tool call only.\n"
-    "final_result MUST be called with a single JSON object — "
-    "NO list/array wrapper, NO tool-call envelope "
-    "(tool_call_id / tool_name / parameters are NOT output fields).\n"
+    "Do NOT print plain text, Markdown, fenced JSON, a list/array wrapper, or "
+    "a tool-call envelope as text.\n"
+    "Call final_result with one JSON object only. Do NOT include tool_call_id, "
+    "tool_name, or parameters.\n"
     "Required schema:\n"
     "  answer   string       required — lightweight Markdown allowed\n"
     "  data     object|null  optional\n"
@@ -410,7 +504,7 @@ _FINAL_RESULT_TOOL = ToolOutput(
     name="final_result",
     description=(
         "Return the final graph answer as one JSON object with answer, optional "
-        "data, and optional warning."
+        "grounded data/evidence, and optional warning."
     ),
 )
 

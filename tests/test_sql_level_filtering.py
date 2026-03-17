@@ -59,6 +59,16 @@ def test_sql_level_filter_is_exact_after_normalization(tmp_path: Path) -> None:
         SqlRequest(intent="count", ifc_class="IfcDoor", level_like="Level 2", limit=0),
     )
     assert level_2["data"]["count"] == 1
+    assert level_2["data"]["evidence"] == [
+        {
+            "global_id": "gid-level-2",
+            "id": 1,
+            "label": "Door L2",
+            "class_": "IfcDoor",
+            "source_tool": "query_ifc_sql",
+            "match_reason": "representative_match",
+        }
+    ]
 
     floor_2 = query_ifc_sql(
         db_path,
@@ -76,3 +86,27 @@ def test_sql_level_filter_is_exact_after_normalization(tmp_path: Path) -> None:
         ),
     )
     assert ground_floor["data"]["count"] == 1
+
+    listed = query_ifc_sql(
+        db_path,
+        SqlRequest(intent="list", ifc_class="IfcDoor", level_like="Level 2", limit=5),
+    )
+    assert listed["data"]["items"] == [
+        {
+            "express_id": 1,
+            "global_id": "gid-level-2",
+            "ifc_class": "IfcDoor",
+            "name": "Door L2",
+            "level": "Level 2",
+            "type_name": None,
+        }
+    ]
+    assert listed["data"]["evidence"] == [
+        {
+            "global_id": "gid-level-2",
+            "id": 1,
+            "label": "Door L2",
+            "class_": "IfcDoor",
+            "source_tool": "query_ifc_sql",
+        }
+    ]

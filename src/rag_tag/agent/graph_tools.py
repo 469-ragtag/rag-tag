@@ -18,7 +18,12 @@ from rapidfuzz import fuzz, process
 
 from rag_tag.graph import GraphRuntime, get_networkx_graph
 from rag_tag.graph.payloads import sanitize_properties_for_llm
-from rag_tag.graph_contract import make_error_envelope, normalize_relation_name
+from rag_tag.graph_contract import (
+    collect_evidence,
+    make_error_envelope,
+    normalize_relation_name,
+)
+from rag_tag.ifc_graph_tool import query_ifc_graph
 
 # Minimum rapidfuzz WRatio score (0-100) to accept a fuzzy class normalisation.
 _CLASS_FUZZY_THRESHOLD = 72
@@ -139,13 +144,20 @@ def _fuzzy_find_nodes_impl(
             )
 
     results.sort(key=lambda x: x["score"], reverse=True)
+    visible_results = results[:top_k]
+    evidence = collect_evidence(
+        visible_results,
+        source_tool="fuzzy_find_nodes",
+        match_reason_builder=lambda item: f"fuzzy_score={item['score']}",
+    )
     return {
         "status": "ok",
         "data": {
             "query": query,
             "class_filter": class_filter,
-            "matches": results[:top_k],
+            "matches": visible_results,
             "total": len(results),
+            "evidence": evidence,
         },
         "error": None,
     }
@@ -232,11 +244,14 @@ def _find_container_elements_excluding_impl(
     return {
         "status": "ok",
         "data": {
-            "container_id": resolved_container_id,
+            "container_id": container_id,
             "exclude_container_ids": exclude_container_ids,
             "count": len(element_ids),
             "elements": elements,
-            "results": elements,
+            "evidence": collect_evidence(
+                elements,
+                source_tool="find_container_elements_excluding",
+            ),
         },
         "error": None,
     }
@@ -562,4 +577,137 @@ def register_graph_tools(agent: Any) -> None:
         Returns the full, unredacted property envelope including PropertySets,
         Quantities, and flat properties.
         """
-        return ctx.deps.query("get_element_properties", {"element_id": element_id})
+        return query_ifc_graph(
+            ctx.deps, "get_element_properties", {"element_id": element_id}
+        )
+
+    @agent.tool
+    def trace_distribution_network(
+        ctx: RunContext[GraphRuntime],
+        start: str,
+        max_depth: int = 3,
+        relations: list[str] | None = None,
+        max_results: int = 25,
+    ) -> dict[str, Any]:
+        """Trace a bounded distribution/network path set from a starting node.
+
+        Prefer this over repeated `traverse` calls for network-style questions
+        such as "what is connected downstream of this terminal?" or "trace this
+        branch of the system".
+        """
+        params: dict[str, Any] = {
+            "start": start,
+            "max_depth": max_depth,
+            "max_results": max_results,
+        }
+        if relations:
+            params["relations"] = relations
+        return query_ifc_graph(ctx.deps, "trace_distribution_network", params)
+
+    @agent.tool
+    def find_equipment_serving_space(
+        ctx: RunContext[GraphRuntime],
+        space: str,
+        max_depth: int = 4,
+        max_results: int = 10,
+    ) -> dict[str, Any]:
+        """Find likely equipment serving a space using bounded graph reasoning.
+
+        Use this for HVAC/MEP-style questions about what serves a room/space.
+        It combines space boundary clues, terminal discovery, and bounded network
+        tracing instead of forcing the model to compose many low-level traversals.
+        """
+        return query_ifc_graph(
+            ctx.deps,
+            "find_equipment_serving_space",
+            {
+                "space": space,
+                "max_depth": max_depth,
+                "max_results": max_results,
+            },
+        )
+
+    @agent.tool
+    def find_shortest_path(
+        ctx: RunContext[GraphRuntime],
+        start: str,
+        end: str,
+        max_path_length: int = 8,
+        relations: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Compute a bounded shortest path between two graph anchors.
+
+        Prefer this over manual hop-by-hop traversal when the user asks for the
+        connection/path between two known elements or context nodes.
+        """
+        params: dict[str, Any] = {
+            "start": start,
+            "end": end,
+            "max_path_length": max_path_length,
+        }
+        if relations:
+            params["relations"] = relations
+        return query_ifc_graph(ctx.deps, "find_shortest_path", params)
+
+    @agent.tool
+    def find_by_classification(
+        ctx: RunContext[GraphRuntime],
+        classification: str,
+        max_results: int = 25,
+    ) -> dict[str, Any]:
+        """Find elements linked to matching classification context nodes.
+
+        Use this when the question mentions a classification label, code, or
+        reference rather than an IFC class name.
+        """
+        return query_ifc_graph(
+            ctx.deps,
+            "find_by_classification",
+            {
+                "classification": classification,
+                "max_results": max_results,
+            },
+        )
+
+    @agent.tool
+    def aggregate_elements(
+        ctx: RunContext[GraphRuntime],
+        element_ids: list[str],
+        metric: str,
+        field: str | None = None,
+    ) -> dict[str, Any]:
+        """Aggregate an exact graph-discovered element set via the SQLite context.
+
+        Use this after graph tools return element IDs or GlobalIds and the user
+        asks for a deterministic count, sum, average, minimum, or maximum over
+        that exact set. Do not count or sum in the prompt when this tool fits.
+        """
+        params: dict[str, Any] = {
+            "element_ids": element_ids,
+            "metric": metric,
+        }
+        if field is not None:
+            params["field"] = field
+        return query_ifc_graph(ctx.deps, "aggregate_elements", params)
+
+    @agent.tool
+    def group_elements_by_property(
+        ctx: RunContext[GraphRuntime],
+        element_ids: list[str],
+        property_key: str,
+        max_groups: int = 20,
+    ) -> dict[str, Any]:
+        """Group an exact graph-discovered element set by one DB-backed field.
+
+        Use this after graph discovery when the user asks for a deterministic
+        breakdown by level, type, property, or quantity value.
+        """
+        return query_ifc_graph(
+            ctx.deps,
+            "group_elements_by_property",
+            {
+                "element_ids": element_ids,
+                "property_key": property_key,
+                "max_groups": max_groups,
+            },
+        )

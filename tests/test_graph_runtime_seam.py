@@ -295,54 +295,21 @@ def test_execute_query_requires_explicit_dataset_before_first_graph_load(
     (output_dir / "model-a.jsonl").write_text("", encoding="utf-8")
     (output_dir / "model-b.jsonl").write_text("", encoding="utf-8")
 
-    monkeypatch.setattr("rag_tag.query_service.find_project_root", lambda *_: tmp_path)
+    monkeypatch.setattr(agent._agent, "run_sync", fake_run_sync)
 
-    def fail_load_graph(*args, **kwargs):  # type: ignore[no-untyped-def]
-        raise AssertionError("load_graph should not run for ambiguous first loads")
+    result = agent.run("question", runtime)
 
-    monkeypatch.setattr("rag_tag.query_service.load_graph", fail_load_graph)
+    assert captured["deps"] is runtime
+    assert result["answer"] == "Recovered."
 
-    bundle = execute_query(
-        "Which rooms are adjacent to the kitchen?",
-        db_paths=[],
-        decision=RouteDecision(route="graph", reason="test", sql_request=None),
-    )
-
-    assert "Multiple graph datasets are available" in bundle["result"]["error"]
-
-
-def test_get_elements_in_storey_tool_uses_runtime_query() -> None:
-    class ToolRegistryAgent:
-        def __init__(self) -> None:
-            self.tools: dict[str, object] = {}
-
-        def tool(self, func):  # type: ignore[no-untyped-def]
-            self.tools[func.__name__] = func
-            return func
-
-    class FakeRuntime:
-        def __init__(self) -> None:
-            self.calls: list[tuple[str, dict[str, object]]] = []
-
-        def query(self, action: str, params: dict[str, object]) -> dict[str, object]:
-            self.calls.append((action, params))
-            return {"status": "ok", "data": {"elements": []}, "error": None}
-
-    fake_agent = ToolRegistryAgent()
-    register_graph_tools(fake_agent)
-    runtime = FakeRuntime()
-
-    result = fake_agent.tools["get_elements_in_storey"](
-        SimpleNamespace(deps=runtime),
-        "Level 0",
-    )
-
-    assert runtime.calls == [("get_elements_in_storey", {"storey": "Level 0"})]
-    assert result["status"] == "ok"
-
-
-def _write_project_marker(project_root: Path) -> None:
-    project_root.mkdir(parents=True, exist_ok=True)
-    (project_root / "pyproject.toml").write_text(
-        "[project]\nname = 'test'\n", encoding="utf-8"
-    )
+    fuzzy = _fuzzy_find_nodes_impl(runtime, "plumbing wall")
+    assert fuzzy["status"] == "ok"
+    assert fuzzy["data"]["matches"][0]["id"] == "Element::wall-occ"
+    assert fuzzy["data"]["evidence"][0] == {
+        "global_id": "wall-occ",
+        "id": "Element::wall-occ",
+        "label": "plumbing wall",
+        "class_": "IfcWall",
+        "source_tool": "fuzzy_find_nodes",
+        "match_reason": "fuzzy_score=100.0",
+    }

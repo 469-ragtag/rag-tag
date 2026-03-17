@@ -18,6 +18,7 @@ _JSON_CODE_BLOCK_RE = re.compile(
 _FRAMEWORK_ERROR_MARKERS = (
     "validation error",
     "invalid json",
+    "please include your response in a tool call",
     "fix the errors and try again",
 )
 
@@ -185,14 +186,17 @@ def normalize_graph_answer_input(
 
 
 class GraphAnswer(BaseModel):
-    """Final answer from graph agent with optional data sample."""
+    """Final answer from graph agent with optional grounded structured data."""
 
     model_config = ConfigDict(extra="forbid")
 
     answer: str = Field(description="Natural language answer to the user's question")
     data: dict[str, object] | None = Field(
         default=None,
-        description="Optional structured data (e.g., sample elements, counts)",
+        description=(
+            "Optional grounded structured data such as evidence, IDs, counts, or "
+            "sample elements"
+        ),
     )
     warning: str | None = Field(
         default=None,
