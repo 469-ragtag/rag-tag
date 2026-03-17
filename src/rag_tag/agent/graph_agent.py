@@ -353,7 +353,7 @@ Examples: "What type is this door?", "Which doors share the same type?"
    classification label/reference.
 3. Otherwise use `traverse` with `belongs_to_system`, `in_zone`, or
    `classified_as`.
-3. If the context node is named in the question, you may resolve it first with
+4. If the context node is named in the question, you may resolve it first with
    `fuzzy_find_nodes` or `find_nodes`, then traverse in the direction supported
    by the graph evidence.
 
