@@ -110,6 +110,56 @@ def _build_batch2_graph() -> nx.MultiDiGraph:
     return graph
 
 
+def _build_directional_topology_graph() -> nx.MultiDiGraph:
+    graph = nx.MultiDiGraph()
+    graph.add_node(
+        "Element::wall-1",
+        label="Plumbing Wall",
+        class_="IfcWall",
+        properties={"GlobalId": "WALL1"},
+    )
+    graph.add_node(
+        "Element::sand-1",
+        label="Sand Bedding",
+        class_="IfcGeotechnicalStratum",
+        properties={"GlobalId": "SAND1"},
+    )
+    graph.add_node(
+        "Element::slab-1",
+        label="Slab 1",
+        class_="IfcSlab",
+        properties={"GlobalId": "SLAB1"},
+    )
+
+    graph.add_edge(
+        "Element::wall-1",
+        "Element::sand-1",
+        relation="above",
+        source="topology",
+        vertical_gap=0.15,
+    )
+    graph.add_edge(
+        "Element::sand-1",
+        "Element::wall-1",
+        relation="below",
+        source="topology",
+        vertical_gap=0.15,
+    )
+    graph.add_edge(
+        "Element::wall-1",
+        "Element::slab-1",
+        relation="intersects_bbox",
+        source="topology",
+    )
+    graph.add_edge(
+        "Element::slab-1",
+        "Element::wall-1",
+        relation="intersects_bbox",
+        source="topology",
+    )
+    return graph
+
+
 def test_trace_distribution_network_returns_bounded_grounded_results() -> None:
     graph = _build_batch2_graph()
 
@@ -403,4 +453,66 @@ def test_find_equipment_serving_space_replaces_weaker_path_with_stronger_one() -
         "Element::space-301",
         "Element::terminal-301",
         "Element::ahu-301",
+    ]
+
+
+def test_directional_topology_filters_do_not_treat_above_below_as_undirected() -> None:
+    graph = _build_directional_topology_graph()
+
+    above_neighbors = query_ifc_graph(
+        graph,
+        "get_topology_neighbors",
+        {"element_id": "Element::wall-1", "relation": "above"},
+    )
+    below_neighbors = query_ifc_graph(
+        graph,
+        "get_topology_neighbors",
+        {"element_id": "Element::wall-1", "relation": "below"},
+    )
+
+    assert above_neighbors["status"] == "ok"
+    assert below_neighbors["status"] == "ok"
+    assert [item["id"] for item in above_neighbors["data"]["neighbors"]] == [
+        "Element::sand-1"
+    ]
+    assert below_neighbors["data"]["neighbors"] == []
+
+
+def test_find_elements_above_and_below_use_anchor_relative_direction() -> None:
+    graph = _build_directional_topology_graph()
+
+    above = query_ifc_graph(
+        graph,
+        "find_elements_above",
+        {"element_id": "Element::wall-1"},
+    )
+    below = query_ifc_graph(
+        graph,
+        "find_elements_below",
+        {"element_id": "Element::wall-1"},
+    )
+    intersects = query_ifc_graph(
+        graph,
+        "get_topology_neighbors",
+        {"element_id": "Element::wall-1", "relation": "intersects_bbox"},
+    )
+
+    assert above["status"] == "ok"
+    assert below["status"] == "ok"
+    assert intersects["status"] == "ok"
+
+    assert above["data"]["results"] == []
+    assert below["data"]["results"] == [
+        {
+            "id": "Element::sand-1",
+            "global_id": "SAND1",
+            "label": "Sand Bedding",
+            "class_": "IfcGeotechnicalStratum",
+            "relation": "below",
+            "vertical_gap": 0.15,
+            "source": "topology",
+        }
+    ]
+    assert [item["id"] for item in intersects["data"]["neighbors"]] == [
+        "Element::slab-1"
     ]

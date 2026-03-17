@@ -62,6 +62,12 @@ _SERVING_SPACE_NETWORK_RELATIONS = {
     "hosts",
     "hosted_by",
 }
+_DIRECTIONAL_TOPOLOGY_RELATIONS = {
+    "above",
+    "below",
+    "space_bounded_by",
+    "bounds_space",
+}
 _TERMINAL_CLASS_NAMES = {
     "IfcFlowTerminal",
     "IfcDistributionPort",
@@ -458,6 +464,8 @@ class NetworkXGraphBackend:
                 for edge in iter_edge_dicts(nbr, node_id):
                     relation = normalize_relation_name(edge.get("relation"))
                     if relation not in allowed_relations or relation is None:
+                        continue
+                    if relation in _DIRECTIONAL_TOPOLOGY_RELATIONS:
                         continue
                     key = (
                         nbr,
@@ -1592,7 +1600,7 @@ class NetworkXGraphBackend:
                 return _err(f"Element not found: {element_id}", "not_found")
 
             results = []
-            for nbr, edge in topology_neighbors(resolved, {"above"}):
+            for nbr, edge in topology_neighbors(resolved, {"below"}):
                 gap = edge.get("vertical_gap")
                 if (
                     max_gap_value is not None
@@ -1607,7 +1615,7 @@ class NetworkXGraphBackend:
                         "global_id": node_global_id(nbr),
                         "label": G.nodes[nbr].get("label"),
                         "class_": G.nodes[nbr].get("class_"),
-                        "relation": current_relation,
+                        "relation": "above",
                         "vertical_gap": gap,
                         "source": edge_source(edge, current_relation),
                     }
@@ -1651,7 +1659,7 @@ class NetworkXGraphBackend:
                 return _err(f"Element not found: {element_id}", "not_found")
 
             results = []
-            for nbr, edge in topology_neighbors(resolved, {"below"}):
+            for nbr, edge in topology_neighbors(resolved, {"above"}):
                 gap = edge.get("vertical_gap")
                 if (
                     max_gap_value is not None
@@ -1666,7 +1674,7 @@ class NetworkXGraphBackend:
                         "global_id": node_global_id(nbr),
                         "label": G.nodes[nbr].get("label"),
                         "class_": G.nodes[nbr].get("class_"),
-                        "relation": current_relation,
+                        "relation": "below",
                         "vertical_gap": gap,
                         "source": edge_source(edge, current_relation),
                     }
