@@ -178,3 +178,82 @@ def test_ensure_graph_context_can_create_langgraph_agent(
 
     assert isinstance(runtime, GraphRuntime)
     assert isinstance(agent, LangGraphAgent)
+
+
+def test_ensure_graph_context_can_create_pydantic_graph_agent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("rag_tag.agent.graph_agent.get_agent_model", TestModel)
+    monkeypatch.setattr(
+        "rag_tag.query_service.resolve_graph_orchestrator",
+        lambda: "pydanticai",
+    )
+
+    runtime, agent = _ensure_graph_context(
+        wrap_networkx_graph(nx.MultiDiGraph()),
+        agent=None,
+        debug_llm_io=False,
+    )
+
+    assert isinstance(runtime, GraphRuntime)
+    assert isinstance(agent, GraphAgent)
+
+
+def test_ensure_graph_context_reuses_existing_graph_agent_without_selector_churn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("rag_tag.agent.graph_agent.get_agent_model", TestModel)
+    existing_agent = GraphAgent()
+    selector_calls = {"count": 0}
+
+    def fail_if_called() -> str:
+        selector_calls["count"] += 1
+        return "langgraph"
+
+    monkeypatch.setattr(
+        "rag_tag.query_service.resolve_graph_orchestrator",
+        fail_if_called,
+    )
+
+    runtime, agent = _ensure_graph_context(
+        wrap_networkx_graph(nx.MultiDiGraph()),
+        agent=existing_agent,
+        debug_llm_io=False,
+    )
+
+    assert isinstance(runtime, GraphRuntime)
+    assert agent is existing_agent
+    assert selector_calls["count"] == 0
+
+
+def test_ensure_graph_context_reuses_existing_langgraph_agent_without_selector_churn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "rag_tag.agent.langgraph_agent._ensure_langgraph_dependency",
+        lambda: None,
+    )
+    existing_agent = LangGraphAgent(
+        specialist=GraphAgent.__new__(GraphAgent),
+        orchestration_config=GraphOrchestrationConfig(),
+    )
+    selector_calls = {"count": 0}
+
+    def fail_if_called() -> str:
+        selector_calls["count"] += 1
+        return "pydanticai"
+
+    monkeypatch.setattr(
+        "rag_tag.query_service.resolve_graph_orchestrator",
+        fail_if_called,
+    )
+
+    runtime, agent = _ensure_graph_context(
+        wrap_networkx_graph(nx.MultiDiGraph()),
+        agent=existing_agent,
+        debug_llm_io=False,
+    )
+
+    assert isinstance(runtime, GraphRuntime)
+    assert agent is existing_agent
+    assert selector_calls["count"] == 0

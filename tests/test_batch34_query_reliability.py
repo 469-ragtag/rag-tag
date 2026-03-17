@@ -254,3 +254,56 @@ def test_execute_query_returns_error_when_langgraph_dependency_is_missing(
         "decision": "graph route",
         "error": "langgraph missing",
     }
+
+
+def test_execute_query_reuses_existing_agent_without_selector_churn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rag_tag import query_service
+
+    graph = nx.MultiDiGraph()
+    graph.graph["datasets"] = ["model-a"]
+    runtime = wrap_networkx_graph(graph)
+    decision = RouteDecision(route="graph", reason="graph route", sql_request=None)
+
+    existing_agent = GraphAgent.__new__(GraphAgent)
+    selector_calls = {"count": 0}
+
+    def fail_if_called() -> str:
+        selector_calls["count"] += 1
+        return "langgraph"
+
+    def fake_run(
+        question: str,
+        runtime: GraphRuntime,
+        *,
+        max_steps: int = 20,
+        trace: object | None = None,
+        run_id: str | None = None,
+    ) -> dict[str, object]:
+        del runtime, trace, run_id
+        return {"answer": f"reused:{question}", "data": {"max_steps": max_steps}}
+
+    monkeypatch.setattr(query_service, "resolve_graph_orchestrator", fail_if_called)
+    monkeypatch.setattr(existing_agent, "run", fake_run)
+
+    bundle = execute_query(
+        "Which rooms are adjacent to the kitchen?",
+        db_paths=[],
+        runtime=runtime,
+        agent=existing_agent,
+        decision=decision,
+        graph_dataset="model-a",
+        graph_max_steps=9,
+    )
+
+    assert selector_calls["count"] == 0
+    assert bundle["runtime"] is runtime
+    assert bundle["graph"] is runtime
+    assert bundle["agent"] is existing_agent
+    assert bundle["result"] == {
+        "route": "graph",
+        "decision": "graph route",
+        "answer": "reused:Which rooms are adjacent to the kitchen?",
+        "data": {"max_steps": 9},
+    }

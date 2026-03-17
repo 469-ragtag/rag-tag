@@ -138,6 +138,55 @@ def test_langgraph_agent_returns_error_when_fallback_is_disabled() -> None:
     assert result == {"error": "LangGraph orchestration failed: synthesis failed"}
 
 
+def test_langgraph_agent_budget_exhaustion_falls_back_once_and_returns() -> None:
+    specialist = FakeSpecialist()
+    agent = LangGraphAgent(
+        specialist=specialist,
+        orchestration_config=GraphOrchestrationConfig(
+            max_subquestions=1,
+            reserved_orchestration_steps=2,
+            fallback_to_graph_agent=True,
+        ),
+        decompose=lambda question: ["focused subquestion"],
+    )
+
+    result = agent.run(
+        "original question",
+        wrap_networkx_graph(nx.MultiDiGraph()),
+        max_steps=2,
+    )
+
+    assert specialist.calls == [("original question", 2)]
+    assert result["answer"] == "answer:original question"
+    assert "LangGraph orchestration failed; fell back to GraphAgent" in str(
+        result["warning"]
+    )
+    assert "Step budget exceeded before specialist call" in str(result["warning"])
+
+
+def test_langgraph_agent_budget_exhaustion_without_fallback_stays_bounded() -> None:
+    specialist = FakeSpecialist()
+    agent = LangGraphAgent(
+        specialist=specialist,
+        orchestration_config=GraphOrchestrationConfig(
+            max_subquestions=1,
+            reserved_orchestration_steps=2,
+            fallback_to_graph_agent=False,
+        ),
+        decompose=lambda question: ["focused subquestion"],
+    )
+
+    result = agent.run(
+        "original question",
+        wrap_networkx_graph(nx.MultiDiGraph()),
+        max_steps=2,
+    )
+
+    assert specialist.calls == []
+    assert "I could not gather enough graph evidence" in str(result["answer"])
+    assert "Step budget exceeded before specialist call" in str(result["warning"])
+
+
 def test_langgraph_agent_init_requires_langgraph_dependency(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

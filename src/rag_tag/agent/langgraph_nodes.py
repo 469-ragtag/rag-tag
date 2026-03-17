@@ -62,6 +62,7 @@ def run_specialist(
             f"Step budget exceeded before specialist call for '{subquestion}'."
         )
         state["fallback_required"] = state["fallback_to_graph_agent"]
+        state["current_subquestion_index"] = len(state["subquestions"])
         state["current_subquestion"] = None
         return state
 

@@ -79,6 +79,15 @@ class LangGraphAgent:
                         )
                     ),
                 )
+                if state["fallback_required"]:
+                    break
+
+            if state["fallback_required"] and state["fallback_to_graph_agent"]:
+                return _apply_fallback_warning(
+                    self._specialist.run(question, runtime, max_steps=max_steps),
+                    reason=_merge_warning_text(state["warnings"])
+                    or "Step budget exceeded before specialist call.",
+                )
 
             synthesize_answer(
                 state,

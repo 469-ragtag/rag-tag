@@ -142,6 +142,7 @@ def test_run_specialist_marks_fallback_when_budget_is_exhausted() -> None:
     )
 
     assert updated["fallback_required"] is True
+    assert updated["current_subquestion_index"] == len(updated["subquestions"])
     assert "Step budget exceeded before specialist call" in updated["warnings"][0]
     assert updated["specialist_results"] == []
 
