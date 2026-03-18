@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any, cast
 
 import networkx as nx
@@ -343,6 +344,364 @@ def test_import_networkx_graph_projects_dataset_metadata(monkeypatch) -> None:
 
     assert node_rows[0]["dataset"] == "model-a"
     assert rel_rows[0]["dataset"] == "model-a"
+
+
+def test_import_jsonl_files_streams_base_graph_into_neo4j(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    jsonl_path = tmp_path / "model-a.jsonl"
+    jsonl_path.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "GlobalId": "S1",
+                        "IfcType": "IfcBuildingStorey",
+                        "Name": "Level 0",
+                        "Hierarchy": {"Level": "Level 0"},
+                    }
+                ),
+                json.dumps(
+                    {
+                        "GlobalId": "WT1",
+                        "IfcType": "IfcWallType",
+                        "Name": "Wall Type 1",
+                        "Hierarchy": {},
+                    }
+                ),
+                json.dumps(
+                    {
+                        "GlobalId": "W1",
+                        "IfcType": "IfcWall",
+                        "Name": "Wall 1",
+                        "Hierarchy": {"ParentId": "S1", "Level": "Level 0"},
+                        "Geometry": {
+                            "Centroid": [1.0, 2.0, 3.0],
+                            "BoundingBox": {
+                                "min": [0.0, 0.0, 0.0],
+                                "max": [2.0, 2.0, 3.0],
+                            },
+                        },
+                        "Relationships": {
+                            "typed_by": ["WT1"],
+                            "ifc_connected_to": ["D1"],
+                            "belongs_to_system": [" Supply   Air "],
+                            "classified_as": ["UniFormat B2010"],
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "GlobalId": "D1",
+                        "IfcType": "IfcDoor",
+                        "Name": "Door 1",
+                        "Hierarchy": {"ParentId": "S1", "Level": "Level 0"},
+                        "Relationships": {"ifc_connected_to": ["W1"]},
+                    }
+                ),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    class _FakeDriverSession:
+        def run(self, query: str, **params):
+            calls.append((query, params))
+            return _FakeResult(rows=[])
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+    class _FakeDriver:
+        def session(self, database=None):
+            return _FakeDriverSession()
+
+        def close(self) -> None:
+            return None
+
+    class _FakeGraphDatabase:
+        @staticmethod
+        def driver(uri: str, auth: tuple[str, str]):
+            return _FakeDriver()
+
+    monkeypatch.setattr(jsonl_to_neo4j_module, "GraphDatabase", _FakeGraphDatabase)
+
+    jsonl_to_neo4j_module.import_jsonl_files(
+        [jsonl_path],
+        uri="bolt://test",
+        username="neo4j",
+        password="password",
+        batch_size=2,
+    )
+
+    node_rows = [
+        row
+        for query, params in calls
+        if query == INSERT_NODES
+        for row in cast(list[dict[str, object]], params["rows"])
+    ]
+    rel_rows = [
+        row
+        for query, params in calls
+        if query == INSERT_RELS
+        for row in cast(list[dict[str, object]], params["rows"])
+    ]
+
+    node_ids = {cast(str, row["node_id"]) for row in node_rows}
+    rel_triplets = {
+        (
+            cast(str, row["from"]),
+            cast(str, row["to"]),
+            cast(str, row["relation"]),
+        )
+        for row in rel_rows
+    }
+
+    assert "IfcProject" in node_ids
+    assert "IfcBuilding" in node_ids
+    assert "Storey::S1" in node_ids
+    assert "Element::WT1" in node_ids
+    assert "Element::W1" in node_ids
+    assert "Element::D1" in node_ids
+    assert "System::Supply Air" in node_ids
+    assert "Classification::UniFormat B2010" in node_ids
+
+    assert ("IfcProject", "IfcBuilding", "aggregates") in rel_triplets
+    assert ("IfcBuilding", "Storey::S1", "aggregates") in rel_triplets
+    assert ("Storey::S1", "Element::W1", "contains") in rel_triplets
+    assert ("Element::W1", "Storey::S1", "contained_in") in rel_triplets
+    assert ("Element::W1", "Element::WT1", "typed_by") in rel_triplets
+    assert ("Element::W1", "Element::D1", "ifc_connected_to") in rel_triplets
+    assert ("Element::D1", "Element::W1", "ifc_connected_to") in rel_triplets
+    assert ("Element::W1", "System::Supply Air", "belongs_to_system") in rel_triplets
+    assert (
+        "Element::W1",
+        "Classification::UniFormat B2010",
+        "classified_as",
+    ) in rel_triplets
+    assert all(
+        cast(str, row["relation"])
+        not in {"adjacent_to", "connected_to", "above", "below", "intersects_bbox"}
+        for row in rel_rows
+    )
+
+
+def test_import_jsonl_files_derives_spatial_and_topology_edges(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    jsonl_path = tmp_path / "model-a.jsonl"
+    jsonl_path.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "GlobalId": "S1",
+                        "IfcType": "IfcBuildingStorey",
+                        "Name": "Level 0",
+                        "Hierarchy": {"Level": "Level 0"},
+                    }
+                ),
+                json.dumps(
+                    {
+                        "GlobalId": "W1",
+                        "IfcType": "IfcWall",
+                        "Name": "Wall 1",
+                        "Hierarchy": {"ParentId": "S1", "Level": "Level 0"},
+                        "Geometry": {
+                            "Centroid": [1.0, 1.0, 1.0],
+                            "BoundingBox": {
+                                "min": [0.0, 0.0, 0.0],
+                                "max": [2.0, 2.0, 2.0],
+                            },
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "GlobalId": "D1",
+                        "IfcType": "IfcDoor",
+                        "Name": "Door 1",
+                        "Hierarchy": {"ParentId": "S1", "Level": "Level 0"},
+                        "Geometry": {
+                            "Centroid": [2.0, 2.0, 1.0],
+                            "BoundingBox": {
+                                "min": [1.0, 1.0, 0.0],
+                                "max": [3.0, 3.0, 2.0],
+                            },
+                        },
+                    }
+                ),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    class _FakeDriverSession:
+        def run(self, query: str, **params):
+            calls.append((query, params))
+            return _FakeResult(rows=[])
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+    class _FakeDriver:
+        def session(self, database=None):
+            return _FakeDriverSession()
+
+        def close(self) -> None:
+            return None
+
+    class _FakeGraphDatabase:
+        @staticmethod
+        def driver(uri: str, auth: tuple[str, str]):
+            return _FakeDriver()
+
+    monkeypatch.setattr(jsonl_to_neo4j_module, "GraphDatabase", _FakeGraphDatabase)
+
+    jsonl_to_neo4j_module.import_jsonl_files(
+        [jsonl_path],
+        uri="bolt://test",
+        username="neo4j",
+        password="password",
+        batch_size=10,
+    )
+
+    rel_rows = [
+        row
+        for query, params in calls
+        if query == INSERT_RELS
+        for row in cast(list[dict[str, object]], params["rows"])
+    ]
+
+    def _has_rel(source: str, target: str, relation: str, rel_source: str) -> bool:
+        return any(
+            cast(str, row["from"]) == source
+            and cast(str, row["to"]) == target
+            and cast(str, row["relation"]) == relation
+            and cast(str, row["source"]) == rel_source
+            for row in rel_rows
+        )
+
+    assert _has_rel("Element::W1", "Element::D1", "connected_to", "heuristic")
+    assert _has_rel("Element::D1", "Element::W1", "connected_to", "heuristic")
+    assert _has_rel("Element::W1", "Element::D1", "intersects_bbox", "topology")
+    assert _has_rel("Element::D1", "Element::W1", "intersects_bbox", "topology")
+    assert _has_rel("Element::W1", "Element::D1", "overlaps_xy", "topology")
+    assert _has_rel("Element::D1", "Element::W1", "overlaps_xy", "topology")
+
+
+def test_import_jsonl_files_partitioned_spatial_pass_keeps_neighbor_level_edges(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    jsonl_path = tmp_path / "model-a.jsonl"
+    jsonl_path.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "GlobalId": "W1",
+                        "IfcType": "IfcWall",
+                        "Name": "Wall 1",
+                        "Hierarchy": {"Level": "Level 0"},
+                        "Geometry": {
+                            "Centroid": [1.0, 1.0, 1.0],
+                            "BoundingBox": {
+                                "min": [0.0, 0.0, 0.0],
+                                "max": [2.0, 2.0, 2.0],
+                            },
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "GlobalId": "D1",
+                        "IfcType": "IfcDoor",
+                        "Name": "Door 1",
+                        "Hierarchy": {"Level": "Level 1"},
+                        "Geometry": {
+                            "Centroid": [1.5, 1.5, 1.2],
+                            "BoundingBox": {
+                                "min": [0.5, 0.5, 0.2],
+                                "max": [2.5, 2.5, 2.2],
+                            },
+                        },
+                    }
+                ),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    class _FakeDriverSession:
+        def run(self, query: str, **params):
+            calls.append((query, params))
+            return _FakeResult(rows=[])
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+    class _FakeDriver:
+        def session(self, database=None):
+            return _FakeDriverSession()
+
+        def close(self) -> None:
+            return None
+
+    class _FakeGraphDatabase:
+        @staticmethod
+        def driver(uri: str, auth: tuple[str, str]):
+            return _FakeDriver()
+
+    monkeypatch.setattr(jsonl_to_neo4j_module, "GraphDatabase", _FakeGraphDatabase)
+    monkeypatch.setattr(jsonl_to_neo4j_module, "FULL_DATASET_SPATIAL_LIMIT", 1)
+
+    jsonl_to_neo4j_module.import_jsonl_files(
+        [jsonl_path],
+        uri="bolt://test",
+        username="neo4j",
+        password="password",
+        batch_size=10,
+    )
+
+    rel_rows = [
+        row
+        for query, params in calls
+        if query == INSERT_RELS
+        for row in cast(list[dict[str, object]], params["rows"])
+    ]
+
+    assert any(
+        cast(str, row["from"]) == "Element::W1"
+        and cast(str, row["to"]) == "Element::D1"
+        and cast(str, row["relation"]) == "connected_to"
+        and cast(str, row["source"]) == "heuristic"
+        for row in rel_rows
+    )
+    assert any(
+        cast(str, row["from"]) == "Element::D1"
+        and cast(str, row["to"]) == "Element::W1"
+        and cast(str, row["relation"]) == "connected_to"
+        and cast(str, row["source"]) == "heuristic"
+        for row in rel_rows
+    )
 
 
 def test_set_context_db_path_updates_neo4j_backend_and_catalog_graph(
