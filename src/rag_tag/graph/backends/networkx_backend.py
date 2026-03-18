@@ -7,8 +7,7 @@ import sqlite3
 from collections import deque
 from typing import Any, Iterable
 
-import networkx as nx
-
+from rag_tag.graph.catalog import GraphCatalog
 from rag_tag.graph.payloads import (
     INTERNAL_PAYLOAD_MODE,
     build_node_payload,
@@ -39,6 +38,10 @@ from rag_tag.graph_contract import (
     normalize_relation_name,
     normalize_relation_source,
     relation_bucket,
+)
+from rag_tag.ifc_neo4j_tool import (
+    aggregate_catalog_elements,
+    group_catalog_elements,
 )
 
 _logger = logging.getLogger(__name__)
@@ -116,6 +119,56 @@ _EQUIPMENT_CLASS_NAMES = {
 }
 
 
+def _build_undirected_relation_adjacency(
+    graph: GraphCatalog,
+    allowed_relations: set[str],
+) -> dict[str, set[str]]:
+    adjacency: dict[str, set[str]] = {node_id: set() for node_id in graph.nodes}
+    for source_id, target_id, edge in graph.edges(data=True):
+        relation = normalize_relation_name(edge.get("relation"))
+        if relation is None or relation not in allowed_relations:
+            continue
+        adjacency.setdefault(source_id, set()).add(target_id)
+        adjacency.setdefault(target_id, set()).add(source_id)
+    return adjacency
+
+
+def _single_source_shortest_paths(
+    adjacency: dict[str, set[str]],
+    start: str,
+    *,
+    cutoff: int | None = None,
+) -> dict[str, list[str]]:
+    if start not in adjacency:
+        raise KeyError(start)
+
+    paths: dict[str, list[str]] = {start: [start]}
+    queue: deque[tuple[str, list[str]]] = deque([(start, [start])])
+    while queue:
+        node_id, path = queue.popleft()
+        depth = len(path) - 1
+        if cutoff is not None and depth >= cutoff:
+            continue
+        for neighbor_id in sorted(adjacency.get(node_id, ())):
+            if neighbor_id in paths:
+                continue
+            next_path = [*path, neighbor_id]
+            paths[neighbor_id] = next_path
+            queue.append((neighbor_id, next_path))
+    return paths
+
+
+def _shortest_path(
+    adjacency: dict[str, set[str]],
+    start: str,
+    end: str,
+) -> list[str]:
+    paths = _single_source_shortest_paths(adjacency, start)
+    if end not in paths:
+        raise ValueError("no_path")
+    return paths[end]
+
+
 def _ok_action(action: str, data: dict[str, Any] | None) -> dict[str, Any]:
     return make_ok_envelope(action, data)
 
@@ -124,10 +177,10 @@ def _err(message: str, code: str, details: dict | None = None) -> dict[str, Any]
     return make_error_envelope(message, code, details)
 
 
-class NetworkXGraphBackend:
-    """Concrete graph backend backed by a NetworkX graph."""
+class InMemoryCatalogBackend:
+    """Concrete graph backend backed by the in-memory graph catalog."""
 
-    name = "networkx"
+    name = "memory"
 
     def load(
         self,
@@ -166,8 +219,8 @@ class NetworkXGraphBackend:
         payload_mode: str,
     ) -> dict[str, Any]:
         G = runtime.backend_handle
-        if not isinstance(G, (nx.DiGraph, nx.MultiDiGraph)):
-            return _err("NetworkX backend handle is invalid", "invalid")
+        if not isinstance(G, GraphCatalog):
+            return _err("In-memory graph backend handle is invalid", "invalid")
 
         if not isinstance(action, str):
             return _err("Invalid action: action must be a string", "invalid")
@@ -1013,15 +1066,8 @@ class NetworkXGraphBackend:
 
         def build_relation_graph(
             allowed_relations: set[str],
-        ) -> nx.Graph:
-            relation_graph = nx.Graph()
-            relation_graph.add_nodes_from(G.nodes)
-            for source_id, target_id, edge in G.edges(data=True):
-                relation = edge_relation(edge)
-                if relation is None or relation not in allowed_relations:
-                    continue
-                relation_graph.add_edge(source_id, target_id)
-            return relation_graph
+        ) -> dict[str, set[str]]:
+            return _build_undirected_relation_adjacency(G, allowed_relations)
 
         def relation_priority(relation: str | None) -> tuple[int, str]:
             bucket = relation_bucket(relation)
@@ -1851,6 +1897,12 @@ class NetworkXGraphBackend:
                     f"Field is required for metric '{metric_value}'",
                     "missing_param",
                 )
+            return aggregate_catalog_elements(
+                G,
+                params.get("element_ids") or [],
+                metric_value,
+                field=field,
+            )
 
             element_refs, unresolved_ids, ref_err = resolve_requested_element_refs(
                 params.get("element_ids")
@@ -2024,6 +2076,12 @@ class NetworkXGraphBackend:
             if max_groups < 1:
                 return _err("max_groups must be >= 1", "invalid")
             max_groups = min(max_groups, 50)
+            return group_catalog_elements(
+                G,
+                params.get("element_ids") or [],
+                property_key,
+                max_groups,
+            )
 
             element_refs, unresolved_ids, ref_err = resolve_requested_element_refs(
                 params.get("element_ids")
@@ -2224,10 +2282,10 @@ class NetworkXGraphBackend:
 
             relation_graph = build_relation_graph(relation_filter)
             try:
-                paths = nx.single_source_shortest_path(
+                paths = _single_source_shortest_paths(
                     relation_graph, resolved_start, cutoff=max_depth
                 )
-            except nx.NodeNotFound:
+            except KeyError:
                 return _err(f"Start node not found: {start}", "not_found")
 
             ordered_paths = sorted(
@@ -2372,10 +2430,10 @@ class NetworkXGraphBackend:
 
             relation_graph = build_relation_graph(relation_filter)
             try:
-                path = nx.shortest_path(relation_graph, resolved_start, resolved_end)
-            except nx.NodeNotFound:
+                path = _shortest_path(relation_graph, resolved_start, resolved_end)
+            except KeyError:
                 return _err("Start or end node not found", "not_found")
-            except nx.NetworkXNoPath:
+            except ValueError:
                 return _err(
                     f"No path found between {resolved_start} and {resolved_end}",
                     "no_path",
@@ -2734,12 +2792,12 @@ class NetworkXGraphBackend:
                     )
 
                 try:
-                    seed_paths = nx.single_source_shortest_path(
+                    seed_paths = _single_source_shortest_paths(
                         relation_graph,
                         seed_id,
                         cutoff=max_depth,
                     )
-                except nx.NodeNotFound:
+                except KeyError:
                     continue
 
                 for candidate_id, network_path in seed_paths.items():
