@@ -5,12 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-import networkx as nx
-
 from rag_tag.agent import GraphAgent
-from rag_tag.graph import GraphRuntime, ensure_graph_runtime, load_graph_runtime
-from rag_tag.graph_contract import merge_evidence_items
-from rag_tag.ifc_sql_tool import SqlQueryError, query_ifc_sql
+from rag_tag.graph import GraphRuntime
+from rag_tag.graph.catalog import GraphCatalog
+from rag_tag.ifc_neo4j_tool import query_ifc_neo4j
 from rag_tag.paths import find_project_root
 from rag_tag.router import RouteDecision, SqlRequest, route_question
 
@@ -34,8 +32,8 @@ def find_sqlite_dbs() -> list[Path]:
 def load_graph(
     dataset: str | None = None,
     payload_mode: str | None = None,
-) -> nx.DiGraph:
-    """Build the NetworkX graph from JSONL output files.
+) -> GraphCatalog:
+    """Build the in-memory graph catalog from JSONL output files.
 
     Args:
         dataset: JSONL stem to load (e.g. ``"Building-Architecture"``).
@@ -78,7 +76,7 @@ def _resolve_context_db_path(
 
 
 def _require_explicit_graph_dataset(
-    runtime: GraphRuntime | nx.DiGraph | nx.MultiDiGraph | None,
+    runtime: GraphRuntime | GraphCatalog | None,
     graph_dataset: str | None,
 ) -> None:
     """Ensure graph_dataset is explicit when multiple datasets are available.
@@ -99,7 +97,7 @@ def _require_explicit_graph_dataset(
                 datasets = sorted({path.stem for path in output_dir.glob("*.jsonl")})
     elif isinstance(runtime, GraphRuntime):
         datasets = runtime.get_networkx_graph().graph.get("datasets")
-    elif isinstance(runtime, (nx.DiGraph, nx.MultiDiGraph)):
+    elif isinstance(runtime, GraphCatalog):
         datasets = runtime.graph.get("datasets")
 
     if datasets and len(datasets) > 1:
@@ -124,91 +122,37 @@ def _sql_warning_details(
 
 def execute_sql_query(
     decision: RouteDecision,
-    db_paths: list[Path],
+    runtime: GraphRuntime,
     *,
     strict_sql: bool = False,
 ) -> dict[str, Any]:
     if decision.sql_request is None:
         return _sql_error(decision, "Router did not produce a SQL request.")
-    if not db_paths:
-        return _sql_error(
-            decision, "No SQLite database found. Run rag-tag-jsonl-to-sql."
-        )
-
     req = decision.sql_request
     effective_limit = req.limit or 50
-
-    successful_payloads: list[dict[str, Any]] = []
-    combined_evidence: list[dict[str, Any]] = []
-    last_payload: dict[str, Any] = {}
-    failed_db_paths: list[str] = []
-    db_errors: list[dict[str, str]] = []
-
-    for db_path in db_paths:
-        try:
-            envelope = query_ifc_sql(db_path, req)
-        except SqlQueryError as exc:
-            failed_db_paths.append(str(db_path))
-            db_errors.append({"db_path": str(db_path), "error": str(exc)})
-            if strict_sql:
-                return _sql_error(
-                    decision,
-                    (
-                        "Strict SQL mode aborted due to database query failure: "
-                        f"{db_path}: {exc}"
-                    ),
-                    warning=_sql_warning_details(failed_db_paths, db_errors),
-                )
-            continue
-        if envelope["status"] != "ok":
-            failed_db_paths.append(str(db_path))
-            db_error = envelope.get("error")
-            db_errors.append(
-                {"db_path": str(db_path), "error": str(db_error or "Unknown SQL error")}
-            )
-            if strict_sql:
-                return _sql_error(
-                    decision,
-                    (
-                        "Strict SQL mode aborted due to database query failure: "
-                        f"{db_path}: {db_error or 'Unknown SQL error'}"
-                    ),
-                    warning=_sql_warning_details(failed_db_paths, db_errors),
-                )
-            continue
-        payload = envelope["data"]
-        last_payload = payload
-        successful_payloads.append(payload)
-        combined_evidence = merge_evidence_items(
-            combined_evidence,
-            payload.get("evidence"),
+    envelope = query_ifc_neo4j(runtime.get_networkx_graph(), req)
+    if envelope["status"] != "ok":
+        error = envelope.get("error") or {}
+        error_message = (
+            str(error.get("message"))
+            if isinstance(error, dict) and error.get("message")
+            else "Neo4j query failed."
         )
-
-    if not last_payload:
-        return _sql_error(
-            decision,
-            "All database queries failed.",
-            warning=_sql_warning_details(failed_db_paths, db_errors),
-        )
-
-    merged_payload = _merge_sql_payloads(successful_payloads, req, effective_limit)
+        return _sql_error(decision, error_message)
+    merged_payload = envelope["data"]
     result = {
         "route": "sql",
         "decision": decision.reason,
-        "db_paths": [str(p) for p in db_paths],
         "answer": merged_payload["summary"],
         "data": {
             **merged_payload,
-            "intent": last_payload.get("intent"),
-            "filters": last_payload.get("filters"),
+            "intent": merged_payload.get("intent"),
+            "filters": merged_payload.get("filters"),
             "limit": effective_limit,
-            "evidence": combined_evidence,
+            "evidence": merged_payload.get("evidence") or [],
         },
-        "sql": last_payload.get("sql"),
+        "sql": {"engine": "neo4j"},
     }
-    warning = _sql_warning_details(failed_db_paths, db_errors)
-    if warning is not None:
-        result["warning"] = warning
     return result
 
 
@@ -459,9 +403,9 @@ def execute_graph_query(
 def execute_query(
     question: str,
     db_paths: list[Path],
-    runtime: GraphRuntime | nx.DiGraph | nx.MultiDiGraph | None = None,
+    runtime: GraphRuntime | GraphCatalog | None = None,
     agent: GraphAgent | None = None,
-    graph: GraphRuntime | nx.DiGraph | nx.MultiDiGraph | None = None,
+    graph: GraphRuntime | GraphCatalog | None = None,
     *,
     decision: RouteDecision | None = None,
     debug_llm_io: bool = False,
@@ -476,7 +420,7 @@ def execute_query(
     Args:
         question: User question
         db_paths: All SQLite databases to query
-        graph: NetworkX graph (or None, will be loaded if needed)
+        graph: In-memory graph catalog/runtime override (or None)
         agent: Graph agent (or None, will be created if needed)
         decision: Optional precomputed routing decision
         debug_llm_io: Enable debug printing
@@ -506,10 +450,22 @@ def execute_query(
             decision = route_question(question, debug_llm_io=debug_llm_io)
 
         if decision.route == "sql":
-            result = execute_sql_query(decision, db_paths, strict_sql=strict_sql)
+            _require_explicit_graph_dataset(runtime, graph_dataset)
+            resolved_context_db = context_db or _resolve_context_db_path(
+                db_paths, graph_dataset
+            )
+            runtime, agent = _ensure_graph_context(
+                runtime or graph,
+                agent,
+                debug_llm_io,
+                graph_dataset,
+                resolved_context_db,
+                payload_mode=payload_mode,
+            )
+            result = execute_sql_query(decision, runtime, strict_sql=strict_sql)
             return {
                 "result": result,
-                "graph": graph,
+                "graph": runtime,
                 "agent": agent,
                 "runtime": runtime,
             }
@@ -557,7 +513,7 @@ def _normalize_db_path(raw_path: Path | str | None) -> str | None:
     return str(Path(raw_path).expanduser().resolve())
 
 
-def _clear_graph_db_caches(graph: nx.DiGraph) -> None:
+def _clear_graph_db_caches(graph: GraphCatalog) -> None:
     """Clear graph-scoped DB caches after context DB changes."""
     graph.graph.pop("_property_cache", None)
     graph.graph.pop("_property_key_cache", None)
@@ -571,7 +527,7 @@ def _clear_graph_db_caches(graph: nx.DiGraph) -> None:
 
 
 def _ensure_graph_context(
-    graph: GraphRuntime | nx.DiGraph | nx.MultiDiGraph | None,
+    graph: GraphRuntime | GraphCatalog | None,
     agent: GraphAgent | None,
     debug_llm_io: bool,
     graph_dataset: str | None = None,
@@ -582,7 +538,7 @@ def _ensure_graph_context(
 
     Args:
         graph: Existing graph or None to trigger loading. Can be a
-            GraphRuntime or NetworkX graph.
+            GraphRuntime or in-memory graph catalog.
         agent: Existing agent or None to trigger creation.
         debug_llm_io: Passed through to GraphAgent constructor.
         graph_dataset: JSONL stem for ``build_graph`` (None = all datasets).
@@ -594,25 +550,31 @@ def _ensure_graph_context(
     Returns:
         Tuple of (GraphRuntime, GraphAgent) ready for agent execution.
     """
-    # Extract the underlying NetworkX graph through the public runtime API.
+    # Extract the underlying in-memory catalog through the public runtime API.
     existing_runtime = graph if isinstance(graph, GraphRuntime) else None
-    nx_graph = (
+    catalog = (
         existing_runtime.get_networkx_graph() if existing_runtime is not None else graph
     )
 
-    if nx_graph is None:
-        nx_graph = load_graph(graph_dataset, payload_mode=payload_mode)
+    if catalog is None:
+        runtime = GraphRuntime.from_env(
+            db_path=db_path,
+            selected_datasets=[graph_dataset] if graph_dataset is not None else None,
+        )
+        if agent is None:
+            agent = GraphAgent(debug_llm_io=debug_llm_io)
+        return runtime, agent
 
     if db_path is not None:
         # Wire the active DB path into the graph for tool-level property lookup.
         # When the DB context changes on an existing graph instance, clear
         # graph-scoped property caches to avoid stale cross-DB reads.
         resolved_db_path = db_path.expanduser().resolve()
-        previous_db_path = _normalize_db_path(nx_graph.graph.get("_db_path"))
+        previous_db_path = _normalize_db_path(catalog.graph.get("_db_path"))
         current_db_path = str(resolved_db_path)
         if previous_db_path != current_db_path:
-            _clear_graph_db_caches(nx_graph)
-        nx_graph.graph["_db_path"] = resolved_db_path
+            _clear_graph_db_caches(catalog)
+        catalog.graph["_db_path"] = resolved_db_path
         if existing_runtime is not None:
             existing_runtime.set_context_db_path(resolved_db_path)
 
@@ -626,7 +588,7 @@ def _ensure_graph_context(
     if graph_dataset is not None:
         selected_datasets = [graph_dataset]
     else:
-        datasets = nx_graph.graph.get("datasets")
+        datasets = catalog.graph.get("datasets")
         if isinstance(datasets, list) and all(
             isinstance(item, str) for item in datasets
         ):
@@ -635,7 +597,7 @@ def _ensure_graph_context(
     # Create the runtime through the configured backend factory so checked-in
     # config defaults and one-off GRAPH_BACKEND overrides are both honored.
     runtime = GraphRuntime.from_env(
-        graph=nx_graph,
+        graph=catalog,
         db_path=db_path,
         selected_datasets=selected_datasets,
     )
