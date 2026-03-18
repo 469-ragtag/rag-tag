@@ -79,6 +79,7 @@ def route_with_llm(question: str, *, debug_llm_io: bool = False) -> RouteDecisio
         type_name=response.type_name,
         property_filters=tuple(
             SqlValueFilter(
+                source="property",
                 field=item.field,
                 op=item.op,
                 value=_coerce_filter_value(item.value),
@@ -87,6 +88,7 @@ def route_with_llm(question: str, *, debug_llm_io: bool = False) -> RouteDecisio
         ),
         quantity_filters=tuple(
             SqlValueFilter(
+                source="quantity",
                 field=item.field,
                 op=item.op,
                 value=_coerce_filter_value(item.value),

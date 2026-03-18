@@ -180,7 +180,14 @@ def test_avg_property_aggregate_and_filters_work(tmp_path: Path) -> None:
             intent="count",
             ifc_class="IfcWindow",
             level_like="ground floor",
-            property_filters=(SqlValueFilter(field="UValue", op="lte", value=1.0),),
+            property_filters=(
+                SqlValueFilter(
+                    source="property",
+                    field="UValue",
+                    op="lte",
+                    value=1.0,
+                ),
+            ),
         ),
     )
     assert filtered_result["data"]["count"] == 1
@@ -195,7 +202,14 @@ def test_quantity_filters_work_for_count_queries(tmp_path: Path) -> None:
             intent="count",
             ifc_class="IfcWall",
             level_like="Level 2",
-            quantity_filters=(SqlValueFilter(field="NetVolume", op="gte", value=12.0),),
+            quantity_filters=(
+                SqlValueFilter(
+                    source="quantity",
+                    field="NetVolume",
+                    op="gte",
+                    value=12.0,
+                ),
+            ),
         ),
     )
 
@@ -216,3 +230,55 @@ def test_non_numeric_property_aggregate_raises_clear_error(tmp_path: Path) -> No
                 aggregate_field=SqlFieldRef(source="property", field="FireRating"),
             ),
         )
+
+
+def test_element_name_filter_uses_elements_column_and_excludes_type_rows(
+    tmp_path: Path,
+) -> None:
+    jsonl_path = tmp_path / "name_filter.jsonl"
+    db_path = tmp_path / "name_filter.db"
+    _write_jsonl(
+        jsonl_path,
+        [
+            {
+                "ExpressId": 1,
+                "GlobalId": "roof-occurrence",
+                "IfcType": "IfcRoof",
+                "Name": "Main Roof",
+            },
+            {
+                "ExpressId": 2,
+                "GlobalId": "roof-type",
+                "IfcType": "IfcRoofType",
+                "Name": "Main Roof Type",
+            },
+            {
+                "ExpressId": 3,
+                "GlobalId": "roof-type-object",
+                "IfcType": "IfcTypeObject",
+                "Name": "Generic Roof Family",
+            },
+        ],
+    )
+    jsonl_to_sql(jsonl_path, db_path)
+
+    result = query_ifc_sql(
+        db_path,
+        SqlRequest(
+            intent="count",
+            ifc_class=None,
+            level_like=None,
+            element_filters=(
+                SqlValueFilter(
+                    source="element",
+                    field="name",
+                    op="like",
+                    value="%roof%",
+                ),
+            ),
+        ),
+    )
+
+    assert result["data"]["count"] == 1
+    assert "FROM properties" not in result["data"]["sql"]["query"]
+    assert "e.name" in result["data"]["sql"]["query"]

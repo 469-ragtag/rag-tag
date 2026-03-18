@@ -18,6 +18,16 @@ _ELEMENT_GROUP_FIELDS: dict[str, str] = {
     "type_name": "e.type_name",
     "name": "e.name",
 }
+_ELEMENT_FILTER_FIELDS: dict[str, str] = {
+    "express_id": "e.express_id",
+    "global_id": "e.global_id",
+    "ifc_class": "e.ifc_class",
+    "level": "e.level",
+    "level_key": "e.level_key",
+    "predefined_type": "e.predefined_type",
+    "type_name": "e.type_name",
+    "name": "e.name",
+}
 _TYPED_JSON_PREFIX = "json:"
 _NUMERIC_AGGREGATE_OPS = frozenset({"sum", "avg", "min", "max"})
 
@@ -434,6 +444,16 @@ def _compile_element_scope(
         where_clauses.append("COALESCE(e.type_name, '') = ? COLLATE NOCASE")
         where_params.append(request.type_name)
 
+    for filter_item in request.element_filters:
+        clause, params = _compile_element_filter(filter_item)
+        where_clauses.append(clause)
+        where_params.extend(params)
+
+    if _should_exclude_type_rows_for_name_search(request):
+        where_clauses.append(
+            "e.ifc_class != 'IfcTypeObject' AND e.ifc_class NOT LIKE '%Type'"
+        )
+
     for index, filter_item in enumerate(request.property_filters, start=1):
         clause, params = _compile_property_filter(filter_item, alias=f"pf{index}")
         where_clauses.append(clause)
@@ -450,6 +470,32 @@ def _compile_element_scope(
         "where_params": where_params,
         "resolved_ifc_classes": resolved_ifc_classes,
     }
+
+
+def _compile_element_filter(filter_item: SqlValueFilter) -> tuple[str, list[object]]:
+    column = _ELEMENT_FILTER_FIELDS.get(filter_item.field)
+    if column is None:
+        allowed = ", ".join(sorted(_ELEMENT_FILTER_FIELDS))
+        raise SqlQueryError(
+            f"Unsupported element filter field. Allowed fields: {allowed}."
+        )
+    compare_sql, compare_params = _compile_compare_clause(
+        column,
+        filter_item.op,
+        filter_item.value,
+        prefer_numeric=_is_numeric_element_field(filter_item.field),
+    )
+    return compare_sql, compare_params
+
+
+def _is_numeric_element_field(field: str) -> bool:
+    return field == "express_id"
+
+
+def _should_exclude_type_rows_for_name_search(request: SqlRequest) -> bool:
+    if request.ifc_class is not None:
+        return False
+    return any(filter_item.field == "name" for filter_item in request.element_filters)
 
 
 def _compile_property_filter(

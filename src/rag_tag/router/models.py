@@ -57,6 +57,7 @@ class SqlFieldRef:
 
 @dataclass(frozen=True)
 class SqlValueFilter:
+    source: SqlFieldSource
     field: str
     op: SqlFilterOp
     value: str | int | float | bool
@@ -72,6 +73,7 @@ class SqlRequest:
     level_like: str | None
     predefined_type: str | None = None
     type_name: str | None = None
+    element_filters: tuple[SqlValueFilter, ...] = ()
     property_filters: tuple[SqlValueFilter, ...] = ()
     quantity_filters: tuple[SqlValueFilter, ...] = ()
     aggregate_op: SqlAggregateOp | None = None
@@ -82,6 +84,9 @@ class SqlRequest:
     def __post_init__(self) -> None:
         if self.limit < 0:
             raise ValueError("SQL request limit must be non-negative")
+        _validate_filter_sources(self.element_filters, expected_source="element")
+        _validate_filter_sources(self.property_filters, expected_source="property")
+        _validate_filter_sources(self.quantity_filters, expected_source="quantity")
         if self.intent == "aggregate":
             if self.aggregate_op is None:
                 raise ValueError("Aggregate SQL requests require aggregate_op")
@@ -105,6 +110,19 @@ class SqlRequest:
                 )
             if self.group_by is not None:
                 raise ValueError("Count/list SQL requests do not support group_by")
+
+
+def _validate_filter_sources(
+    filters: tuple[SqlValueFilter, ...],
+    *,
+    expected_source: SqlFieldSource,
+) -> None:
+    for filter_item in filters:
+        if filter_item.source != expected_source:
+            raise ValueError(
+                "SQL request filter source mismatch: "
+                f"expected '{expected_source}', got '{filter_item.source}'"
+            )
 
 
 @dataclass(frozen=True)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from typing import Literal
 
 from rag_tag.ifc_class_taxonomy import CLASS_ALIASES, normalize_ifc_class
 
@@ -66,7 +67,7 @@ _PROPERTY_CUE_RE = re.compile(
     r"\b(with|having|whose|where|without|made of|material)\b|\bthat\s+(has|have)\b"
 )
 _EXPLICIT_FILTER_RE = re.compile(
-    r"\b(?:with|where)\s+(property|quantity)\s+"
+    r"\b(?:with|where)\s+(element|property|quantity)\s+"
     r"([A-Za-z][A-Za-z0-9_. -]*)\s*"
     r"(=|!=|>=|<=|>|<|like)\s*"
     r"([A-Za-z0-9_.%-]+(?:\s+[A-Za-z0-9_.%-]+)*)",
@@ -93,6 +94,16 @@ _NAMED_FILTER_BOUNDARY_RE = re.compile(
     r"where\b|with\b|having\b|whose\b|without\b|and\b|or\b|"
     r"near\b|adjacent\b|connected\b"
     r")",
+    re.IGNORECASE,
+)
+_NAME_WORD_IN_NAME_RE = re.compile(
+    r"\b(?:the\s+word|word)\s+[\"']?(?P<term>[A-Za-z0-9_ -]+?)[\"']?\s+"
+    r"in\s+(?:their|the)\s+name\b",
+    re.IGNORECASE,
+)
+_NAME_CONTAINS_RE = re.compile(
+    r"\bname\s+(?:contains?|containing|with)\s+[\"']?(?P<term>[A-Za-z0-9_ -]+?)"
+    r"[\"']?(?:\b|[.?!])",
     re.IGNORECASE,
 )
 
@@ -151,12 +162,21 @@ def route_question_rule(question: str) -> RouteDecision:
         q, _PREDEFINED_TYPE_RE
     )
     type_name, type_name_span = _detect_named_filter_match(q, _TYPE_NAME_RE)
-    property_filters, quantity_filters = _detect_structured_filters(q)
+    (
+        element_filters,
+        property_filters,
+        quantity_filters,
+        structured_filter_spans,
+    ) = _detect_structured_filters(q)
+    name_filters, name_filter_spans = _detect_name_contains_filters(q)
+    if name_filters:
+        element_filters = (*element_filters, *name_filters)
     if (
         sql_intent in {"count", "list"}
         and _has_property_cues(q_lower)
         and predefined_type is None
         and type_name is None
+        and not element_filters
         and not property_filters
         and not quantity_filters
     ):
@@ -168,6 +188,8 @@ def route_question_rule(question: str) -> RouteDecision:
         suppressed_spans.append(predefined_type_span)
     if type_name_span is not None:
         suppressed_spans.append(type_name_span)
+    suppressed_spans.extend(structured_filter_spans)
+    suppressed_spans.extend(name_filter_spans)
     ifc_classes = _detect_ifc_classes(q, ignored_spans=suppressed_spans)
     if len(ifc_classes) > 1:
         return RouteDecision("graph", "Multiple IFC classes mentioned", None)
@@ -204,6 +226,7 @@ def route_question_rule(question: str) -> RouteDecision:
         level_like=level_like,
         predefined_type=predefined_type,
         type_name=type_name,
+        element_filters=element_filters,
         property_filters=property_filters,
         quantity_filters=quantity_filters,
         aggregate_op=aggregate_op,
@@ -388,23 +411,96 @@ def _detect_explicit_field(question: str) -> SqlFieldRef | None:
 
 def _detect_structured_filters(
     question: str,
-) -> tuple[tuple[SqlValueFilter, ...], tuple[SqlValueFilter, ...]]:
+) -> tuple[
+    tuple[SqlValueFilter, ...],
+    tuple[SqlValueFilter, ...],
+    tuple[SqlValueFilter, ...],
+    list[tuple[int, int]],
+]:
+    element_filters: list[SqlValueFilter] = []
     property_filters: list[SqlValueFilter] = []
     quantity_filters: list[SqlValueFilter] = []
+    spans: list[tuple[int, int]] = []
     for match in _EXPLICIT_FILTER_RE.finditer(question):
-        scope = match.group(1).strip().lower()
-        field = normalize_sql_field_key(match.group(2))
+        scope_raw = match.group(1).strip().lower()
+        scope: Literal["element", "property", "quantity"]
+        if scope_raw == "element":
+            scope = "element"
+        elif scope_raw == "property":
+            scope = "property"
+        else:
+            scope = "quantity"
+        raw_field = match.group(2)
+        if scope == "element":
+            field = _normalize_element_filter_field(raw_field)
+        else:
+            field = normalize_sql_field_key(raw_field)
         op = _normalize_filter_op(match.group(3))
         raw_value = _trim_clause_value(match.group(4))
         if raw_value is None:
             continue
         value = _normalize_filter_value(raw_value)
-        filter_item = SqlValueFilter(field=field, op=op, value=value)
-        if scope == "property":
+        filter_item = SqlValueFilter(source=scope, field=field, op=op, value=value)
+        if scope == "element":
+            element_filters.append(filter_item)
+        elif scope == "property":
             property_filters.append(filter_item)
         else:
             quantity_filters.append(filter_item)
-    return tuple(property_filters), tuple(quantity_filters)
+        spans.append(match.span())
+    return (
+        tuple(element_filters),
+        tuple(property_filters),
+        tuple(quantity_filters),
+        spans,
+    )
+
+
+def _detect_name_contains_filters(
+    question: str,
+) -> tuple[tuple[SqlValueFilter, ...], list[tuple[int, int]]]:
+    filters: list[SqlValueFilter] = []
+    spans: list[tuple[int, int]] = []
+
+    for pattern in (_NAME_WORD_IN_NAME_RE, _NAME_CONTAINS_RE):
+        for match in pattern.finditer(question):
+            term = match.group("term").strip().strip("\"'")
+            term = re.sub(r"\s+", " ", term).strip()
+            if not term:
+                continue
+            filters.append(
+                SqlValueFilter(
+                    source="element",
+                    field="name",
+                    op="like",
+                    value=f"%{term}%",
+                )
+            )
+            spans.append(match.span("term"))
+
+    return tuple(filters), spans
+
+
+def _normalize_element_filter_field(raw_field: str) -> str:
+    normalized = normalize_sql_field_key(raw_field)
+    lowered = normalized.lower()
+    if lowered in {"name", "ifc_class", "level", "level_key", "type_name"}:
+        return lowered
+    if lowered == "predefined_type":
+        return "predefined_type"
+    if lowered in {"ifcclass", "class"}:
+        return "ifc_class"
+    if lowered in {"typename", "type"}:
+        return "type_name"
+    if lowered in {"predefinedtype", "predefined"}:
+        return "predefined_type"
+    if lowered == "levelkey":
+        return "level_key"
+    if lowered == "globalid":
+        return "global_id"
+    if lowered == "expressid":
+        return "express_id"
+    return normalized
 
 
 def _normalize_filter_op(value: str) -> SqlFilterOp:

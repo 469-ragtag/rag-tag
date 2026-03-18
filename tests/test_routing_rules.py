@@ -203,7 +203,11 @@ def test_name_word_filter_count_stays_sql() -> None:
     assert decision.route == "sql"
     assert decision.sql_request is not None
     assert decision.sql_request.intent == "count"
-    assert decision.sql_request.ifc_class == "IfcRoof"
+    assert decision.sql_request.ifc_class is None
+    assert decision.sql_request.element_filters[0].source == "element"
+    assert decision.sql_request.element_filters[0].field == "name"
+    assert decision.sql_request.element_filters[0].op == "like"
+    assert decision.sql_request.element_filters[0].value == "%roof%"
 
 
 def test_llm_prompt_mentions_shared_capability_matrix() -> None:
