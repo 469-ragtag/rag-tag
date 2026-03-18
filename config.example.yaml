@@ -15,8 +15,9 @@ defaults:
   router_profile: router-gemini-flash
   agent_profile: dbx-claude-sonnet-4-6
   router_mode: llm
-  # Shared graph runtime default. Use GRAPH_BACKEND only for one-off shell overrides.
-  graph_backend: networkx
+  # Shared graph runtime default. For Eureka/local Neo4j runs, keep this on
+  # neo4j and use GRAPH_BACKEND only for one-off shell overrides.
+  graph_backend: neo4j
 
 providers:
   databricks:
