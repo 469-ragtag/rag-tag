@@ -141,3 +141,12 @@ MATCH (n:Node)
 WHERE size($datasets) = 0 OR n.dataset IN $datasets
 RETURN n
 """
+
+MATCH_ALL_RELS = """
+MATCH (a:Node)-[r:REL]->(b:Node)
+WHERE (size($datasets) = 0 OR a.dataset IN $datasets)
+  AND (size($datasets) = 0 OR b.dataset IN $datasets)
+  AND (size($datasets) = 0 OR r.dataset IN $datasets)
+RETURN a.node_id AS from_id, b.node_id AS to_id, r
+ORDER BY r.edge_index
+"""
