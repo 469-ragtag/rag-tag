@@ -140,6 +140,19 @@ class LlmRouteResponse(BaseModel):
         cleaned = value.strip()
         return cleaned or None
 
+    @field_validator("property_filters", "quantity_filters", mode="before")
+    @classmethod
+    def _normalize_optional_filter_lists(
+        cls, value: object
+    ) -> list[dict[str, object]] | object:
+        if value is None:
+            return []
+        if isinstance(value, str) and value.strip().lower() in {"null", "none"}:
+            return []
+        if isinstance(value, tuple):
+            return list(value)
+        return value
+
     @field_validator("aggregate_op", mode="before")
     @classmethod
     def _normalize_aggregate_op(cls, value: object) -> LlmAggregateOp | None:
