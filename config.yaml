@@ -9,8 +9,9 @@ defaults:
     router_profile: router-gemini-flash
     agent_profile: cohere-command-a
     router_mode: llm
-    # Shared graph runtime default. Use GRAPH_BACKEND only for one-off shell overrides.
-    graph_backend: networkx
+    # Neo4j is the canonical graph/data backend. Use GRAPH_BACKEND only for
+    # one-off debugging overrides.
+    graph_backend: neo4j
 
 providers:
     databricks:
