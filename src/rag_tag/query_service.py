@@ -7,8 +7,12 @@ from typing import Any
 
 import networkx as nx
 
-from rag_tag.agent import GraphAgent
-from rag_tag.config import get_default_graph_max_steps
+from rag_tag.agent import GraphAgent, LangGraphAgent
+from rag_tag.config import (
+    GraphOrchestrationConfig,
+    get_default_graph_max_steps,
+    load_project_config,
+)
 from rag_tag.graph import GraphRuntime, ensure_graph_runtime, load_graph_runtime
 from rag_tag.graph_contract import merge_evidence_items
 from rag_tag.ifc_sql_tool import SqlQueryError, query_ifc_sql
@@ -16,6 +20,9 @@ from rag_tag.paths import find_project_root
 from rag_tag.router import RouteDecision, SqlRequest, route_question
 
 _MODULE_DIR = Path(__file__).resolve().parent
+
+_VALID_GRAPH_ORCHESTRATORS = frozenset({"pydanticai", "langgraph"})
+GraphExecutor = GraphAgent | LangGraphAgent
 
 
 def find_sqlite_dbs() -> list[Path]:
@@ -58,6 +65,33 @@ def load_graph(
             defaulting to ``"full"`` if unset.
     """
     return load_graph_runtime(dataset, payload_mode=payload_mode)
+
+
+def resolve_graph_orchestrator() -> str:
+    """Resolve the configured graph orchestrator name.
+
+    Defaults to ``"pydanticai"`` when the config key is absent or blank.
+    Raises ``ValueError`` for unrecognized configured values.
+    """
+    loaded = load_project_config(Path(__file__).resolve().parent)
+    configured = loaded.config.defaults.graph_orchestrator
+    if configured is None or not configured.strip():
+        return "pydanticai"
+
+    orchestrator = configured.strip().lower()
+    if orchestrator not in _VALID_GRAPH_ORCHESTRATORS:
+        allowed = ", ".join(sorted(_VALID_GRAPH_ORCHESTRATORS))
+        raise ValueError(
+            "Unsupported defaults.graph_orchestrator="
+            f"{configured!r}. Allowed values: {allowed}."
+        )
+    return orchestrator
+
+
+def get_graph_orchestration_config() -> GraphOrchestrationConfig:
+    """Return the typed graph orchestration config block."""
+    loaded = load_project_config(Path(__file__).resolve().parent)
+    return loaded.config.graph_orchestration
 
 
 def _available_graph_datasets(
@@ -448,7 +482,7 @@ def _sql_error(
 def execute_graph_query(
     question: str,
     runtime: GraphRuntime,
-    agent: GraphAgent,
+    agent: GraphExecutor,
     decision: RouteDecision,
     *,
     max_steps: int | None = None,
@@ -480,7 +514,7 @@ def execute_query(
     question: str,
     db_paths: list[Path],
     runtime: GraphRuntime | nx.DiGraph | nx.MultiDiGraph | None,
-    agent: GraphAgent | None,
+    agent: GraphExecutor | None,
     *,
     decision: RouteDecision | None = None,
     debug_llm_io: bool = False,
@@ -579,12 +613,12 @@ def execute_query(
 
 def _ensure_graph_context(
     runtime: GraphRuntime | nx.DiGraph | nx.MultiDiGraph | None,
-    agent: GraphAgent | None,
+    agent: GraphExecutor | None,
     debug_llm_io: bool,
     graph_dataset: str | None = None,
     db_path: Path | None = None,
     payload_mode: str | None = None,
-) -> tuple[GraphRuntime, GraphAgent]:
+) -> tuple[GraphRuntime, GraphExecutor]:
     """Load runtime and agent instances when missing; wire DB path into runtime context.
 
     Args:
@@ -602,7 +636,14 @@ def _ensure_graph_context(
         payload_mode=payload_mode,
     )
     if agent is None:
-        agent = GraphAgent(debug_llm_io=debug_llm_io)
+        orchestrator = resolve_graph_orchestrator()
+        if orchestrator == "langgraph":
+            agent = LangGraphAgent(
+                debug_llm_io=debug_llm_io,
+                orchestration_config=get_graph_orchestration_config(),
+            )
+        else:
+            agent = GraphAgent(debug_llm_io=debug_llm_io)
     return runtime, agent
 
 

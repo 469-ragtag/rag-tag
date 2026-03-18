@@ -10,11 +10,16 @@ import yaml
 from rag_tag.config import (
     CONFIG_PATH_ENV_VAR,
     AppConfig,
+    GraphOrchestrationConfig,
     discover_project_config,
     load_project_config,
     load_project_env,
 )
 from rag_tag.llm import pydantic_ai as pydantic_ai_module
+from rag_tag.query_service import (
+    get_graph_orchestration_config,
+    resolve_graph_orchestrator,
+)
 
 
 def test_load_project_env_loads_project_root_env_and_maps_cohere_alias(
@@ -81,8 +86,15 @@ def test_load_project_config_parses_yaml_structure(tmp_path: Path) -> None:
         "defaults:\n"
         "  router_profile: router-default\n"
         "  agent_profile: dbx-agent\n"
+        "  graph_orchestrator: langgraph\n"
         "  graph_max_steps: 12\n"
         "  graph_output_retries: 4\n"
+        "graph_orchestration:\n"
+        "  enabled_subquestion_decomposition: false\n"
+        "  max_subquestions: 4\n"
+        "  reserved_orchestration_steps: 2\n"
+        "  specialist_step_cap: 5\n"
+        "  fallback_to_graph_agent: false\n"
         "providers:\n"
         "  databricks:\n"
         "    type: databricks\n"
@@ -109,6 +121,14 @@ def test_load_project_config_parses_yaml_structure(tmp_path: Path) -> None:
     assert loaded.config_path == config_path
     assert loaded.config.defaults.router_profile == "router-default"
     assert loaded.config.defaults.agent_profile == "dbx-agent"
+    assert loaded.config.defaults.graph_orchestrator == "langgraph"
+    assert loaded.config.graph_orchestration == GraphOrchestrationConfig(
+        enabled_subquestion_decomposition=False,
+        max_subquestions=4,
+        reserved_orchestration_steps=2,
+        specialist_step_cap=5,
+        fallback_to_graph_agent=False,
+    )
     assert loaded.config.defaults.graph_max_steps == 12
     assert loaded.config.defaults.graph_output_retries == 4
     assert loaded.config.providers["databricks"].base_url == (
@@ -198,6 +218,37 @@ def test_load_project_config_returns_empty_defaults_without_config(
     assert loaded.config == AppConfig()
 
 
+def test_app_config_defaults_graph_orchestration_when_omitted() -> None:
+    config = AppConfig.model_validate({"profiles": {}})
+
+    assert config.defaults.graph_orchestrator is None
+    assert config.graph_orchestration == GraphOrchestrationConfig()
+
+
+def test_app_config_accepts_custom_graph_orchestration_values() -> None:
+    config = AppConfig.model_validate(
+        {
+            "defaults": {"graph_orchestrator": "langgraph"},
+            "graph_orchestration": {
+                "enabled_subquestion_decomposition": False,
+                "max_subquestions": 6,
+                "reserved_orchestration_steps": 4,
+                "specialist_step_cap": 7,
+                "fallback_to_graph_agent": False,
+            },
+        }
+    )
+
+    assert config.defaults.graph_orchestrator == "langgraph"
+    assert config.graph_orchestration == GraphOrchestrationConfig(
+        enabled_subquestion_decomposition=False,
+        max_subquestions=6,
+        reserved_orchestration_steps=4,
+        specialist_step_cap=7,
+        fallback_to_graph_agent=False,
+    )
+
+
 def test_checked_in_config_example_matches_app_config_schema() -> None:
     config_path = Path(__file__).resolve().parents[1] / "config.example.yaml"
     payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
@@ -209,6 +260,10 @@ def test_checked_in_config_example_matches_app_config_schema() -> None:
     assert config.providers["databricks"].host is None
     assert config.defaults.router_profile in config.profiles
     assert config.defaults.agent_profile in config.profiles
+    assert config.defaults.graph_orchestrator == "pydanticai"
+    assert config.graph_orchestration == GraphOrchestrationConfig()
+    assert config.defaults.graph_max_steps == 20
+    assert config.defaults.graph_output_retries == 5
     assert config.defaults.graph_max_steps == 20
     assert config.defaults.graph_output_retries == 5
     for experiment_name in ("graph-dbx-smoke", "graph-agent-compare"):
@@ -228,10 +283,73 @@ def test_checked_in_runtime_config_keeps_cohere_as_safe_default() -> None:
 
     assert config.providers["databricks"].host_env == "DATABRICKS_HOST"
     assert config.defaults.router_profile == "router-gemini-flash"
-    assert config.defaults.agent_profile == "cohere-command-a"
+    assert config.defaults.agent_profile == "dbx-gpt-oss-20b"
     assert config.defaults.graph_max_steps == 20
     assert config.defaults.graph_output_retries == 5
     assert config.defaults.agent_profile in config.profiles
+    assert config.defaults.graph_orchestrator == "pydanticai"
+    assert config.graph_orchestration == GraphOrchestrationConfig()
+
+
+def test_resolve_graph_orchestrator_defaults_to_pydanticai_without_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_project_marker(tmp_path)
+    monkeypatch.setattr(
+        "rag_tag.query_service.load_project_config",
+        lambda start_dir: load_project_config(tmp_path),
+    )
+
+    assert resolve_graph_orchestrator() == "pydanticai"
+
+
+def test_resolve_graph_orchestrator_reads_explicit_langgraph_value(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_project_marker(tmp_path)
+    (tmp_path / "config.yaml").write_text(
+        "defaults:\n  graph_orchestrator: langgraph\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "rag_tag.query_service.load_project_config",
+        lambda start_dir: load_project_config(tmp_path),
+    )
+
+    assert resolve_graph_orchestrator() == "langgraph"
+
+
+def test_resolve_graph_orchestrator_rejects_invalid_value(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_project_marker(tmp_path)
+    (tmp_path / "config.yaml").write_text(
+        "defaults:\n  graph_orchestrator: invalid-orchestrator\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "rag_tag.query_service.load_project_config",
+        lambda start_dir: load_project_config(tmp_path),
+    )
+
+    with pytest.raises(ValueError, match="Allowed values: langgraph, pydanticai"):
+        resolve_graph_orchestrator()
+
+
+def test_get_graph_orchestration_config_returns_typed_defaults(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_project_marker(tmp_path)
+    monkeypatch.setattr(
+        "rag_tag.query_service.load_project_config",
+        lambda start_dir: load_project_config(tmp_path),
+    )
+
+    assert get_graph_orchestration_config() == GraphOrchestrationConfig()
 
 
 def test_get_router_model_keeps_env_based_lookup_via_shared_loader(
