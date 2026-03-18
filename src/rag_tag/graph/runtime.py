@@ -7,9 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
-import networkx as nx
-
 from rag_tag.config import GRAPH_BACKEND_ENV_VAR, load_project_config
+from rag_tag.graph.catalog import GraphCatalog
 
 
 class GraphBackend(Protocol):
@@ -23,7 +22,7 @@ class GraphBackend(Protocol):
         payload_mode: str = "llm",
     ) -> dict[str, Any]: ...
 
-    def get_networkx_graph(self) -> nx.DiGraph | nx.MultiDiGraph: ...
+    def get_networkx_graph(self) -> GraphCatalog: ...
 
     def set_context_db_path(self, db_path: Path | None) -> None: ...
 
@@ -31,22 +30,20 @@ class GraphBackend(Protocol):
 
 
 @dataclass(slots=True)
-class NetworkXBackend:
-    """NetworkX-backed runtime adapter."""
+class InMemoryGraphBackend:
+    """In-memory catalog runtime adapter."""
 
-    graph: nx.DiGraph | nx.MultiDiGraph
+    graph: GraphCatalog
 
     def _delegate_runtime(self, payload_mode: str) -> Any:
-        from pathlib import Path
-
         from rag_tag.graph.backends.networkx_backend import (  # noqa: PLC0415
-            NetworkXGraphBackend,
+            InMemoryCatalogBackend,
         )
         from rag_tag.graph.types import (
             GraphRuntime as BackendGraphRuntime,  # noqa: PLC0415
         )
 
-        backend = NetworkXGraphBackend()
+        backend = InMemoryCatalogBackend()
         datasets = self.graph.graph.get("datasets")
         selected_datasets = (
             sorted(datasets)
@@ -82,7 +79,7 @@ class NetworkXBackend:
         runtime = self._delegate_runtime(payload_mode)
         return runtime.backend.query(runtime, action, params, payload_mode)
 
-    def get_networkx_graph(self) -> nx.DiGraph | nx.MultiDiGraph:
+    def get_networkx_graph(self) -> GraphCatalog:
         return self.graph
 
     def set_context_db_path(self, db_path: Path | None) -> None:
@@ -118,7 +115,7 @@ def _resolve_backend_name(config_default: str | None) -> str:
         return env_name.strip().lower()
     if config_default is not None and config_default.strip():
         return config_default.strip().lower()
-    return "networkx"
+    return "neo4j"
 
 
 class GraphRuntime:
@@ -132,7 +129,7 @@ class GraphRuntime:
     def from_env(
         cls,
         *,
-        graph: nx.DiGraph | nx.MultiDiGraph | None = None,
+        graph: GraphCatalog | None = None,
         db_path: Path | None = None,
         selected_datasets: list[str] | tuple[str, ...] | None = None,
         start_dir: Path | None = None,
@@ -165,7 +162,7 @@ class GraphRuntime:
     ) -> dict[str, Any]:
         return self._backend.query(action, params, payload_mode=payload_mode)
 
-    def get_networkx_graph(self) -> nx.DiGraph | nx.MultiDiGraph:
+    def get_networkx_graph(self) -> GraphCatalog:
         return self._backend.get_networkx_graph()
 
     def close(self) -> None:
@@ -186,23 +183,21 @@ def close_runtime(runtime: GraphRuntime | None) -> None:
     runtime.close()
 
 
-def get_networkx_graph(
-    runtime: GraphRuntime | nx.DiGraph | nx.MultiDiGraph,
-) -> nx.DiGraph | nx.MultiDiGraph:
-    """Return the underlying NetworkX graph from a runtime or raw graph."""
+def get_networkx_graph(runtime: GraphRuntime | GraphCatalog) -> GraphCatalog:
+    """Return the underlying in-memory graph catalog from a runtime or raw graph."""
     if isinstance(runtime, GraphRuntime):
         return runtime.get_networkx_graph()
     return runtime
 
 
 def query_graph_runtime(
-    runtime: GraphRuntime | nx.DiGraph | nx.MultiDiGraph,
+    runtime: GraphRuntime | GraphCatalog,
     action: str,
     params: dict[str, Any],
     *,
     payload_mode: str = "llm",
 ) -> dict[str, Any]:
-    """Query a graph runtime or raw NetworkX graph through the active backend."""
+    """Query a graph runtime or raw catalog graph through the active backend."""
     resolved_runtime = (
         runtime if isinstance(runtime, GraphRuntime) else wrap_networkx_graph(runtime)
     )
@@ -210,19 +205,21 @@ def query_graph_runtime(
 
 
 def wrap_networkx_graph(
-    graph: nx.DiGraph | nx.MultiDiGraph,
+    graph: GraphCatalog,
     *,
     db_path: Path | None = None,
 ) -> GraphRuntime:
-    """Wrap an existing NetworkX graph in a GraphRuntime with the networkx backend."""
-    return GraphRuntime(NetworkXBackend(graph), "networkx")
+    """Wrap an in-memory graph catalog in a GraphRuntime."""
+    runtime = GraphRuntime(InMemoryGraphBackend(graph), "memory")
+    if db_path is not None:
+        runtime.set_context_db_path(db_path)
+    return runtime
 
 
-# Register default backend.
 register_backend(
-    "networkx",
-    lambda *, graph=None, db_path=None, selected_datasets=None: NetworkXBackend(
-        graph or nx.MultiDiGraph()
+    "memory",
+    lambda *, graph=None, db_path=None, selected_datasets=None: InMemoryGraphBackend(
+        graph or GraphCatalog()
     ),
 )
 
@@ -232,7 +229,7 @@ def _register_neo4j_backend() -> None:
 
     def _factory(
         *,
-        graph: nx.DiGraph | nx.MultiDiGraph | None = None,
+        graph: GraphCatalog | None = None,
         db_path: Path | None = None,
         selected_datasets: list[str] | tuple[str, ...] | None = None,
     ) -> GraphBackend:
