@@ -8,10 +8,14 @@ from typing import Any
 import networkx as nx
 
 from rag_tag.agent import GraphAgent
+from rag_tag.config import get_default_graph_max_steps
 from rag_tag.graph import GraphRuntime, ensure_graph_runtime, load_graph_runtime
+from rag_tag.graph_contract import merge_evidence_items
 from rag_tag.ifc_sql_tool import SqlQueryError, query_ifc_sql
 from rag_tag.paths import find_project_root
-from rag_tag.router import RouteDecision, route_question
+from rag_tag.router import RouteDecision, SqlRequest, route_question
+
+_MODULE_DIR = Path(__file__).resolve().parent
 
 
 def find_sqlite_dbs() -> list[Path]:
@@ -138,13 +142,10 @@ def execute_sql_query(
         )
 
     req = decision.sql_request
-    # Canonical effective limit for this request; used as the global cap across DBs.
     effective_limit = req.limit or 50
 
-    # Query every database and merge counts/items across all models.
-    combined_count = 0
-    combined_total = 0
-    combined_items: list[Any] = []
+    successful_payloads: list[dict[str, Any]] = []
+    combined_evidence: list[dict[str, Any]] = []
     last_payload: dict[str, Any] = {}
     failed_db_paths: list[str] = []
     db_errors: list[dict[str, str]] = []
@@ -183,9 +184,11 @@ def execute_sql_query(
             continue
         payload = envelope["data"]
         last_payload = payload
-        combined_count += payload.get("count", 0)
-        combined_total += payload.get("total_count", 0)
-        combined_items.extend(payload.get("items") or [])
+        successful_payloads.append(payload)
+        combined_evidence = merge_evidence_items(
+            combined_evidence,
+            payload.get("evidence"),
+        )
 
     if not last_payload:
         return _sql_error(
@@ -194,47 +197,18 @@ def execute_sql_query(
             warning=_sql_warning_details(failed_db_paths, db_errors),
         )
 
-    # Enforce global list limit: merged items across all DBs must not exceed the
-    # requested limit.  Each per-DB query already applies the same LIMIT clause,
-    # so the only way to exceed it is when results come from multiple databases.
-    if req.intent == "list":
-        combined_items = combined_items[:effective_limit]
-
-    # Rebuild summary string with the combined count.
-    label = req.ifc_class or "elements"
-    if req.intent == "count":
-        if req.level_like:
-            summary = (
-                f"Found {combined_count} {label} matching level '{req.level_like}'."
-            )
-        else:
-            summary = f"Found {combined_count} {label}."
-        result_count = combined_count
-    else:
-        # Use actual item count post-cap so summary matches displayed rows.
-        shown = len(combined_items)
-        if req.level_like:
-            summary = (
-                f"Found {combined_total} {label} matching level"
-                f" '{req.level_like}', showing {shown}."
-            )
-        else:
-            summary = f"Found {combined_total} {label}, showing {shown}."
-        result_count = shown
-
+    merged_payload = _merge_sql_payloads(successful_payloads, req, effective_limit)
     result = {
         "route": "sql",
         "decision": decision.reason,
         "db_paths": [str(p) for p in db_paths],
-        "answer": summary,
+        "answer": merged_payload["summary"],
         "data": {
+            **merged_payload,
             "intent": last_payload.get("intent"),
             "filters": last_payload.get("filters"),
-            "count": result_count,
-            "total_count": combined_total,
-            # Return the canonical effective limit, not a per-DB artifact.
             "limit": effective_limit,
-            "items": combined_items,
+            "evidence": combined_evidence,
         },
         "sql": last_payload.get("sql"),
     }
@@ -242,6 +216,216 @@ def execute_sql_query(
     if warning is not None:
         result["warning"] = warning
     return result
+
+
+def _merge_sql_payloads(
+    payloads: list[dict[str, Any]],
+    req: SqlRequest,
+    effective_limit: int,
+) -> dict[str, Any]:
+    label = req.ifc_class or "elements"
+
+    if req.intent == "count":
+        combined_count = sum(int(payload.get("count", 0)) for payload in payloads)
+        if req.level_like:
+            summary = (
+                f"Found {combined_count} {label} matching level '{req.level_like}'."
+            )
+        else:
+            summary = f"Found {combined_count} {label}."
+        return {"count": combined_count, "summary": summary}
+
+    if req.intent == "list":
+        combined_total = sum(int(payload.get("total_count", 0)) for payload in payloads)
+        combined_items: list[dict[str, Any]] = []
+        for payload in payloads:
+            merge_state = payload.get("merge_state") or {}
+            full_items = merge_state.get("items") or payload.get("items") or []
+            combined_items.extend(item for item in full_items if isinstance(item, dict))
+        combined_items.sort(key=_sql_list_item_sort_key)
+        combined_items = combined_items[:effective_limit]
+        shown = len(combined_items)
+        if req.level_like:
+            summary = (
+                f"Found {combined_total} {label} matching level '{req.level_like}', "
+                f"showing {shown}."
+            )
+        else:
+            summary = f"Found {combined_total} {label}, showing {shown}."
+        return {
+            "count": shown,
+            "total_count": combined_total,
+            "items": combined_items,
+            "summary": summary,
+        }
+
+    if req.intent == "aggregate":
+        return _merge_aggregate_payloads(payloads, req)
+
+    if req.intent == "group":
+        return _merge_group_payloads(payloads, req, effective_limit)
+
+    raise ValueError(f"Unsupported SQL intent: {req.intent}")
+
+
+def _merge_aggregate_payloads(
+    payloads: list[dict[str, Any]],
+    req: SqlRequest,
+) -> dict[str, Any]:
+    aggregate_op = req.aggregate_op
+    label = req.ifc_class or "elements"
+    field_label = req.aggregate_field.field if req.aggregate_field else label
+    total_elements = sum(int(payload.get("total_elements", 0)) for payload in payloads)
+    matched_value_count = sum(
+        int(payload.get("matched_value_count", 0)) for payload in payloads
+    )
+    missing_value_count = sum(
+        int(payload.get("missing_value_count", 0)) for payload in payloads
+    )
+
+    if aggregate_op == "count":
+        aggregate_value = sum(
+            int(payload.get("aggregate_value", 0) or 0) for payload in payloads
+        )
+    elif aggregate_op == "sum":
+        aggregate_value = sum(
+            float(payload.get("aggregate_value", 0) or 0) for payload in payloads
+        )
+    elif aggregate_op == "avg":
+        total_sum = 0.0
+        total_count = 0
+        for payload in payloads:
+            merge_state = payload.get("merge_state") or {}
+            total_sum += float(merge_state.get("sum", 0) or 0)
+            total_count += int(merge_state.get("matched_value_count", 0) or 0)
+        aggregate_value = total_sum / total_count if total_count else None
+    elif aggregate_op == "min":
+        values = [
+            float(payload["aggregate_value"])
+            for payload in payloads
+            if payload.get("aggregate_value") is not None
+        ]
+        aggregate_value = min(values) if values else None
+    elif aggregate_op == "max":
+        values = [
+            float(payload["aggregate_value"])
+            for payload in payloads
+            if payload.get("aggregate_value") is not None
+        ]
+        aggregate_value = max(values) if values else None
+    else:
+        raise ValueError(f"Unsupported aggregate op: {aggregate_op}")
+
+    if aggregate_op == "count" and req.aggregate_field is None:
+        if req.level_like:
+            summary = (
+                f"Found {aggregate_value} {label} matching level '{req.level_like}'."
+            )
+        else:
+            summary = f"Found {aggregate_value} {label}."
+    elif req.level_like:
+        summary = (
+            f"Computed {aggregate_op} of {field_label} for {label} matching "
+            f"level '{req.level_like}': {aggregate_value}."
+        )
+    else:
+        summary = (
+            f"Computed {aggregate_op} of {field_label} for {label}: {aggregate_value}."
+        )
+
+    return {
+        "aggregate_op": aggregate_op,
+        "aggregate_field": (
+            {"source": req.aggregate_field.source, "field": req.aggregate_field.field}
+            if req.aggregate_field is not None
+            else None
+        ),
+        "aggregate_value": aggregate_value,
+        "matched_value_count": matched_value_count,
+        "missing_value_count": missing_value_count,
+        "total_elements": total_elements,
+        "count": matched_value_count
+        if req.aggregate_field is not None
+        else int(aggregate_value or 0),
+        "summary": summary,
+    }
+
+
+def _sql_list_item_sort_key(item: dict[str, Any]) -> tuple[int, str, str, str, int]:
+    name = item.get("name")
+    express_id = item.get("express_id")
+    if isinstance(express_id, int):
+        normalized_express_id = express_id
+    elif isinstance(express_id, str):
+        try:
+            normalized_express_id = int(express_id)
+        except ValueError:
+            normalized_express_id = -1
+    else:
+        normalized_express_id = -1
+    return (
+        0 if name is None else 1,
+        "" if name is None else str(name),
+        str(item.get("ifc_class") or ""),
+        str(item.get("global_id") or ""),
+        normalized_express_id,
+    )
+
+
+def _merge_group_payloads(
+    payloads: list[dict[str, Any]],
+    req: SqlRequest,
+    effective_limit: int,
+) -> dict[str, Any]:
+    grouped_counts: dict[Any, int] = {}
+    total_elements = 0
+    matched_element_count = 0
+    missing_value_count = 0
+
+    for payload in payloads:
+        total_elements += int(payload.get("total_elements", 0))
+        matched_element_count += int(payload.get("matched_element_count", 0))
+        missing_value_count += int(payload.get("missing_value_count", 0))
+        merge_state = payload.get("merge_state") or {}
+        full_groups = merge_state.get("groups") or payload.get("groups") or []
+        for group in full_groups:
+            key = group.get("group")
+            grouped_counts[key] = grouped_counts.get(key, 0) + int(
+                group.get("count", 0)
+            )
+
+    groups = [
+        {"group": key, "count": count}
+        for key, count in sorted(
+            grouped_counts.items(),
+            key=lambda item: (-item[1], "" if item[0] is None else str(item[0])),
+        )
+    ][:effective_limit]
+
+    label = req.ifc_class or "elements"
+    field_label = req.group_by.field if req.group_by is not None else "field"
+    shown = len(groups)
+    if req.level_like:
+        summary = (
+            f"Grouped {label} matching level '{req.level_like}' by {field_label}, "
+            f"showing {shown} groups."
+        )
+    else:
+        summary = f"Grouped {label} by {field_label}, showing {shown} groups."
+
+    return {
+        "group_by": (
+            {"source": req.group_by.source, "field": req.group_by.field}
+            if req.group_by is not None
+            else None
+        ),
+        "groups": groups,
+        "matched_element_count": matched_element_count,
+        "missing_value_count": missing_value_count,
+        "total_elements": total_elements,
+        "count": shown,
+        "summary": summary,
+    }
 
 
 def _sql_error(
@@ -267,7 +451,7 @@ def execute_graph_query(
     agent: GraphAgent,
     decision: RouteDecision,
     *,
-    max_steps: int = 20,
+    max_steps: int | None = None,
 ) -> dict[str, Any]:
     """Execute graph query via agent.
 
@@ -280,7 +464,11 @@ def execute_graph_query(
     Returns:
         Result dict with answer, data, or error
     """
-    agent_result = agent.run(question, runtime, max_steps=max_steps)
+    resolved_max_steps = max_steps
+    if resolved_max_steps is None:
+        resolved_max_steps = get_default_graph_max_steps(_MODULE_DIR)
+
+    agent_result = agent.run(question, runtime, max_steps=resolved_max_steps)
     return {
         "route": "graph",
         "decision": decision.reason,
@@ -300,7 +488,7 @@ def execute_query(
     context_db: Path | None = None,
     payload_mode: str | None = None,
     strict_sql: bool = False,
-    graph_max_steps: int = 20,
+    graph_max_steps: int | None = None,
     graph: GraphRuntime | nx.DiGraph | nx.MultiDiGraph | None = None,
 ) -> dict[str, Any]:
     """Execute a query through the full pipeline (routing + execution).

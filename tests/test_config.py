@@ -81,6 +81,8 @@ def test_load_project_config_parses_yaml_structure(tmp_path: Path) -> None:
         "defaults:\n"
         "  router_profile: router-default\n"
         "  agent_profile: dbx-agent\n"
+        "  graph_max_steps: 12\n"
+        "  graph_output_retries: 4\n"
         "providers:\n"
         "  databricks:\n"
         "    type: databricks\n"
@@ -107,6 +109,8 @@ def test_load_project_config_parses_yaml_structure(tmp_path: Path) -> None:
     assert loaded.config_path == config_path
     assert loaded.config.defaults.router_profile == "router-default"
     assert loaded.config.defaults.agent_profile == "dbx-agent"
+    assert loaded.config.defaults.graph_max_steps == 12
+    assert loaded.config.defaults.graph_output_retries == 4
     assert loaded.config.providers["databricks"].base_url == (
         "https://workspace.example.com/serving-endpoints"
     )
@@ -205,6 +209,8 @@ def test_checked_in_config_example_matches_app_config_schema() -> None:
     assert config.providers["databricks"].host is None
     assert config.defaults.router_profile in config.profiles
     assert config.defaults.agent_profile in config.profiles
+    assert config.defaults.graph_max_steps == 20
+    assert config.defaults.graph_output_retries == 5
     for experiment_name in ("graph-dbx-smoke", "graph-agent-compare"):
         experiment = config.experiments[experiment_name]
         assert experiment.router_profile in config.profiles
@@ -223,6 +229,8 @@ def test_checked_in_runtime_config_keeps_cohere_as_safe_default() -> None:
     assert config.providers["databricks"].host_env == "DATABRICKS_HOST"
     assert config.defaults.router_profile == "router-gemini-flash"
     assert config.defaults.agent_profile == "cohere-command-a"
+    assert config.defaults.graph_max_steps == 20
+    assert config.defaults.graph_output_retries == 5
     assert config.defaults.agent_profile in config.profiles
 
 

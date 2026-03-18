@@ -149,3 +149,49 @@ def test_graph_agent_deps_and_tool_helpers_use_graph_runtime(
     fuzzy = _fuzzy_find_nodes_impl(runtime, "plumbing wall")
     assert fuzzy["status"] == "ok"
     assert fuzzy["data"]["matches"][0]["id"] == "Element::wall-occ"
+    assert fuzzy["data"]["evidence"][0] == {
+        "global_id": "wall-occ",
+        "id": "Element::wall-occ",
+        "label": "plumbing wall",
+        "class_": "IfcWall",
+        "source_tool": "fuzzy_find_nodes",
+        "match_reason": "fuzzy_score=100.0",
+    }
+
+
+def test_graph_agent_reads_output_retries_from_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (tmp_path / "pyproject.toml").write_text(
+        "[project]\nname = 'test'\n", encoding="utf-8"
+    )
+    (tmp_path / "config.yaml").write_text(
+        "defaults:\n  graph_output_retries: 7\n",
+        encoding="utf-8",
+    )
+
+    captured: dict[str, object] = {}
+
+    class FakePydanticAgent:
+        def __init__(self, model: object, **kwargs: object) -> None:
+            captured["model"] = model
+            captured["output_retries"] = kwargs.get("output_retries")
+
+        def output_validator(self, func: object) -> object:
+            return func
+
+    monkeypatch.setattr("rag_tag.agent.graph_agent.get_agent_model", TestModel)
+    monkeypatch.setattr(
+        "rag_tag.agent.graph_agent.register_graph_tools", lambda agent: None
+    )
+    monkeypatch.setattr("rag_tag.agent.graph_agent.Agent", FakePydanticAgent)
+    monkeypatch.setattr(
+        "rag_tag.agent.graph_agent._MODULE_DIR",
+        tmp_path / "src" / "rag_tag" / "agent",
+    )
+
+    GraphAgent()
+
+    assert isinstance(captured["model"], TestModel)
+    assert captured["output_retries"] == 7

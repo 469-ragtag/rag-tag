@@ -5,12 +5,22 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections.abc import Sequence
+from pathlib import Path
 
-from pydantic_ai import Agent, ModelRetry, RunContext, UnexpectedModelBehavior
+from pydantic_ai import (
+    Agent,
+    ModelMessage,
+    ModelRetry,
+    RunContext,
+    UnexpectedModelBehavior,
+    capture_run_messages,
+)
 from pydantic_ai.exceptions import ModelHTTPError, UsageLimitExceeded
 from pydantic_ai.output import ToolOutput
 from pydantic_ai.usage import UsageLimits
 
+from rag_tag.config import get_default_graph_output_retries
 from rag_tag.graph import GraphRuntime
 from rag_tag.llm.pydantic_ai import get_agent_model, get_agent_model_settings
 
@@ -23,11 +33,14 @@ from .models import (
 )
 
 _logger = logging.getLogger(__name__)
+_MODULE_DIR = Path(__file__).resolve().parent
 
 # Maximum number of *additional* retry attempts when the provider returns
 # INVALID_TOOL_GENERATION (HTTP 422).  The first attempt is attempt 0, so the
 # total number of calls is _MAX_INVALID_TOOL_RETRIES + 1.
 _MAX_INVALID_TOOL_RETRIES = 2
+_OUTPUT_REPAIR_REQUEST_LIMIT = 2
+_OUTPUT_REPAIR_TOOL_CALL_LIMIT = 1
 
 
 def _is_pydantic_test_model(model: object) -> bool:
@@ -180,10 +193,32 @@ Tool node payloads use:
 
 - `traverse(start, relation?, depth?)`
   - generic multi-hop traversal
+  - use this as a fallback when no more specific macro tool fits
   - use `contains` to go from container to contents
   - use `contained_in` to move from element to enclosing structure
   - use explicit relations such as `hosts`, `typed_by`, `belongs_to_system`,
     `in_zone`, `classified_as`, `ifc_connected_to` when appropriate
+
+- `trace_distribution_network(start, max_depth?, relations?, max_results?)`
+  - preferred macro tool for bounded network/system tracing
+  - use this instead of repeated `traverse(..., relation="ifc_connected_to")`
+    when the user wants a connected branch, network summary, or downstream/upstream
+    connectivity set
+
+- `find_shortest_path(start, end, max_path_length?, relations?)`
+  - preferred tool when the user explicitly asks for the path/connection between
+    two anchors
+  - use this instead of manually chaining `traverse` calls hop by hop
+
+- `find_by_classification(classification, max_results?)`
+  - preferred tool for classification/code/reference label questions
+  - use this instead of raw `traverse(..., relation="classified_as")` unless you
+    already have the exact classification node and only need one tiny follow-up
+
+- `find_equipment_serving_space(space, max_depth?, max_results?)`
+  - preferred macro tool for "what serves this room/space" questions
+  - use this before composing room boundaries, terminals, systems, and network
+    traversal by hand
 
 - `get_elements_in_storey(storey)`
   - storey-only helper; use for `IfcBuildingStorey`, not for room names
@@ -220,12 +255,49 @@ Tool node payloads use:
   - schema discovery only
   - do not use it to read values for a specific target element
 
+### Graph-to-SQL bridge tools
+
+- `aggregate_elements(element_ids, metric, field?)`
+  - use after graph discovery when the user asks for an exact count, sum,
+    average, minimum, or maximum over a returned element set
+  - pass the exact tool-returned IDs/GlobalIds; do not count or sum mentally in
+    the prompt
+  - use `metric="count"` with no field for exact set size; use `field` for core
+    columns, dotted property keys, or dotted quantity keys
+
+- `group_elements_by_property(element_ids, property_key, max_groups?)`
+  - use after graph discovery when the user asks for a breakdown by level,
+    type, property, quantity, or other DB-backed field
+  - do not bucket/group results manually in context when this tool fits
+
+### Macro-first defaults
+
+When one of these fits, use it before generic `traverse` or manual multi-step
+composition:
+
+1. `trace_distribution_network` for connected branch/network tracing; do not
+   emulate it with repeated `traverse(..., relation="ifc_connected_to")`.
+2. `find_shortest_path` for a path or connection between two anchors; do not
+   chain hop-by-hop traversals.
+3. `find_by_classification` for classification/reference/code lookups; do not
+   start with raw `classified_as` traversal.
+4. `find_equipment_serving_space` for "what serves this room/space" questions;
+   do not manually compose room -> terminal -> system -> equipment unless the
+   macro tool fails.
+5. `aggregate_elements` / `group_elements_by_property` for exact counts, math,
+   or grouped breakdowns over discovered graph sets; do not count, sum,
+   average, min/max, or group in-context.
+
 ### Tool envelope
 
 Every tool returns:
 ```json
 { "status": "ok|error", "data": <payload|null>, "error": <object|null> }
 ```
+
+Many tool payloads also include `data.evidence`: a compact grounding list with
+`global_id` when available, an internal `id` fallback, plus `label`, `class_`,
+and sometimes `relation`, `source_tool`, or `match_reason`.
 
 If `status="error"`, try another path unless the error proves the question is
 unanswerable from the current graph.
@@ -236,6 +308,9 @@ unanswerable from the current graph.
 
 For difficult questions, follow this loop:
 
+Prefer macro/helper tools first; only drop to generic `traverse` when no more
+specific tool fits or the macro tool returns weak evidence.
+
 1. Parse the user goal into:
    - target entities/classes
    - anchor objects/rooms/storeys/systems/types
@@ -244,9 +319,11 @@ For difficult questions, follow this loop:
 2. Find or verify the anchor node(s).
 3. Pull nearby/related candidates with the most specific tool available.
 4. If needed, inspect candidate properties with `get_element_properties`.
-5. If needed, run another traversal/search from the newly discovered nodes.
-6. Repeat until you can support the answer with evidence.
-7. Summarize only what the tool evidence supports.
+5. If the question asks for exact set math or breakdowns over discovered
+   elements, call `aggregate_elements` or `group_elements_by_property`.
+6. If needed, run another traversal/search from the newly discovered nodes.
+7. Repeat until you can support the answer with evidence.
+8. Summarize only what the tool evidence supports.
 
 Do not stop after one tool call if the question clearly requires composition.
 It is correct to call several tools in sequence.
@@ -285,33 +362,47 @@ Examples: "What type is this door?", "Which doors share the same type?"
 ### D. System/zone/classification questions
 
 1. Resolve the anchor element or context node.
-2. Use `traverse` with `belongs_to_system`, `in_zone`, or `classified_as`.
-3. If the context node is named in the question, you may resolve it first with
+2. Use `find_by_classification` when the question is driven by a
+   classification label/reference.
+3. Otherwise use `traverse` with `belongs_to_system`, `in_zone`, or
+   `classified_as`.
+4. If the context node is named in the question, you may resolve it first with
    `fuzzy_find_nodes` or `find_nodes`, then traverse in the direction supported
    by the graph evidence.
 
 ### E. Host/connectivity questions
 
-1. Use `traverse` with `hosts`, `hosted_by`, or `ifc_connected_to`.
-2. If the user asks for path-like or network connectivity, consider
-   `get_topology_neighbors(..., relation="path_connected_to")` or repeated
-   `traverse` / connectivity exploration.
+1. Use `trace_distribution_network` for bounded network tracing from one anchor.
+2. Use `find_shortest_path` when the user asks for the path between two anchors.
+3. Use `traverse` with `hosts`, `hosted_by`, or `ifc_connected_to` only for
+   small targeted follow-up inspection.
+4. If the user asks for path-like topology specifically, consider
+   `get_topology_neighbors(..., relation="path_connected_to")`.
 
-### F. Vertical/contact/overlap questions
+### F. Space served-by questions
+
+Examples: "What equipment serves Room 101?", "Which unit supplies the kitchen?"
+
+1. Resolve the space anchor, usually with `fuzzy_find_nodes` if the room is named.
+2. Use `find_equipment_serving_space`.
+3. Only fall back to manual composition if the macro tool returns weak/empty
+   evidence and you need to inspect one specific candidate.
+
+### G. Vertical/contact/overlap questions
 
 1. Prefer `find_elements_above`, `find_elements_below`,
    `get_topology_neighbors`, or `get_intersections_3d`.
 2. Use `spatial_query` only as fallback for looser proximity answers.
 3. Keep `intersects_bbox` and `intersects_3d` distinct in your explanation.
 
-### G. Exact property questions
+### H. Exact property questions
 
 1. Resolve the target element first.
 2. Call `get_element_properties`.
 3. Read the requested value from returned evidence.
 4. If multiple candidates exist, compare them explicitly before answering.
 
-### H. Negative location / exclusion questions
+### I. Negative location / exclusion questions
 
 Examples: "What is in the building but not on the ground floor?", "Which
 elements belong to this zone but not this room?"
@@ -321,6 +412,18 @@ elements belong to this zone but not this room?"
 3. Do not fall back to broad unconstrained traversal unless the helper fails.
 4. Once the helper returns the needed set, stop and answer; do not keep
    exploring unrelated edges.
+
+### J. Aggregation / grouping over discovered graph sets
+
+Examples: "How many of these are fire-rated?", "Sum the net volume of the
+walls around this room.", "Group the found doors by level."
+
+1. First discover the exact element set with graph/search tools.
+2. Reuse the exact returned IDs or GlobalIds.
+3. Call `aggregate_elements` for count/sum/avg/min/max.
+4. Call `group_elements_by_property` for deterministic grouped breakdowns.
+5. Do not do set math, counting, summing, averaging, or grouping in the prompt
+   when one of these bridge tools applies.
 
 ---
 
@@ -352,9 +455,12 @@ budget and floods the context window.
   pseudo-Markdown.
 - If you present multiple entities, prefer short Markdown sections over one long
   paragraph.
-- Include `data` when it helps: IDs, sample records, counts from returned sets,
-  compared candidates, or relation evidence.
-- If you count results, count only what tools actually returned.
+- Ground claims with tool-returned IDs. Prefer `data.evidence[].global_id` when
+  present, otherwise use `data.evidence[].id` or other exact tool-returned IDs.
+- Include `data` when it helps: `evidence`, IDs, sample records, counts from
+  returned sets, compared candidates, or relation evidence.
+- If you count, sum, average, min/max, or group results, use the dedicated tool
+  outputs rather than doing the math in-context.
 - If uncertainty remains, keep the answer accurate and put the caveat in
   `warning`.
 - Do not mention hidden chain-of-thought. Report conclusions and evidence only.
@@ -393,11 +499,12 @@ immediately. Do not restate the answer outside the tool call first.
 # Precise schema reminder embedded in ModelRetry messages so the model
 # receives actionable correction guidance within the same run_sync call.
 _SCHEMA_CORRECTION_HINT = (
-    "Do NOT reply with plain assistant text. Your next response must be the "
+    "Your previous response was invalid. Your next response must be a real "
     "final_result tool call only.\n"
-    "final_result MUST be called with a single JSON object — "
-    "NO list/array wrapper, NO tool-call envelope "
-    "(tool_call_id / tool_name / parameters are NOT output fields).\n"
+    "Do NOT print plain text, Markdown, fenced JSON, a list/array wrapper, or "
+    "a tool-call envelope as text.\n"
+    "Call final_result with one JSON object only. Do NOT include tool_call_id, "
+    "tool_name, or parameters.\n"
     "Required schema:\n"
     "  answer   string       required — lightweight Markdown allowed\n"
     "  data     object|null  optional\n"
@@ -405,12 +512,33 @@ _SCHEMA_CORRECTION_HINT = (
     'Example: {"answer": "There are 5 walls.", "data": null, "warning": null}'
 )
 
+_OUTPUT_TOOL_REPAIR_PROMPT = (
+    "Repair the previous failed output formatting only. Use the tool evidence "
+    "already present in the message history and do not call any more graph tools.\n"
+    f"{_SCHEMA_CORRECTION_HINT}"
+)
+
+_OUTPUT_JSON_REPAIR_PROMPT = (
+    "Repair the previous failed output formatting only. Use the tool evidence "
+    "already present in the message history and do not call any more graph tools.\n"
+    "Return exactly one JSON object with keys `answer`, `data`, and `warning`.\n"
+    "Do NOT emit a tool-call wrapper, `tool_call_id`, `tool_name`, or `parameters`.\n"
+    "Do NOT emit Markdown fences or extra prose outside the JSON object."
+)
+
+_OUTPUT_TOOL_CALL_FAILURE_MARKERS = (
+    "please include your response in a tool call",
+    "tool call",
+    "output tool",
+    "final_result",
+)
+
 _FINAL_RESULT_TOOL = ToolOutput(
     GraphAnswer,
     name="final_result",
     description=(
         "Return the final graph answer as one JSON object with answer, optional "
-        "data, and optional warning."
+        "grounded data/evidence, and optional warning."
     ),
 )
 
@@ -418,14 +546,25 @@ _FINAL_RESULT_TOOL = ToolOutput(
 class GraphAgent:
     """Graph agent using PydanticAI with tool calling."""
 
-    def __init__(self, *, debug_llm_io: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        debug_llm_io: bool = False,
+        output_retries: int | None = None,
+    ) -> None:
         """Initialise graph agent with PydanticAI.
 
         Args:
             debug_llm_io: Enable debug printing (unused for PydanticAI;
                           kept for API compatibility).
+            output_retries: Structured-output validation retries. When None,
+                uses the checked-in config default or the built-in fallback.
         """
         self._debug_llm_io = debug_llm_io
+        resolved_output_retries = output_retries
+        if resolved_output_retries is None:
+            resolved_output_retries = get_default_graph_output_retries(_MODULE_DIR)
+        self._output_retries = resolved_output_retries
 
         model = get_agent_model()
         try:
@@ -444,10 +583,19 @@ class GraphAgent:
             system_prompt=SYSTEM_PROMPT,
             model_settings=model_settings,
             retries=2,
-            # Extra retries specifically for output schema validation.
-            # Increased from 3 to 5 to give the model more chances to
-            # produce valid JSON when it initially returns prose or extra keys.
-            output_retries=5,
+            output_retries=resolved_output_retries,
+        )
+        self._repair_agent: Agent[GraphRuntime, GraphAnswer] = Agent(
+            model,
+            deps_type=GraphRuntime,
+            output_type=GraphAnswer,
+            system_prompt=(
+                "You are a formatting-repair assistant. Repair only the final "
+                "output shape from the prior conversation. Do not call tools."
+            ),
+            model_settings=model_settings,
+            retries=1,
+            output_retries=resolved_output_retries,
         )
 
         register_graph_tools(self._agent)
@@ -520,32 +668,23 @@ class GraphAgent:
             'error' key if the agent run fails entirely.
         """
         last_invalid_tool_exc: ModelHTTPError | None = None
+        repair_attempted = False
         usage_limits = UsageLimits(
             request_limit=max(max_steps, 1),
             tool_calls_limit=max(max_steps, 1),
         )
 
         for attempt in range(_MAX_INVALID_TOOL_RETRIES + 1):
+            captured_messages: Sequence[ModelMessage] | None = None
             try:
-                result = self._agent.run_sync(
-                    question,
-                    deps=runtime,
-                    usage_limits=usage_limits,
-                )
+                with capture_run_messages() as captured_messages:
+                    result = self._agent.run_sync(
+                        question,
+                        deps=runtime,
+                        usage_limits=usage_limits,
+                    )
                 output = result.output
-                answer = _sanitize_model_text(output.answer) or ""
-                warning = _sanitize_model_text(output.warning)
-
-                response: dict[str, object] = {"answer": answer}
-                if output.data:
-                    response["data"] = output.data
-                if warning:
-                    response["warning"] = warning
-                response["answer"] = _polish_answer_with_data(
-                    str(response.get("answer", "")),
-                    response.get("data"),
-                )
-                return response
+                return _graph_answer_to_response(output)
 
             except ModelHTTPError as exc:
                 if _is_invalid_tool_generation(exc):
@@ -566,6 +705,19 @@ class GraphAgent:
                 return {"error": f"Agent execution failed: {exc}"}
 
             except UnexpectedModelBehavior as exc:
+                if (
+                    not repair_attempted
+                    and captured_messages
+                    and _should_attempt_output_tool_repair(exc)
+                ):
+                    repair_attempted = True
+                    repaired_response = self._attempt_output_tool_repair(
+                        runtime=runtime,
+                        message_history=captured_messages,
+                    )
+                    if repaired_response is not None:
+                        return repaired_response
+
                 # The model failed to produce a valid structured output even
                 # after all output_retries (including internal shape-correction
                 # attempts via the output_validator).  Return a safe fallback
@@ -646,6 +798,99 @@ class GraphAgent:
                 f"Last error: {last_invalid_tool_exc}"
             ),
         }
+
+    def _attempt_output_tool_repair(
+        self,
+        *,
+        runtime: GraphRuntime,
+        message_history: Sequence[ModelMessage],
+    ) -> dict[str, object] | None:
+        """Run one targeted repair pass for missing real output-tool calls."""
+        try:
+            repair_result = self._repair_agent.run_sync(
+                _OUTPUT_JSON_REPAIR_PROMPT,
+                deps=runtime,
+                usage_limits=UsageLimits(
+                    request_limit=max(
+                        self._output_retries + 1, _OUTPUT_REPAIR_REQUEST_LIMIT
+                    ),
+                    tool_calls_limit=_OUTPUT_REPAIR_TOOL_CALL_LIMIT,
+                ),
+                message_history=message_history,
+            )
+        except UnexpectedModelBehavior as exc:
+            _logger.warning("Output-tool repair pass failed: %s", exc)
+            return None
+        except Exception as exc:
+            _logger.warning("Output-tool repair pass raised unexpected error: %s", exc)
+            return None
+
+        _logger.warning("Recovered answer via targeted output-tool repair pass.")
+        return _graph_answer_to_response(repair_result.output)
+
+
+def _graph_answer_to_response(output: GraphAnswer) -> dict[str, object]:
+    """Convert validated graph output into the public response payload."""
+    answer = _sanitize_model_text(output.answer) or ""
+    warning = _sanitize_model_text(output.warning)
+
+    response: dict[str, object] = {"answer": answer}
+    if output.data:
+        response["data"] = output.data
+    if warning:
+        response["warning"] = warning
+    response["answer"] = _polish_answer_with_data(
+        str(response.get("answer", "")),
+        response.get("data"),
+    )
+    return response
+
+
+def _should_attempt_output_tool_repair(exc: UnexpectedModelBehavior) -> bool:
+    """Return True when the failure looks like a missing real output tool call."""
+    for candidate in _iter_output_tool_repair_candidates(exc):
+        text = _flatten_output_error_text(candidate).lower()
+        if not text:
+            continue
+        if any(marker in text for marker in _OUTPUT_TOOL_CALL_FAILURE_MARKERS):
+            return True
+    return False
+
+
+def _iter_output_tool_repair_candidates(
+    exc: UnexpectedModelBehavior,
+) -> list[object]:
+    """Collect nested exception payloads that may mention tool-call failures."""
+    candidates: list[object] = [getattr(exc, "body", None), str(exc)]
+
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        candidates.append(str(current))
+        candidates.append(getattr(current, "body", None))
+        next_exc = current.__cause__ or current.__context__
+        current = next_exc if isinstance(next_exc, BaseException) else None
+
+    return candidates
+
+
+def _flatten_output_error_text(payload: object) -> str:
+    """Collapse nested output-validation payloads into searchable text."""
+    if payload is None:
+        return ""
+    if isinstance(payload, str):
+        return payload
+    if isinstance(payload, dict):
+        parts = [
+            _flatten_output_error_text(value)
+            for key, value in payload.items()
+            if key in {"message", "error", "errors", "body", "input"}
+        ]
+        return " ".join(part for part in parts if part)
+    if isinstance(payload, list):
+        return " ".join(_flatten_output_error_text(item) for item in payload)
+    return str(payload)
 
 
 def _is_invalid_tool_generation(exc: ModelHTTPError) -> bool:
