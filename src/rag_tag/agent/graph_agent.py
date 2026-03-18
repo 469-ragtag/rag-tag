@@ -5,9 +5,17 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections.abc import Sequence
 from pathlib import Path
 
-from pydantic_ai import Agent, ModelRetry, RunContext, UnexpectedModelBehavior
+from pydantic_ai import (
+    Agent,
+    ModelMessage,
+    ModelRetry,
+    RunContext,
+    UnexpectedModelBehavior,
+    capture_run_messages,
+)
 from pydantic_ai.exceptions import ModelHTTPError, UsageLimitExceeded
 from pydantic_ai.output import ToolOutput
 from pydantic_ai.usage import UsageLimits
@@ -31,6 +39,8 @@ _MODULE_DIR = Path(__file__).resolve().parent
 # INVALID_TOOL_GENERATION (HTTP 422).  The first attempt is attempt 0, so the
 # total number of calls is _MAX_INVALID_TOOL_RETRIES + 1.
 _MAX_INVALID_TOOL_RETRIES = 2
+_OUTPUT_REPAIR_REQUEST_LIMIT = 2
+_OUTPUT_REPAIR_TOOL_CALL_LIMIT = 1
 
 
 def _is_pydantic_test_model(model: object) -> bool:
@@ -502,6 +512,27 @@ _SCHEMA_CORRECTION_HINT = (
     'Example: {"answer": "There are 5 walls.", "data": null, "warning": null}'
 )
 
+_OUTPUT_TOOL_REPAIR_PROMPT = (
+    "Repair the previous failed output formatting only. Use the tool evidence "
+    "already present in the message history and do not call any more graph tools.\n"
+    f"{_SCHEMA_CORRECTION_HINT}"
+)
+
+_OUTPUT_JSON_REPAIR_PROMPT = (
+    "Repair the previous failed output formatting only. Use the tool evidence "
+    "already present in the message history and do not call any more graph tools.\n"
+    "Return exactly one JSON object with keys `answer`, `data`, and `warning`.\n"
+    "Do NOT emit a tool-call wrapper, `tool_call_id`, `tool_name`, or `parameters`.\n"
+    "Do NOT emit Markdown fences or extra prose outside the JSON object."
+)
+
+_OUTPUT_TOOL_CALL_FAILURE_MARKERS = (
+    "please include your response in a tool call",
+    "tool call",
+    "output tool",
+    "final_result",
+)
+
 _FINAL_RESULT_TOOL = ToolOutput(
     GraphAnswer,
     name="final_result",
@@ -533,6 +564,7 @@ class GraphAgent:
         resolved_output_retries = output_retries
         if resolved_output_retries is None:
             resolved_output_retries = get_default_graph_output_retries(_MODULE_DIR)
+        self._output_retries = resolved_output_retries
 
         model = get_agent_model()
         try:
@@ -551,6 +583,18 @@ class GraphAgent:
             system_prompt=SYSTEM_PROMPT,
             model_settings=model_settings,
             retries=2,
+            output_retries=resolved_output_retries,
+        )
+        self._repair_agent: Agent[GraphRuntime, GraphAnswer] = Agent(
+            model,
+            deps_type=GraphRuntime,
+            output_type=GraphAnswer,
+            system_prompt=(
+                "You are a formatting-repair assistant. Repair only the final "
+                "output shape from the prior conversation. Do not call tools."
+            ),
+            model_settings=model_settings,
+            retries=1,
             output_retries=resolved_output_retries,
         )
 
@@ -624,32 +668,23 @@ class GraphAgent:
             'error' key if the agent run fails entirely.
         """
         last_invalid_tool_exc: ModelHTTPError | None = None
+        repair_attempted = False
         usage_limits = UsageLimits(
             request_limit=max(max_steps, 1),
             tool_calls_limit=max(max_steps, 1),
         )
 
         for attempt in range(_MAX_INVALID_TOOL_RETRIES + 1):
+            captured_messages: Sequence[ModelMessage] | None = None
             try:
-                result = self._agent.run_sync(
-                    question,
-                    deps=runtime,
-                    usage_limits=usage_limits,
-                )
+                with capture_run_messages() as captured_messages:
+                    result = self._agent.run_sync(
+                        question,
+                        deps=runtime,
+                        usage_limits=usage_limits,
+                    )
                 output = result.output
-                answer = _sanitize_model_text(output.answer) or ""
-                warning = _sanitize_model_text(output.warning)
-
-                response: dict[str, object] = {"answer": answer}
-                if output.data:
-                    response["data"] = output.data
-                if warning:
-                    response["warning"] = warning
-                response["answer"] = _polish_answer_with_data(
-                    str(response.get("answer", "")),
-                    response.get("data"),
-                )
-                return response
+                return _graph_answer_to_response(output)
 
             except ModelHTTPError as exc:
                 if _is_invalid_tool_generation(exc):
@@ -670,6 +705,19 @@ class GraphAgent:
                 return {"error": f"Agent execution failed: {exc}"}
 
             except UnexpectedModelBehavior as exc:
+                if (
+                    not repair_attempted
+                    and captured_messages
+                    and _should_attempt_output_tool_repair(exc)
+                ):
+                    repair_attempted = True
+                    repaired_response = self._attempt_output_tool_repair(
+                        runtime=runtime,
+                        message_history=captured_messages,
+                    )
+                    if repaired_response is not None:
+                        return repaired_response
+
                 # The model failed to produce a valid structured output even
                 # after all output_retries (including internal shape-correction
                 # attempts via the output_validator).  Return a safe fallback
@@ -750,6 +798,99 @@ class GraphAgent:
                 f"Last error: {last_invalid_tool_exc}"
             ),
         }
+
+    def _attempt_output_tool_repair(
+        self,
+        *,
+        runtime: GraphRuntime,
+        message_history: Sequence[ModelMessage],
+    ) -> dict[str, object] | None:
+        """Run one targeted repair pass for missing real output-tool calls."""
+        try:
+            repair_result = self._repair_agent.run_sync(
+                _OUTPUT_JSON_REPAIR_PROMPT,
+                deps=runtime,
+                usage_limits=UsageLimits(
+                    request_limit=max(
+                        self._output_retries + 1, _OUTPUT_REPAIR_REQUEST_LIMIT
+                    ),
+                    tool_calls_limit=_OUTPUT_REPAIR_TOOL_CALL_LIMIT,
+                ),
+                message_history=message_history,
+            )
+        except UnexpectedModelBehavior as exc:
+            _logger.warning("Output-tool repair pass failed: %s", exc)
+            return None
+        except Exception as exc:
+            _logger.warning("Output-tool repair pass raised unexpected error: %s", exc)
+            return None
+
+        _logger.warning("Recovered answer via targeted output-tool repair pass.")
+        return _graph_answer_to_response(repair_result.output)
+
+
+def _graph_answer_to_response(output: GraphAnswer) -> dict[str, object]:
+    """Convert validated graph output into the public response payload."""
+    answer = _sanitize_model_text(output.answer) or ""
+    warning = _sanitize_model_text(output.warning)
+
+    response: dict[str, object] = {"answer": answer}
+    if output.data:
+        response["data"] = output.data
+    if warning:
+        response["warning"] = warning
+    response["answer"] = _polish_answer_with_data(
+        str(response.get("answer", "")),
+        response.get("data"),
+    )
+    return response
+
+
+def _should_attempt_output_tool_repair(exc: UnexpectedModelBehavior) -> bool:
+    """Return True when the failure looks like a missing real output tool call."""
+    for candidate in _iter_output_tool_repair_candidates(exc):
+        text = _flatten_output_error_text(candidate).lower()
+        if not text:
+            continue
+        if any(marker in text for marker in _OUTPUT_TOOL_CALL_FAILURE_MARKERS):
+            return True
+    return False
+
+
+def _iter_output_tool_repair_candidates(
+    exc: UnexpectedModelBehavior,
+) -> list[object]:
+    """Collect nested exception payloads that may mention tool-call failures."""
+    candidates: list[object] = [getattr(exc, "body", None), str(exc)]
+
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        candidates.append(str(current))
+        candidates.append(getattr(current, "body", None))
+        next_exc = current.__cause__ or current.__context__
+        current = next_exc if isinstance(next_exc, BaseException) else None
+
+    return candidates
+
+
+def _flatten_output_error_text(payload: object) -> str:
+    """Collapse nested output-validation payloads into searchable text."""
+    if payload is None:
+        return ""
+    if isinstance(payload, str):
+        return payload
+    if isinstance(payload, dict):
+        parts = [
+            _flatten_output_error_text(value)
+            for key, value in payload.items()
+            if key in {"message", "error", "errors", "body", "input"}
+        ]
+        return " ".join(part for part in parts if part)
+    if isinstance(payload, list):
+        return " ".join(_flatten_output_error_text(item) for item in payload)
+    return str(payload)
 
 
 def _is_invalid_tool_generation(exc: ModelHTTPError) -> bool:
