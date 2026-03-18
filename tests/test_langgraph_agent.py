@@ -27,6 +27,19 @@ class FakeSpecialist:
         return {"answer": f"answer:{question}", "data": {"max_steps": max_steps}}
 
 
+def _joined_answer_synthesizer(state: object) -> dict[str, object]:
+    specialist_results = state["specialist_results"]
+    return {
+        "answer": " ".join(
+            item["result"]["answer"] for item in specialist_results if "result" in item
+        ),
+        "data": {
+            "subquestions": list(state["subquestions"]),
+            "specialist_results": list(specialist_results),
+        },
+    }
+
+
 @pytest.fixture(autouse=True)
 def _allow_langgraph_agent_without_installed_dependency(
     monkeypatch: pytest.MonkeyPatch,
@@ -48,6 +61,7 @@ def test_langgraph_agent_runs_sequential_specialist_calls_and_synthesizes() -> N
             specialist_step_cap=2,
         ),
         decompose=lambda question: ["part one", "part two"],
+        synthesize=_joined_answer_synthesizer,
     )
 
     result = agent.run(
@@ -71,6 +85,7 @@ def test_langgraph_agent_derives_budget_when_specialist_cap_is_unset() -> None:
             specialist_step_cap=None,
         ),
         decompose=lambda question: ["part one", "part two"],
+        synthesize=_joined_answer_synthesizer,
     )
 
     agent.run(
@@ -94,6 +109,7 @@ def test_langgraph_agent_falls_back_to_graph_agent_on_invalid_final_output() -> 
         orchestration_config=GraphOrchestrationConfig(
             max_subquestions=1,
             reserved_orchestration_steps=2,
+            specialist_step_cap=2,
             fallback_to_graph_agent=True,
         ),
         decompose=lambda question: ["focused subquestion"],
@@ -106,14 +122,14 @@ def test_langgraph_agent_falls_back_to_graph_agent_on_invalid_final_output() -> 
         max_steps=6,
     )
 
-    assert specialist.calls == [("focused subquestion", 4), ("original question", 6)]
+    assert specialist.calls == [("focused subquestion", 2), ("original question", 2)]
     assert result["answer"] == "answer:original question"
     assert "LangGraph orchestration failed; fell back to GraphAgent" in str(
         result["warning"]
     )
 
 
-def test_langgraph_agent_returns_error_when_fallback_is_disabled() -> None:
+def test_langgraph_agent_returns_bounded_answer_when_fallback_is_disabled() -> None:
     specialist = FakeSpecialist()
 
     def failing_synthesizer(state: object) -> dict[str, object]:
@@ -126,6 +142,7 @@ def test_langgraph_agent_returns_error_when_fallback_is_disabled() -> None:
             fallback_to_graph_agent=False,
             reserved_orchestration_steps=1,
         ),
+        decompose=lambda question: [question],
         synthesize=failing_synthesizer,
     )
 
@@ -135,10 +152,13 @@ def test_langgraph_agent_returns_error_when_fallback_is_disabled() -> None:
         max_steps=5,
     )
 
-    assert result == {"error": "LangGraph orchestration failed: synthesis failed"}
+    assert result["answer"] == "answer:original question"
+    assert "LangGraph synthesis failed: synthesis failed" in str(result["warning"])
 
 
-def test_langgraph_agent_budget_exhaustion_falls_back_once_and_returns() -> None:
+def test_langgraph_agent_budget_exhaustion_skips_fallback_when_no_budget_remains() -> (
+    None
+):
     specialist = FakeSpecialist()
     agent = LangGraphAgent(
         specialist=specialist,
@@ -156,12 +176,12 @@ def test_langgraph_agent_budget_exhaustion_falls_back_once_and_returns() -> None
         max_steps=2,
     )
 
-    assert specialist.calls == [("original question", 2)]
-    assert result["answer"] == "answer:original question"
-    assert "LangGraph orchestration failed; fell back to GraphAgent" in str(
+    assert specialist.calls == []
+    assert "I could not gather enough graph evidence" in str(result["answer"])
+    assert "Step budget exceeded before specialist call" in str(result["warning"])
+    assert "fallback was skipped because no step budget remained" in str(
         result["warning"]
     )
-    assert "Step budget exceeded before specialist call" in str(result["warning"])
 
 
 def test_langgraph_agent_budget_exhaustion_without_fallback_stays_bounded() -> None:
@@ -185,6 +205,29 @@ def test_langgraph_agent_budget_exhaustion_without_fallback_stays_bounded() -> N
     assert specialist.calls == []
     assert "I could not gather enough graph evidence" in str(result["answer"])
     assert "Step budget exceeded before specialist call" in str(result["warning"])
+
+
+def test_langgraph_agent_uses_model_backed_hooks_in_production_path() -> None:
+    specialist = FakeSpecialist()
+    agent = LangGraphAgent(
+        specialist=specialist,
+        orchestration_config=GraphOrchestrationConfig(
+            max_subquestions=2,
+            reserved_orchestration_steps=2,
+            specialist_step_cap=2,
+        ),
+    )
+    agent._decompose_with_model = lambda question: ["first", "second"]
+    agent._synthesize_with_model = _joined_answer_synthesizer
+
+    result = agent.run(
+        "original question",
+        wrap_networkx_graph(nx.MultiDiGraph()),
+        max_steps=8,
+    )
+
+    assert specialist.calls == [("first", 2), ("second", 2)]
+    assert result["answer"] == "answer:first answer:second"
 
 
 def test_langgraph_agent_init_requires_langgraph_dependency(

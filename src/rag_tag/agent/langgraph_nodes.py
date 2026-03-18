@@ -1,4 +1,4 @@
-"""Pure node functions for the future LangGraph graph orchestrator."""
+"""Pure node functions for the LangGraph graph orchestrator."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from .langgraph_state import LangGraphState, specialist_step_budget
 Decomposer = Callable[[str], Sequence[str]]
 SpecialistRunner = Callable[[str, int], dict[str, object]]
 Synthesizer = Callable[[LangGraphState], dict[str, object]]
+Finalizer = Callable[[LangGraphState], dict[str, object]]
 
 
 def decompose_question(
@@ -18,21 +19,27 @@ def decompose_question(
     decompose: Decomposer | None = None,
 ) -> LangGraphState:
     """Populate subquestions for the workflow, respecting config caps."""
-    if not state["decomposition_enabled"]:
-        state["subquestions"] = [state["question"]]
-        return state
+    try:
+        if not state["decomposition_enabled"]:
+            state["subquestions"] = [state["question"]]
+            return state
 
-    if decompose is None:
-        candidates = [state["question"]]
-    else:
-        candidates = [
-            item.strip() for item in decompose(state["question"]) if item.strip()
-        ]
+        if decompose is None:
+            candidates = [state["question"]]
+        else:
+            candidates = [
+                item.strip() for item in decompose(state["question"]) if item.strip()
+            ]
 
-    if not candidates:
-        candidates = [state["question"]]
+        if not candidates:
+            candidates = [state["question"]]
 
-    state["subquestions"] = list(candidates[: state["max_subquestions"]])
+        state["subquestions"] = list(candidates[: state["max_subquestions"]])
+    except Exception as exc:
+        state["warnings"].append(f"LangGraph decomposition failed: {exc}")
+        state["fallback_reason"] = str(exc)
+        state["fallback_required"] = state["fallback_to_graph_agent"]
+        state["subquestions"] = []
     return state
 
 
@@ -58,25 +65,34 @@ def run_specialist(
 
     budget = specialist_step_budget(state)
     if budget <= 0:
-        state["warnings"].append(
-            f"Step budget exceeded before specialist call for '{subquestion}'."
-        )
+        reason = f"Step budget exceeded before specialist call for '{subquestion}'."
+        state["warnings"].append(reason)
+        state["fallback_reason"] = reason
         state["fallback_required"] = state["fallback_to_graph_agent"]
         state["current_subquestion_index"] = len(state["subquestions"])
         state["current_subquestion"] = None
         return state
 
-    result = run_specialist_call(subquestion, budget)
-    state["specialist_results"].append(
-        {
-            "question": subquestion,
-            "result": result,
-            "budget_used": budget,
-        }
-    )
-    state["remaining_steps"] = max(int(state["remaining_steps"]) - budget, 0)
-    state["current_subquestion_index"] += 1
-    state["current_subquestion"] = None
+    try:
+        result = run_specialist_call(subquestion, budget)
+        state["specialist_results"].append(
+            {
+                "question": subquestion,
+                "result": result,
+                "budget_used": budget,
+            }
+        )
+        state["remaining_steps"] = max(int(state["remaining_steps"]) - budget, 0)
+        state["current_subquestion_index"] += 1
+        state["current_subquestion"] = None
+    except Exception as exc:
+        state["warnings"].append(
+            f"LangGraph specialist execution failed for '{subquestion}': {exc}"
+        )
+        state["fallback_reason"] = str(exc)
+        state["fallback_required"] = state["fallback_to_graph_agent"]
+        state["current_subquestion_index"] = len(state["subquestions"])
+        state["current_subquestion"] = None
     return state
 
 
@@ -98,6 +114,28 @@ def should_dispatch_next_subquestion(
     return "synthesize_answer"
 
 
+def route_after_decomposition(
+    state: LangGraphState,
+) -> Literal[
+    "dispatch_next_subquestion", "fallback_to_legacy_agent", "synthesize_answer"
+]:
+    """Route after decomposition based on failure and available work."""
+    if state["fallback_required"]:
+        return "fallback_to_legacy_agent"
+    return should_dispatch_next_subquestion(state)
+
+
+def route_after_specialist(
+    state: LangGraphState,
+) -> Literal[
+    "dispatch_next_subquestion", "fallback_to_legacy_agent", "synthesize_answer"
+]:
+    """Route after each specialist step."""
+    if state["fallback_required"]:
+        return "fallback_to_legacy_agent"
+    return should_dispatch_next_subquestion(state)
+
+
 def synthesize_answer(
     state: LangGraphState,
     *,
@@ -105,8 +143,14 @@ def synthesize_answer(
 ) -> LangGraphState:
     """Assemble a deterministic placeholder final payload from collected results."""
     if synthesize is not None:
-        state["final_output"] = synthesize(state)
-        return state
+        try:
+            state["final_output"] = synthesize(state)
+            return state
+        except Exception as exc:
+            state["warnings"].append(f"LangGraph synthesis failed: {exc}")
+            state["fallback_reason"] = str(exc)
+            state["fallback_required"] = state["fallback_to_graph_agent"]
+            return state
 
     answered = [
         item["result"].get("answer")
@@ -133,8 +177,51 @@ def synthesize_answer(
     return state
 
 
-def finalize_output(state: LangGraphState) -> dict[str, object]:
+def route_after_synthesis(
+    state: LangGraphState,
+) -> Literal["fallback_to_legacy_agent", "finalize_output"]:
+    """Route after synthesis based on whether fallback is required."""
+    if state["fallback_required"]:
+        return "fallback_to_legacy_agent"
+    return "finalize_output"
+
+
+def fallback_to_legacy_agent(
+    state: LangGraphState,
+    *,
+    run_fallback_call: SpecialistRunner,
+) -> LangGraphState:
+    """Retry once through the legacy GraphAgent when allowed and budgeted."""
+    if not state["fallback_required"]:
+        return state
+
+    budget = max(int(state["remaining_steps"]), 0)
+    if budget <= 0:
+        state["warnings"].append(
+            "LangGraph fallback was skipped because no step budget remained."
+        )
+        return state
+
+    try:
+        state["fallback_result"] = run_fallback_call(state["question"], budget)
+        state["remaining_steps"] = 0
+    except Exception as exc:
+        state["warnings"].append(f"LangGraph fallback execution failed: {exc}")
+        state["fallback_reason"] = str(exc)
+        state["fallback_result"] = {"error": f"Agent execution failed: {exc}"}
+        state["remaining_steps"] = 0
+    return state
+
+
+def finalize_output(
+    state: LangGraphState,
+    *,
+    finalize: Finalizer | None = None,
+) -> dict[str, object]:
     """Return the final output payload, synthesizing if needed."""
+    if finalize is not None:
+        state["final_output"] = finalize(state)
+        return state["final_output"]
     if state["final_output"] is None:
         synthesize_answer(state)
     return state["final_output"] or {

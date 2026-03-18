@@ -1,10 +1,19 @@
-"""Typed state helpers for the future LangGraph graph orchestrator."""
+"""Typed state helpers for the LangGraph graph orchestrator."""
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TypedDict
 
 from rag_tag.config import GraphOrchestrationConfig
+from rag_tag.graph import GraphRuntime
+
+
+@dataclass(frozen=True)
+class LangGraphRunContext:
+    """Per-run context supplied to the compiled LangGraph workflow."""
+
+    runtime: GraphRuntime
 
 
 class LangGraphState(TypedDict):
@@ -25,6 +34,8 @@ class LangGraphState(TypedDict):
     warnings: list[str]
     final_output: dict[str, object] | None
     fallback_required: bool
+    fallback_reason: str | None
+    fallback_result: dict[str, object] | None
 
 
 def build_initial_langgraph_state(
@@ -58,6 +69,8 @@ def build_initial_langgraph_state(
         warnings=[],
         final_output=None,
         fallback_required=False,
+        fallback_reason=None,
+        fallback_result=None,
     )
 
 
