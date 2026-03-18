@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from pydantic import BaseModel
@@ -12,7 +13,8 @@ from rag_tag.agent.graph_agent import GraphAgent
 from rag_tag.agent.models import GraphAnswer
 from rag_tag.llm import pydantic_ai as pydantic_ai_module
 from rag_tag.router import llm as router_llm_module
-from rag_tag.router.llm_models import LlmRouteResponse
+from rag_tag.router.llm_models import LlmFieldRef, LlmRouteResponse
+from rag_tag.router.models import RouteDecision
 
 
 def test_get_agent_model_resolves_databricks_profile_to_openai_chat_model(
@@ -304,6 +306,142 @@ def test_router_and_graph_agent_receive_configured_model_settings(
     }
 
 
+def test_llm_route_response_normalizes_null_filter_lists() -> None:
+    response = LlmRouteResponse.model_validate(
+        {
+            "route": "sql",
+            "intent": "count",
+            "ifc_class": "IfcDoor",
+            "property_filters": None,
+            "quantity_filters": "null",
+        }
+    )
+
+    assert response.property_filters == []
+    assert response.quantity_filters == []
+
+
+@pytest.mark.parametrize(
+    ("question", "response", "expected_reason_fragment"),
+    [
+        (
+            "What are the materials of all the walls located on the groundfloor?",
+            {
+                "route": "sql",
+                "intent": "list",
+                "ifc_class": "IfcWall",
+                "level_like": "ground floor",
+                "reason": "list walls by level",
+            },
+            "materials/color",
+        ),
+        (
+            "Compare the net volume of the right roof slab and the left roof slab. "
+            "Which is larger?",
+            {
+                "route": "sql",
+                "intent": "aggregate",
+                "ifc_class": "IfcSlab",
+                "aggregate_op": "max",
+                "aggregate_field": {"source": "quantity", "field": "NetVolume"},
+                "reason": "compare slabs",
+            },
+            "comparison between specific named elements",
+        ),
+        (
+            "What is the color (RGB or Material) of the geo-reference element?",
+            {
+                "route": "sql",
+                "intent": "list",
+                "ifc_class": "IfcElement",
+                "reason": "lookup color",
+            },
+            "fuzzy named-object lookup",
+        ),
+        (
+            "List all spaces located in the groundfloor",
+            {
+                "route": "sql",
+                "intent": "list",
+                "ifc_class": "IfcSpace",
+                "level_like": "ground floor",
+                "reason": "list spaces",
+            },
+            "IfcSpace + level/storey questions",
+        ),
+    ],
+)
+def test_route_with_llm_downgrades_sql_when_semantics_require_graph(
+    monkeypatch: pytest.MonkeyPatch,
+    question: str,
+    response: dict[str, Any],
+    expected_reason_fragment: str,
+) -> None:
+    decision = _route_with_fake_llm_response(
+        monkeypatch,
+        question,
+        LlmRouteResponse.model_validate(response),
+    )
+
+    assert decision.route == "graph"
+    assert expected_reason_fragment in decision.reason
+    assert decision.sql_request is None
+
+
+def test_route_with_llm_keeps_sql_for_supported_name_count_pattern(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    decision = _route_with_fake_llm_response(
+        monkeypatch,
+        "How many elements have the word roof in their name?",
+        LlmRouteResponse(
+            route="sql",
+            intent="count",
+            reason="bounded count over elements",
+        ),
+    )
+
+    assert decision.route == "sql"
+    assert decision.sql_request is not None
+    assert decision.sql_request.intent == "count"
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        LlmRouteResponse(
+            route="sql",
+            intent="aggregate",
+            ifc_class="IfcWall",
+            aggregate_op="sum",
+            aggregate_field=LlmFieldRef(
+                source="property",
+                field="Qto_WallBaseQuantities.NetVolume",
+            ),
+        ),
+        LlmRouteResponse(
+            route="sql",
+            intent="group",
+            ifc_class="IfcDoor",
+            group_by=LlmFieldRef(source="element", field="global_id"),
+        ),
+    ],
+)
+def test_route_with_llm_downgrades_source_inconsistent_or_unsupported_sql_fields(
+    monkeypatch: pytest.MonkeyPatch,
+    response: LlmRouteResponse,
+) -> None:
+    decision = _route_with_fake_llm_response(
+        monkeypatch,
+        "Route this as SQL",
+        response,
+    )
+
+    assert decision.route == "graph"
+    assert "downgraded to graph" in decision.reason
+    assert decision.sql_request is None
+
+
 def test_databricks_settings_strip_parallel_tool_calls_even_if_configured(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -375,6 +513,25 @@ def test_databricks_schema_transformer_inlines_nested_defs() -> None:
 
 def _dump_schema(schema: dict[str, object]) -> str:
     return json.dumps(schema, sort_keys=True)
+
+
+def _route_with_fake_llm_response(
+    monkeypatch: pytest.MonkeyPatch,
+    question: str,
+    response: LlmRouteResponse,
+) -> RouteDecision:
+    class FakeRouterAgent:
+        def __init__(self, model: object, **kwargs: object) -> None:
+            self.model = model
+            self.model_settings = kwargs.get("model_settings")
+
+        def run_sync(self, _question: str) -> SimpleNamespace:
+            return SimpleNamespace(output=response)
+
+    monkeypatch.setattr(router_llm_module, "get_router_model", lambda: "test-model")
+    monkeypatch.setattr(router_llm_module, "get_router_model_settings", lambda: None)
+    monkeypatch.setattr(router_llm_module, "Agent", FakeRouterAgent)
+    return router_llm_module.route_with_llm(question)
 
 
 def _write_project_marker(project_root: Path) -> None:

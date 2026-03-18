@@ -4,25 +4,29 @@ from __future__ import annotations
 
 import functools
 import json
+import shutil
+import subprocess
 import sys
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding as _Binding
-from textual.containers import ScrollableContainer, Vertical
+from textual.containers import Horizontal, ScrollableContainer, Vertical
 from textual.reactive import reactive
 from textual.theme import Theme
-from textual.widgets import Footer, Header, Input, Static
+from textual.widget import Widget
+from textual.widgets import Button, Footer, Header, Input, Markdown, Static
 from textual.worker import Worker
 
 from rag_tag.agent import GraphAgent
 from rag_tag.graph import GraphRuntime
 from rag_tag.query_service import execute_query, find_sqlite_dbs
 
-# Maximum Static widgets kept in the output area before oldest are pruned.
+# Maximum output widgets kept in the output area before oldest are pruned.
 _HISTORY_MAX = 200
 
 # Maximum JSON lines shown in verbose detail per answer.
@@ -86,6 +90,16 @@ class _QueryInput(Input):
     ]
 
 
+@dataclass(slots=True)
+class _TranscriptEntry:
+    """Structured transcript content kept independently from rendered widgets."""
+
+    kind: str
+    text: str
+    style: str = ""
+    verbose: bool = False
+
+
 class QueryApp(App[None]):
     """A minimal Textual TUI for querying IFC data."""
 
@@ -107,17 +121,28 @@ class QueryApp(App[None]):
         height: auto;
     }
 
+    #input-row {
+        dock: bottom;
+        height: auto;
+        margin: 0 1 1 1;
+    }
+
+    #input-row Input {
+        width: 1fr;
+        margin: 0 1 0 0;
+    }
+
+    #copy-transcript {
+        width: auto;
+        min-width: 18;
+    }
+
     #status-bar {
         dock: bottom;
         height: 1;
         background: $panel;
         color: $foreground;
         padding: 0 2;
-    }
-
-    Input {
-        dock: bottom;
-        margin: 0 1 1 1;
     }
 
     .question {
@@ -133,6 +158,12 @@ class QueryApp(App[None]):
     .answer {
         color: $success;
         text-style: bold;
+    }
+
+    .answer-markdown {
+        margin: 0 0 0 3;
+        color: $foreground;
+        background: transparent;
     }
 
     .error {
@@ -229,11 +260,13 @@ class QueryApp(App[None]):
         self._last_duration_ms: float = 0.0
         # Reference to the "working..." placeholder widget for the active query.
         self._working_widget: Static | None = None
+        self._working_transcript_entry: _TranscriptEntry | None = None
         # Handle to the active background worker (None when idle).
         self._worker: Worker | None = None
         # Logfire trace state (shown in welcome banner).
         self._trace_enabled: bool = trace_enabled
         self._logfire_url: str | None = logfire_url
+        self._transcript_entries: list[_TranscriptEntry] = []
 
     def compose(self) -> ComposeResult:
         """Build the widget tree."""
@@ -243,9 +276,11 @@ class QueryApp(App[None]):
             with ScrollableContainer(id="output-container"):
                 yield Vertical(id="output")
             yield Static(self._status_text(), id="status-bar")
-            yield _QueryInput(
-                placeholder="Type your question here...", id="query-input"
-            )
+            with Horizontal(id="input-row"):
+                yield _QueryInput(
+                    placeholder="Type your question here...", id="query-input"
+                )
+                yield Button("Copy transcript", id="copy-transcript")
 
         yield Footer()
 
@@ -323,8 +358,10 @@ class QueryApp(App[None]):
         output = self._output_panel()
         for child in list(output.children):
             child.remove()
+        self._transcript_entries.clear()
         # Working widget was a child of output; it no longer exists.
         self._working_widget = None
+        self._working_transcript_entry = None
         self._append_output("[Output cleared]")
 
     def action_toggle_verbose(self) -> None:
@@ -341,7 +378,22 @@ class QueryApp(App[None]):
         """Scroll the output area down one page (works while Input has focus)."""
         self._output_container().scroll_page_down(animate=True)
 
+    def action_copy_transcript(self) -> None:
+        """Copy the current transcript in a markdown-friendly form."""
+        transcript = self._build_transcript_markdown()
+        if not transcript:
+            self.notify("No transcript content to copy.", severity="warning")
+            return
+
+        method = self._copy_text_to_clipboard(transcript)
+        self.notify(f"Transcript copied via {method}.")
+
     # --------------------------------------------------------------- input flow
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        """Handle button actions."""
+        if event.button.id == "copy-transcript":
+            self.action_copy_transcript()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         """Handle a submitted question."""
@@ -363,6 +415,11 @@ class QueryApp(App[None]):
         self._append_output(f"Q: {question}", style="question")
 
         # Placeholder that will be replaced with [route] reason once done.
+        self._working_transcript_entry = self._record_transcript_entry(
+            kind="text",
+            text="   working...",
+            style="route",
+        )
         self._working_widget = Static("   working...", classes="route", markup=False)
         output = self._output_panel()
         output.mount(self._working_widget)
@@ -465,6 +522,10 @@ class QueryApp(App[None]):
         if self._working_widget is not None:
             self._working_widget.update(route_line)
             self._working_widget = None
+            if self._working_transcript_entry is not None:
+                self._working_transcript_entry.text = route_line
+                self._working_transcript_entry.style = "route"
+                self._working_transcript_entry = None
         else:
             self._append_output(route_line, style="route")
 
@@ -476,7 +537,7 @@ class QueryApp(App[None]):
             )
         else:
             answer = result.get("answer") or "No answer produced."
-            self._append_output(f"A: {answer}", style="answer")
+            self._append_answer_output(str(answer))
             warning = result.get("warning")
             if warning:
                 self._append_output(
@@ -502,6 +563,12 @@ class QueryApp(App[None]):
             self._working_widget.set_classes("error")
             self._working_widget.update(f"   Error: {self._truncate(error_msg, 80)}")
             self._working_widget = None
+            if self._working_transcript_entry is not None:
+                self._working_transcript_entry.text = (
+                    f"   Error: {self._truncate(error_msg, 80)}"
+                )
+                self._working_transcript_entry.style = "error"
+                self._working_transcript_entry = None
         else:
             self._append_output(f"Error: {error_msg}", style="error")
         self._finish_query()
@@ -574,13 +641,155 @@ class QueryApp(App[None]):
         if len(lines) > _VERBOSE_MAX_LINES:
             lines = lines[:_VERBOSE_MAX_LINES] + ["  ... (truncated)"]
 
+        self._record_transcript_entry(
+            kind="verbose_json",
+            text="\n".join(lines),
+            style="verbose-detail",
+            verbose=True,
+        )
         for line in lines:
-            self._append_output(line, verbose=True)
+            self._append_output(line, verbose=True, record=False)
 
     # ----------------------------------------------------------- output / status
 
+    def _append_answer_output(self, answer: str) -> None:
+        """Mount the answer label plus a Markdown-rendered answer body."""
+        self._append_output("A:", style="answer")
+        self._record_transcript_entry(
+            kind="markdown",
+            text=answer,
+            style="answer-markdown",
+        )
+        markdown = Markdown(answer, classes="answer-markdown")
+        setattr(markdown, "code_indent_guides", False)
+        self._mount_output_widget(markdown)
+
+    def _prune_transcript_history(self) -> None:
+        """Mirror the non-verbose widget history cap for transcript state."""
+        non_verbose_count = sum(
+            1 for entry in self._transcript_entries if not entry.verbose
+        )
+        if non_verbose_count < _HISTORY_MAX:
+            return
+
+        remove_count = non_verbose_count - _HISTORY_MAX + 1
+        kept_entries: list[_TranscriptEntry] = []
+        for entry in self._transcript_entries:
+            if not entry.verbose and remove_count > 0:
+                if entry is self._working_transcript_entry:
+                    self._working_transcript_entry = None
+                remove_count -= 1
+                continue
+            kept_entries.append(entry)
+        self._transcript_entries = kept_entries
+
+    def _record_transcript_entry(
+        self,
+        *,
+        kind: str,
+        text: str,
+        style: str = "",
+        verbose: bool = False,
+    ) -> _TranscriptEntry:
+        """Append an in-memory transcript entry, respecting the history cap."""
+        if not verbose:
+            self._prune_transcript_history()
+        entry = _TranscriptEntry(kind=kind, text=text, style=style, verbose=verbose)
+        self._transcript_entries.append(entry)
+        return entry
+
+    def _format_transcript_text(self, entry: _TranscriptEntry) -> str:
+        """Return markdown-friendly text for a non-Markdown transcript entry."""
+        if entry.style == "question" and entry.text.startswith("Q: "):
+            return f"**Q:** {entry.text[3:]}"
+        if entry.style == "answer" and entry.text == "A:":
+            return "**A:**"
+        if entry.style == "divider":
+            return "---"
+        return entry.text
+
+    def _build_transcript_markdown(self) -> str:
+        """Return the current transcript as markdown-friendly text."""
+        blocks: list[str] = []
+        for entry in self._transcript_entries:
+            if entry.verbose and not self.show_verbose:
+                continue
+
+            if entry.kind == "markdown":
+                blocks.append(entry.text)
+                continue
+
+            if entry.kind == "verbose_json":
+                blocks.append(f"```json\n{entry.text}\n```")
+                continue
+
+            blocks.append(self._format_transcript_text(entry))
+
+        return "\n\n".join(block for block in blocks if block)
+
+    @staticmethod
+    def _platform_clipboard_commands() -> list[list[str]]:
+        """Return candidate platform clipboard commands in preferred order."""
+        if sys.platform == "darwin":
+            return [["pbcopy"]]
+        if sys.platform.startswith("win"):
+            return [["clip"]]
+
+        commands: list[list[str]] = []
+        for name, command in (
+            ("wl-copy", ["wl-copy"]),
+            ("xclip", ["xclip", "-selection", "clipboard"]),
+            ("xsel", ["xsel", "--clipboard", "--input"]),
+        ):
+            if shutil.which(name):
+                commands.append(command)
+        return commands
+
+    def _copy_with_platform_clipboard(self, text: str) -> str | None:
+        """Copy text using a local platform clipboard command when available."""
+        for command in self._platform_clipboard_commands():
+            try:
+                subprocess.run(command, input=text, text=True, check=True)
+            except (FileNotFoundError, subprocess.SubprocessError):
+                continue
+            return command[0]
+        return None
+
+    def _copy_text_to_clipboard(self, text: str) -> str:
+        """Copy text using a local clipboard command or Textual fallback."""
+        method = self._copy_with_platform_clipboard(text)
+        if method is not None:
+            return method
+
+        self.copy_to_clipboard(text)
+        return "terminal clipboard"
+
+    def _mount_output_widget(self, widget: Widget, *, verbose: bool = False) -> None:
+        """Mount an output widget, pruning history and preserving scroll behavior."""
+        output = self._output_panel()
+
+        if verbose:
+            widget.add_class("verbose-detail")
+            if self.show_verbose:
+                widget.add_class("visible")
+        else:
+            children = list(output.children)
+            non_verbose = [c for c in children if "verbose-detail" not in c.classes]
+            if len(non_verbose) >= _HISTORY_MAX:
+                remove_count = len(non_verbose) - _HISTORY_MAX + 1
+                for child in non_verbose[:remove_count]:
+                    child.remove()
+
+        output.mount(widget)
+        self._output_container().scroll_end(animate=False)
+
     def _append_output(
-        self, text: str, *, style: str = "", verbose: bool = False
+        self,
+        text: str,
+        *,
+        style: str = "",
+        verbose: bool = False,
+        record: bool = True,
     ) -> None:
         """Mount a plain-text Static line, pruning history when over _HISTORY_MAX.
 
@@ -590,32 +799,22 @@ class QueryApp(App[None]):
             verbose: When True, the widget also gets the verbose-detail class.
                 Verbose-detail widgets are excluded from the history cap so that
                 hidden JSON lines do not displace visible Q/A content.
+            record: When True, also append the line to in-memory transcript state.
         """
-        output = self._output_panel()
-
-        # Keep memory bounded.  Verbose-detail widgets (hidden by default) must
-        # not count toward the cap or they would silently crowd out visible lines.
-        if not verbose:
-            children = list(output.children)
-            non_verbose = [c for c in children if "verbose-detail" not in c.classes]
-            if len(non_verbose) >= _HISTORY_MAX:
-                remove_count = len(non_verbose) - _HISTORY_MAX + 1
-                for child in non_verbose[:remove_count]:
-                    child.remove()
-
-        # Build the CSS class string.
+        if record:
+            self._record_transcript_entry(
+                kind="text",
+                text=text,
+                style=style,
+                verbose=verbose,
+            )
         classes: list[str] = []
         if style:
             classes.append(style)
-        if verbose:
-            classes.append("verbose-detail")
-            if self.show_verbose:
-                classes.append("visible")
-
-        line = Static(text, classes=" ".join(classes), markup=False)
-        output.mount(line)
-
-        self._output_container().scroll_end(animate=False)
+        self._mount_output_widget(
+            Static(text, classes=" ".join(classes), markup=False),
+            verbose=verbose,
+        )
 
     def _update_status(self, text: str) -> None:
         """Replace the status-bar content."""

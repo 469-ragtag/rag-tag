@@ -10,6 +10,7 @@ without changing public action names or response contracts.
 
 from __future__ import annotations
 
+from collections import deque
 from typing import Any
 
 from pydantic_ai import RunContext
@@ -17,12 +18,28 @@ from rapidfuzz import fuzz, process
 
 from rag_tag.graph import GraphRuntime, get_networkx_graph
 from rag_tag.graph.payloads import sanitize_properties_for_llm
-from rag_tag.graph_contract import make_error_envelope
+from rag_tag.graph_contract import (
+    collect_evidence,
+    make_error_envelope,
+    normalize_relation_name,
+)
 from rag_tag.ifc_graph_tool import query_ifc_graph
 
 # Minimum rapidfuzz WRatio score (0-100) to accept a fuzzy class normalisation.
 _CLASS_FUZZY_THRESHOLD = 72
 _TYPE_INTENT_TERMS = ("type", "family", "template", "style", "kind")
+_CONTAINER_CLASSES = {
+    "IfcProject",
+    "IfcSite",
+    "IfcBuilding",
+    "IfcBuildingStorey",
+    "IfcSpace",
+    "IfcZone",
+    "IfcSpatialZone",
+    "IfcTypeObject",
+}
+_ZONE_CONTAINER_CLASSES = {"IfcZone", "IfcSpatialZone"}
+_CONTAINER_EDGE_RELATIONS = {"contains", "aggregates"}
 
 
 # ---------------------------------------------------------------------------
@@ -138,16 +155,146 @@ def _fuzzy_find_nodes_impl(
             )
 
     results.sort(key=lambda x: x["score"], reverse=True)
+    visible_results = results[:top_k]
+    evidence = collect_evidence(
+        visible_results,
+        source_tool="fuzzy_find_nodes",
+        match_reason_builder=lambda item: f"fuzzy_score={item['score']}",
+    )
     return {
         "status": "ok",
         "data": {
             "query": query,
             "class_filter": class_filter,
-            "matches": results[:top_k],
+            "matches": visible_results,
             "total": len(results),
+            "evidence": evidence,
         },
         "error": None,
     }
+
+
+def _find_container_elements_excluding_impl(
+    runtime: GraphRuntime,
+    container_id: str,
+    exclude_container_ids: list[str] | None = None,
+    depth: int = 4,
+) -> dict[str, Any]:
+    """Return non-container members of one container minus excluded containers."""
+    graph = get_networkx_graph(runtime)
+
+    if container_id not in graph:
+        return make_error_envelope(
+            f"Container not found: {container_id}",
+            "not_found",
+        )
+
+    exclude_container_ids = exclude_container_ids or []
+    missing = [node_id for node_id in exclude_container_ids if node_id not in graph]
+    if missing:
+        return make_error_envelope(
+            f"Excluded container not found: {missing[0]}",
+            "not_found",
+        )
+
+    if depth < 1:
+        return make_error_envelope(
+            "Depth must be at least 1.",
+            "invalid",
+        )
+
+    included = _collect_container_descendants(graph, [container_id], depth=depth)
+    excluded = _collect_container_descendants(
+        graph,
+        exclude_container_ids,
+        depth=depth,
+    )
+    element_ids = sorted(
+        included - excluded,
+        key=lambda node_id: (
+            str(graph.nodes[node_id].get("label") or ""),
+            str(node_id),
+        ),
+    )
+
+    elements = [
+        {
+            "id": node_id,
+            "label": graph.nodes[node_id].get("label"),
+            "class_": graph.nodes[node_id].get("class_"),
+            "properties": sanitize_properties_for_llm(
+                graph.nodes[node_id].get("properties") or {}
+            ),
+            "payload": None,
+        }
+        for node_id in element_ids
+    ]
+
+    return {
+        "status": "ok",
+        "data": {
+            "container_id": container_id,
+            "exclude_container_ids": exclude_container_ids,
+            "count": len(element_ids),
+            "elements": elements,
+            "evidence": collect_evidence(
+                elements,
+                source_tool="find_container_elements_excluding",
+            ),
+        },
+        "error": None,
+    }
+
+
+def _collect_container_descendants(
+    graph: Any,
+    start_ids: list[str],
+    *,
+    depth: int,
+) -> set[str]:
+    """Collect non-container descendants reachable via container membership edges."""
+    if not start_ids:
+        return set()
+
+    seen = set(start_ids)
+    descendants: set[str] = set()
+    queue: deque[tuple[str, int]] = deque((node_id, 0) for node_id in start_ids)
+
+    while queue:
+        node_id, node_depth = queue.popleft()
+        if node_depth >= depth:
+            continue
+
+        if graph.nodes[node_id].get("class_") in _ZONE_CONTAINER_CLASSES:
+            for source_id, _target, edge_data in graph.in_edges(node_id, data=True):
+                relation = normalize_relation_name(edge_data.get("relation"))
+                if relation != "in_zone":
+                    continue
+                if source_id in seen:
+                    continue
+
+                seen.add(source_id)
+                queue.append((source_id, node_depth + 1))
+
+                if graph.nodes[source_id].get("class_") in _CONTAINER_CLASSES:
+                    continue
+                descendants.add(source_id)
+
+        for _src, target_id, edge_data in graph.out_edges(node_id, data=True):
+            relation = normalize_relation_name(edge_data.get("relation"))
+            if relation not in _CONTAINER_EDGE_RELATIONS:
+                continue
+            if target_id in seen:
+                continue
+
+            seen.add(target_id)
+            queue.append((target_id, node_depth + 1))
+
+            if graph.nodes[target_id].get("class_") in _CONTAINER_CLASSES:
+                continue
+            descendants.add(target_id)
+
+    return descendants
 
 
 # ---------------------------------------------------------------------------
@@ -272,6 +419,26 @@ def register_graph_tools(agent: Any) -> None:
         return query_ifc_graph(ctx.deps, "get_elements_in_storey", {"storey": storey})
 
     @agent.tool
+    def find_container_elements_excluding(
+        ctx: RunContext[GraphRuntime],
+        container_id: str,
+        exclude_container_ids: list[str] | None = None,
+        depth: int = 4,
+    ) -> dict[str, Any]:
+        """List elements inside one container while excluding other containers.
+
+        Use this for questions like:
+        - elements in a building but not in a given storey
+        - elements in a space/zone/building excluding another container subset
+        """
+        return _find_container_elements_excluding_impl(
+            ctx.deps,
+            container_id,
+            exclude_container_ids=exclude_container_ids,
+            depth=depth,
+        )
+
+    @agent.tool
     def find_elements_by_class(
         ctx: RunContext[GraphRuntime],
         class_: str,
@@ -372,4 +539,135 @@ def register_graph_tools(agent: Any) -> None:
         """
         return query_ifc_graph(
             ctx.deps, "get_element_properties", {"element_id": element_id}
+        )
+
+    @agent.tool
+    def trace_distribution_network(
+        ctx: RunContext[GraphRuntime],
+        start: str,
+        max_depth: int = 3,
+        relations: list[str] | None = None,
+        max_results: int = 25,
+    ) -> dict[str, Any]:
+        """Trace a bounded distribution/network path set from a starting node.
+
+        Prefer this over repeated `traverse` calls for network-style questions
+        such as "what is connected downstream of this terminal?" or "trace this
+        branch of the system".
+        """
+        params: dict[str, Any] = {
+            "start": start,
+            "max_depth": max_depth,
+            "max_results": max_results,
+        }
+        if relations:
+            params["relations"] = relations
+        return query_ifc_graph(ctx.deps, "trace_distribution_network", params)
+
+    @agent.tool
+    def find_equipment_serving_space(
+        ctx: RunContext[GraphRuntime],
+        space: str,
+        max_depth: int = 4,
+        max_results: int = 10,
+    ) -> dict[str, Any]:
+        """Find likely equipment serving a space using bounded graph reasoning.
+
+        Use this for HVAC/MEP-style questions about what serves a room/space.
+        It combines space boundary clues, terminal discovery, and bounded network
+        tracing instead of forcing the model to compose many low-level traversals.
+        """
+        return query_ifc_graph(
+            ctx.deps,
+            "find_equipment_serving_space",
+            {
+                "space": space,
+                "max_depth": max_depth,
+                "max_results": max_results,
+            },
+        )
+
+    @agent.tool
+    def find_shortest_path(
+        ctx: RunContext[GraphRuntime],
+        start: str,
+        end: str,
+        max_path_length: int = 8,
+        relations: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Compute a bounded shortest path between two graph anchors.
+
+        Prefer this over manual hop-by-hop traversal when the user asks for the
+        connection/path between two known elements or context nodes.
+        """
+        params: dict[str, Any] = {
+            "start": start,
+            "end": end,
+            "max_path_length": max_path_length,
+        }
+        if relations:
+            params["relations"] = relations
+        return query_ifc_graph(ctx.deps, "find_shortest_path", params)
+
+    @agent.tool
+    def find_by_classification(
+        ctx: RunContext[GraphRuntime],
+        classification: str,
+        max_results: int = 25,
+    ) -> dict[str, Any]:
+        """Find elements linked to matching classification context nodes.
+
+        Use this when the question mentions a classification label, code, or
+        reference rather than an IFC class name.
+        """
+        return query_ifc_graph(
+            ctx.deps,
+            "find_by_classification",
+            {
+                "classification": classification,
+                "max_results": max_results,
+            },
+        )
+
+    @agent.tool
+    def aggregate_elements(
+        ctx: RunContext[GraphRuntime],
+        element_ids: list[str],
+        metric: str,
+        field: str | None = None,
+    ) -> dict[str, Any]:
+        """Aggregate an exact graph-discovered element set via the SQLite context.
+
+        Use this after graph tools return element IDs or GlobalIds and the user
+        asks for a deterministic count, sum, average, minimum, or maximum over
+        that exact set. Do not count or sum in the prompt when this tool fits.
+        """
+        params: dict[str, Any] = {
+            "element_ids": element_ids,
+            "metric": metric,
+        }
+        if field is not None:
+            params["field"] = field
+        return query_ifc_graph(ctx.deps, "aggregate_elements", params)
+
+    @agent.tool
+    def group_elements_by_property(
+        ctx: RunContext[GraphRuntime],
+        element_ids: list[str],
+        property_key: str,
+        max_groups: int = 20,
+    ) -> dict[str, Any]:
+        """Group an exact graph-discovered element set by one DB-backed field.
+
+        Use this after graph discovery when the user asks for a deterministic
+        breakdown by level, type, property, or quantity value.
+        """
+        return query_ifc_graph(
+            ctx.deps,
+            "group_elements_by_property",
+            {
+                "element_ids": element_ids,
+                "property_key": property_key,
+                "max_groups": max_groups,
+            },
         )

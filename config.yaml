@@ -17,6 +17,8 @@ graph_orchestration:
     reserved_orchestration_steps: 3
     specialist_step_cap: null
     fallback_to_graph_agent: true
+    graph_max_steps: 20
+    graph_output_retries: 5
 
 providers:
     databricks:

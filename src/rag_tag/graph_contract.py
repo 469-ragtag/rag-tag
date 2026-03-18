@@ -10,6 +10,7 @@ This module is the single source of truth for:
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterable, Mapping
 from typing import Any
 
 # ---------------------------------------------------------------------------
@@ -29,9 +30,26 @@ CANONICAL_ACTIONS: tuple[str, ...] = (
     "find_elements_below",
     "get_element_properties",
     "list_property_keys",
+    "trace_distribution_network",
+    "find_equipment_serving_space",
+    "find_shortest_path",
+    "find_by_classification",
+    "aggregate_elements",
+    "group_elements_by_property",
 )
 
 CANONICAL_ACTION_SET = frozenset(CANONICAL_ACTIONS)
+
+ROADMAP_ACTIONS: tuple[str, ...] = (
+    "trace_distribution_network",
+    "find_equipment_serving_space",
+    "find_shortest_path",
+    "find_by_classification",
+    "aggregate_elements",
+    "group_elements_by_property",
+)
+
+ROADMAP_ACTION_SET = frozenset(ROADMAP_ACTIONS)
 
 
 # ---------------------------------------------------------------------------
@@ -102,35 +120,296 @@ KNOWN_RELATION_SOURCE_SET = frozenset(KNOWN_RELATION_SOURCES)
 # Action payload invariants
 # ---------------------------------------------------------------------------
 
+EVIDENCE_LIMIT = 5
+
 # Defaults also define required field presence for each action's data payload.
 ACTION_DATA_DEFAULTS: dict[str, dict[str, Any]] = {
-    "get_elements_in_storey": {"storey": None, "elements": []},
-    "find_elements_by_class": {"class": None, "elements": []},
-    "get_adjacent_elements": {"element_id": None, "adjacent": []},
+    "get_elements_in_storey": {"storey": None, "elements": [], "evidence": []},
+    "find_elements_by_class": {"class": None, "elements": [], "evidence": []},
+    "get_adjacent_elements": {"element_id": None, "adjacent": [], "evidence": []},
     "get_topology_neighbors": {
         "element_id": None,
         "relation": None,
         "neighbors": [],
+        "evidence": [],
     },
-    "get_intersections_3d": {"element_id": None, "intersections_3d": []},
-    "find_nodes": {"class": None, "elements": []},
-    "traverse": {"start": None, "relation": None, "depth": 1, "results": []},
-    "spatial_query": {"near": None, "max_distance": None, "results": []},
-    "find_elements_above": {"element_id": None, "max_gap": None, "results": []},
-    "find_elements_below": {"element_id": None, "max_gap": None, "results": []},
+    "get_intersections_3d": {
+        "element_id": None,
+        "intersections_3d": [],
+        "evidence": [],
+    },
+    "find_nodes": {"class": None, "elements": [], "evidence": []},
+    "traverse": {
+        "start": None,
+        "relation": None,
+        "depth": 1,
+        "results": [],
+        "evidence": [],
+    },
+    "spatial_query": {
+        "near": None,
+        "max_distance": None,
+        "results": [],
+        "evidence": [],
+    },
+    "find_elements_above": {
+        "element_id": None,
+        "max_gap": None,
+        "results": [],
+        "evidence": [],
+    },
+    "find_elements_below": {
+        "element_id": None,
+        "max_gap": None,
+        "results": [],
+        "evidence": [],
+    },
     "get_element_properties": {
         "id": None,
         "label": None,
         "class_": None,
         "properties": {},
         "payload": None,
+        "evidence": [],
     },
-    "list_property_keys": {"keys": [], "class_filter": None},
+    "list_property_keys": {"keys": [], "class_filter": None, "evidence": []},
+    "trace_distribution_network": {
+        "start": None,
+        "relation": None,
+        "max_depth": None,
+        "results": [],
+        "evidence": [],
+    },
+    "find_equipment_serving_space": {
+        "space": None,
+        "equipment": [],
+        "evidence": [],
+    },
+    "find_shortest_path": {
+        "start": None,
+        "end": None,
+        "relation": None,
+        "path": [],
+        "evidence": [],
+    },
+    "find_by_classification": {
+        "classification": None,
+        "elements": [],
+        "evidence": [],
+    },
+    "aggregate_elements": {
+        "metric": None,
+        "field": None,
+        "field_source": None,
+        "aggregate_value": None,
+        "matched_element_count": 0,
+        "unmatched_element_count": 0,
+        "missing_value_count": 0,
+        "sample": [],
+        "evidence": [],
+    },
+    "group_elements_by_property": {
+        "property_key": None,
+        "field_source": None,
+        "groups": [],
+        "matched_element_count": 0,
+        "unmatched_element_count": 0,
+        "missing_value_count": 0,
+        "evidence": [],
+    },
 }
 
 ACTION_REQUIRED_DATA_FIELDS: dict[str, tuple[str, ...]] = {
     action: tuple(defaults.keys()) for action, defaults in ACTION_DATA_DEFAULTS.items()
 }
+
+ACTION_EVIDENCE_FIELDS: dict[str, tuple[str, ...]] = {
+    "get_elements_in_storey": ("elements",),
+    "find_elements_by_class": ("elements",),
+    "get_adjacent_elements": ("adjacent",),
+    "get_topology_neighbors": ("neighbors",),
+    "get_intersections_3d": ("intersections_3d",),
+    "find_nodes": ("elements",),
+    "traverse": ("results",),
+    "spatial_query": ("results",),
+    "find_elements_above": ("results",),
+    "find_elements_below": ("results",),
+    "get_element_properties": (),
+    "find_equipment_serving_space": ("equipment",),
+    "find_shortest_path": ("path",),
+    "find_by_classification": ("elements",),
+    "aggregate_elements": (),
+    "group_elements_by_property": (),
+}
+
+
+def _fresh_mapping(value: Mapping[str, Any]) -> dict[str, Any]:
+    return dict(value.items())
+
+
+def _iter_candidate_mappings(record: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    candidates: list[Mapping[str, Any]] = [record]
+    for key in ("node", "element", "item"):
+        nested = record.get(key)
+        if isinstance(nested, Mapping):
+            candidates.append(nested)
+    return candidates
+
+
+def _iter_property_mappings(
+    candidates: Iterable[Mapping[str, Any]],
+) -> list[Mapping[str, Any]]:
+    property_mappings: list[Mapping[str, Any]] = []
+    for mapping in candidates:
+        for key in ("properties", "payload"):
+            nested = mapping.get(key)
+            if isinstance(nested, Mapping):
+                property_mappings.append(nested)
+    return property_mappings
+
+
+def _first_present(
+    mappings: Iterable[Mapping[str, Any]],
+    *keys: str,
+) -> Any:
+    for mapping in mappings:
+        for key in keys:
+            if key not in mapping:
+                continue
+            value = mapping.get(key)
+            if value is None or value == "":
+                continue
+            return value
+    return None
+
+
+def build_evidence_item(
+    record: Mapping[str, Any] | None,
+    *,
+    source_tool: str | None = None,
+    relation: str | None = None,
+    match_reason: str | None = None,
+    ordinal: int | None = None,
+) -> dict[str, Any] | None:
+    """Build one compact evidence item from a graph or SQL result record."""
+    if not isinstance(record, Mapping):
+        return None
+
+    candidates = _iter_candidate_mappings(record)
+    all_mappings = [*candidates, *_iter_property_mappings(candidates)]
+
+    global_id = _first_present(all_mappings, "global_id", "GlobalId")
+    internal_id = _first_present(
+        all_mappings,
+        "id",
+        "element_id",
+        "node_id",
+        "express_id",
+        "to",
+    )
+    label = _first_present(all_mappings, "label", "name", "Name")
+    class_ = _first_present(all_mappings, "class_", "ifc_class", "Class", "IfcType")
+    relation_value = relation or _first_present(candidates, "relation")
+    normalized_relation = normalize_relation_name(relation_value)
+
+    evidence: dict[str, Any] = {}
+    if global_id is not None:
+        evidence["global_id"] = global_id
+    if internal_id is not None:
+        evidence["id"] = internal_id
+    elif ordinal is not None:
+        evidence["ordinal"] = ordinal
+    if label is not None:
+        evidence["label"] = label
+    if class_ is not None:
+        evidence["class_"] = class_
+    if source_tool:
+        evidence["source_tool"] = source_tool
+    if normalized_relation is not None:
+        evidence["relation"] = normalized_relation
+    if match_reason:
+        evidence["match_reason"] = match_reason
+
+    return evidence or None
+
+
+def collect_evidence(
+    records: Iterable[Mapping[str, Any] | None],
+    *,
+    source_tool: str | None = None,
+    limit: int = EVIDENCE_LIMIT,
+    match_reason_builder: Callable[[Mapping[str, Any]], str | None] | None = None,
+) -> list[dict[str, Any]]:
+    """Build a compact evidence list from result records."""
+    evidence_items: list[dict[str, Any]] = []
+    for ordinal, record in enumerate(records, start=1):
+        if not isinstance(record, Mapping):
+            continue
+        match_reason = (
+            match_reason_builder(record) if match_reason_builder is not None else None
+        )
+        evidence_item = build_evidence_item(
+            record,
+            source_tool=source_tool,
+            match_reason=match_reason,
+            ordinal=ordinal,
+        )
+        if evidence_item is None:
+            continue
+        evidence_items.append(evidence_item)
+        if len(evidence_items) >= limit:
+            break
+    return evidence_items
+
+
+def merge_evidence_items(
+    *evidence_groups: Iterable[Mapping[str, Any]] | None,
+    limit: int = EVIDENCE_LIMIT,
+) -> list[dict[str, Any]]:
+    """Merge compact evidence groups while preserving order and uniqueness."""
+    merged: list[dict[str, Any]] = []
+    seen: set[tuple[Any, ...]] = set()
+
+    for group in evidence_groups:
+        if group is None:
+            continue
+        for item in group:
+            if not isinstance(item, Mapping):
+                continue
+            key = (
+                item.get("global_id"),
+                item.get("id"),
+                item.get("ordinal"),
+                item.get("label"),
+                item.get("class_"),
+                item.get("relation"),
+                item.get("source_tool"),
+                item.get("match_reason"),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(_fresh_mapping(item))
+            if len(merged) >= limit:
+                return merged
+
+    return merged
+
+
+def build_action_evidence(
+    action: str, data: Mapping[str, Any] | None
+) -> list[dict[str, Any]]:
+    """Derive compact evidence for one canonical action payload."""
+    if not isinstance(data, Mapping):
+        return []
+    if action == "get_element_properties":
+        return collect_evidence([data], source_tool=action)
+
+    for field_name in ACTION_EVIDENCE_FIELDS.get(action, ()):
+        records = data.get(field_name)
+        if isinstance(records, list) and records:
+            return collect_evidence(records, source_tool=action)
+    return []
 
 
 def normalize_action_name(action: str) -> str:
@@ -220,9 +499,14 @@ def missing_required_action_fields(
 
 def make_ok_envelope(action: str, data: dict[str, Any] | None) -> dict[str, Any]:
     """Build a successful contract envelope with action data invariants applied."""
+    stable_data = ensure_action_data_fields(action, data)
+    stable_data["evidence"] = merge_evidence_items(
+        stable_data.get("evidence"),
+        build_action_evidence(action, stable_data),
+    )
     return {
         "status": "ok",
-        "data": ensure_action_data_fields(action, data),
+        "data": stable_data,
         "error": None,
     }
 
