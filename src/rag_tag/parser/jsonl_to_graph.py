@@ -1,4 +1,5 @@
-# builds a NetworkX graph from the .jsonl files produced by ifc_to_jsonl.py
+# builds the in-memory graph catalog from the .jsonl files produced by
+# ifc_to_jsonl.py
 # each node represents an IFC element with its geometry and properties attached
 # edges represent containment (which floor/space something is in),
 # spatial proximity (adjacent_to / connected_to), topology (above/below/overlaps),
@@ -34,11 +35,11 @@ from dataclasses import dataclass
 from itertools import product
 from pathlib import Path
 
-import networkx as nx
 import numpy as np
 import plotly.graph_objects as go
 import plotly.io as pio
 
+from rag_tag.graph.catalog import GraphCatalog
 from rag_tag.paths import find_project_root
 
 LOG = logging.getLogger(__name__)
@@ -340,7 +341,7 @@ def _build_occ_shape_index(
 
 
 def _get_occ_shape_index(
-    G: nx.DiGraph | nx.MultiDiGraph,
+    G: GraphCatalog,
     element_refs: list[tuple[str, str, str]],
 ) -> dict[str, object]:
     """Return cached OCC shape index for the graph, building it if needed."""
@@ -755,7 +756,7 @@ def _context_node_id(
 
 
 def _add_explicit_relationships(
-    G: nx.DiGraph | nx.MultiDiGraph,
+    G: GraphCatalog,
     node_id: str,
     rels: dict,
     node_id_by_gid: dict[str, str],
@@ -915,9 +916,7 @@ def _add_explicit_relationships(
 # --- graph construction ---
 
 
-def _add_containment_edge(
-    G: nx.DiGraph | nx.MultiDiGraph, parent_id: str, child_id: str
-) -> None:
+def _add_containment_edge(G: GraphCatalog, parent_id: str, child_id: str) -> None:
     if parent_id == child_id:
         return
     if parent_id not in G or child_id not in G:
@@ -928,10 +927,10 @@ def _add_containment_edge(
 
 def build_graph_from_jsonl(
     jsonl_paths: list[Path], payload_mode: str = "full"
-) -> nx.MultiDiGraph:
+) -> GraphCatalog:
     _resolved_mode = _resolve_graph_payload_mode(payload_mode)
 
-    G = nx.MultiDiGraph()
+    G = GraphCatalog()
     dataset_keys: list[str] = []
     namespaced_ids = len({_dataset_key_from_path(path) for path in jsonl_paths}) > 1
 
@@ -1147,9 +1146,7 @@ def build_graph_from_jsonl(
     return G
 
 
-def add_spatial_adjacency(
-    G: nx.DiGraph | nx.MultiDiGraph, threshold: float | None = None
-) -> float:
+def add_spatial_adjacency(G: GraphCatalog, threshold: float | None = None) -> float:
     element_nodes: list[str] = []
     positions: list[tuple] = []
     bboxes: list[tuple | None] = []
@@ -1302,7 +1299,7 @@ def add_spatial_adjacency(
     return threshold
 
 
-def add_topology_facts(G: nx.DiGraph | nx.MultiDiGraph) -> None:
+def add_topology_facts(G: GraphCatalog) -> None:
     def _add_topology_edge(u: str, v: str, **attrs: object) -> None:
         """Add topology edge with explicit topology source semantics."""
         G.add_edge(u, v, source="topology", **attrs)
@@ -1427,7 +1424,7 @@ def add_topology_facts(G: nx.DiGraph | nx.MultiDiGraph) -> None:
                 _add_topology_edge(a, b, relation="below", vertical_gap=gap)
 
 
-def plot_interactive_graph(G: nx.DiGraph | nx.MultiDiGraph, out_html: Path) -> None:
+def plot_interactive_graph(G: GraphCatalog, out_html: Path) -> None:
     # Build positions from node geometry where available.
     pos: dict[str, tuple[float, float, float] | None] = {}
     for n, d in G.nodes(data=True):
@@ -2224,7 +2221,7 @@ def build_graph(
     jsonl_paths: list[Path] | None = None,
     dataset: str | None = None,
     payload_mode: str | None = None,
-) -> nx.MultiDiGraph:
+) -> GraphCatalog:
     # auto-detect jsonl files if no paths given
     # called with no args from query_service
     if jsonl_paths is None:
@@ -2268,8 +2265,9 @@ def main() -> None:
     _configure_logging()
     ap = argparse.ArgumentParser(
         description=(
-            "Build a NetworkX IFC graph from JSONL files, preserving full or "
-            "minimal payloads and using mesh-derived geometry when present."
+            "Build the in-memory IFC graph catalog from JSONL files, "
+            "preserving full or minimal payloads and using mesh-derived "
+            "geometry when present."
         )
     )
     ap.add_argument(
