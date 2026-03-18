@@ -195,6 +195,7 @@ def test_graph_agent_honors_usage_limit(monkeypatch: pytest.MonkeyPatch) -> None
     assert isinstance(data, dict)
     assert data.get("max_steps") == 1
 
+
 def test_execute_query_preserves_bundle_shape_with_langgraph_orchestrator(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
