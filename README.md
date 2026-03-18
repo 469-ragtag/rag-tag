@@ -13,34 +13,26 @@ It exists because BIM questions usually split into two different kinds of work:
 
 The project turns IFC models into queryable runtime artifacts, then lets a router choose the right execution path for each question.
 
-- SQL path: deterministic counts, lists, and aggregations
+- Deterministic path: exact counts, lists, and aggregations over the Neo4j-backed model
 - Graph path: adjacency, containment, connectivity, and other spatial/topological reasoning
 
 ## 2. Architecture / pipeline at a glance
 
 ```text
-IFC -> JSONL -> SQLite + graph runtime -> router -> SQL executor or graph agent
+IFC -> JSONL -> Neo4j -> router -> deterministic query executor or graph agent
 ```
 
 More concretely:
 
 1. `rag-tag-ifc-to-jsonl` reads IFC files and exports one JSONL record per element.
-2. `rag-tag-jsonl-to-sql` builds flat SQLite databases for reliable SQL generation.
-3. Graph data is built from the same JSONL records:
-    - in memory with NetworkX at app runtime, or
-    - imported into Neo4j for a database-backed graph runtime.
-4. `rag-tag` routes each question to SQL or graph execution.
-
-The current graph backends are:
-
-- `networkx`
-- `neo4j`
+2. `rag-tag-jsonl-to-neo4j` imports the canonical IFC graph/data model into Neo4j.
+3. `rag-tag` routes each question to the appropriate Neo4j-backed execution path.
 
 ## 3. Key features and backend choices
 
-- Hybrid retrieval: SQL for exact counts/lists, graph for spatial reasoning
+- Hybrid reasoning over one backend: deterministic queries plus graph reasoning on Neo4j
 - IFC-aware export: identity, hierarchy, property sets, quantities, and geometry
-- Two graph runtime backends: NetworkX and Neo4j
+- Neo4j as the canonical runtime/backend
 - Checked-in config system with `config.yaml`, `config.yml`, or `config.json`
 - Secrets kept out of config and stored in `.env`
 - CLI and Textual TUI entrypoints through the same `rag-tag` command
@@ -69,11 +61,59 @@ uv sync --group dev
 
 If you only need the shortest path to a working local run, choose one of these:
 
-- NetworkX only: build JSONL + SQLite, then run `rag-tag`
+- Eureka local Neo4j: launch an 8-CPU Eureka VS Code session, start Neo4j in user space, then run `./scripts/run_eureka.sh`
 - Neo4j manually: build JSONL + SQLite, import into Neo4j, then run `rag-tag`
 - Neo4j one-command flow: use `./scripts/run_neo4j_workflow.sh`
 
-### 5.1 Copy the example config
+### 5.1 Recommended On Eureka
+
+For the recommended Eureka architecture, use one interactive VS Code Server job
+with:
+
+- `8 CPU`
+- `16-32 GB RAM`
+- `4-8 hours`
+- `GPU off`
+
+Run Neo4j inside the same Eureka session and keep the app pointed at the repo's
+existing Neo4j environment variables:
+
+```bash
+NEO4J_URI=bolt://localhost:7687
+NEO4J_USERNAME=neo4j
+NEO4J_PASSWORD=ragtag-dev-password
+NEO4J_DATABASE=neo4j
+```
+
+Recommended user-space locations:
+
+- Neo4j install: `$HOME/apps/neo4j`
+- Neo4j data: `$HOME/project-data/neo4j-data`
+- Neo4j logs: `$HOME/project-data/neo4j-logs`
+
+Point your `neo4j.conf` data and logs directories at those persistent paths so
+the graph survives across interactive Eureka sessions.
+
+The helper script [`scripts/run_eureka.sh`]
+reuses the current codebase's Neo4j integration. It:
+
+1. loads `.env`
+2. starts Neo4j from `NEO4J_HOME`
+3. builds JSONL and SQLite artifacts
+4. imports one dataset with `rag-tag-jsonl-to-neo4j`
+5. launches `rag-tag` with `GRAPH_BACKEND=neo4j`
+
+Basic Eureka flow:
+
+```bash
+chmod +x ./scripts/run_eureka.sh
+./scripts/run_eureka.sh Building-Architecture
+```
+
+If Neo4j is already running in the session, the same script still works as a
+single command wrapper around import and app launch.
+
+### 5.2 Copy the example config
 
 Use the checked-in example as your starting point:
 
@@ -84,14 +124,15 @@ cp .env.sample .env
 
 `config.example.yaml` is the recommended place for shared defaults. Keep secrets in `.env`.
 
-For a simple local setup, make sure `config.yaml` uses a local graph-agent profile and the NetworkX backend:
+For a simple Eureka or local Neo4j setup, make sure `config.yaml` uses a local
+graph-agent profile and the Neo4j backend:
 
 ```yaml
 defaults:
     router_profile: router-gemini-flash
     agent_profile: cohere-command-a
     router_mode: llm
-    graph_backend: networkx
+    graph_backend: neo4j
 ```
 
 Example `.env` values:
@@ -102,7 +143,7 @@ COHERE_API_KEY=your_cohere_api_key
 LOGFIRE_TOKEN=your_write_logfire_token
 ```
 
-### 5.2 Build the main artifacts
+### 5.3 Build the main artifacts
 
 Convert IFC files in `IFC-Files/` to JSONL:
 
@@ -124,7 +165,7 @@ uv run rag-tag-jsonl-to-graph
 
 `rag-tag-jsonl-to-graph` is optional for normal app runtime. The app can build the in-memory NetworkX graph directly from JSONL when needed. This command is mainly useful for graph build checks and visualization.
 
-### 5.3 Run the app
+### 5.4 Run the app
 
 Launch the TUI against one dataset:
 
@@ -140,7 +181,7 @@ Run the basic CLI instead of the TUI:
 uv run rag-tag --db ./output/Building-Architecture.db --graph-dataset Building-Architecture
 ```
 
-### 5.4 Optional ontology helper commands
+### 5.5 Optional ontology helper commands
 
 Refresh the IFC4.3 RDF snapshot:
 
@@ -208,7 +249,7 @@ Set the default backend in config:
 
 ```yaml
 defaults:
-    graph_backend: networkx
+    graph_backend: neo4j
 ```
 
 Or switch for one run without editing config:
@@ -586,6 +627,7 @@ src/rag_tag/
 scripts/
   eval_routing.py
   eval_graph_models.py
+  run_eureka.sh
   run_neo4j_workflow.sh
 
 IFC-Files/                     # source IFC models
