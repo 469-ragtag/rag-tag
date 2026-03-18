@@ -9,8 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import networkx as nx
-
+from rag_tag.graph.catalog import GraphCatalog
 from rag_tag.graph.properties import cached_db_lookup, merge_db_element_data
 from rag_tag.graph_contract import (
     CANONICAL_ACTIONS,
@@ -34,6 +33,7 @@ from rag_tag.observability import _load_dotenv
 
 from .neo4j_cypher import (
     MATCH_ALL_NODES,
+    MATCH_ALL_RELS,
     MATCH_CLASS,
     MATCH_DESCENDANTS_CONTAINS,
     MATCH_NODE_BY_ID,
@@ -55,23 +55,24 @@ except Exception:  # pragma: no cover - optional dependency
 class Neo4jBackend:
     """Neo4j backend implementing canonical graph actions."""
 
-    graph: nx.DiGraph | nx.MultiDiGraph | None = None
+    graph: GraphCatalog | None = None
     db_path: Path | None = None
     selected_datasets: tuple[str, ...] = ()
-    _catalog_graph: nx.DiGraph | nx.MultiDiGraph | None = None
+    _catalog_graph: GraphCatalog | None = None
     _driver: Any | None = None
     _database: str | None = None
     _conn_error: str | None = None
 
     def __post_init__(self) -> None:
         _load_dotenv()
+        self.graph = _coerce_graph_catalog(self.graph)
         self.selected_datasets = tuple(
             dataset
             for dataset in self.selected_datasets
             if isinstance(dataset, str) and dataset
         )
-        # Lazy in-memory catalog: used for fuzzy/class helpers that still rely on
-        # NetworkX semantics without forcing a full agent refactor.
+        # Lazy in-memory catalog: used for fuzzy/class helpers and higher-level
+        # graph algorithms without forcing all reasoning into Cypher.
         self._catalog_graph = _scope_catalog_graph(self.graph, self.selected_datasets)
         self._driver = None
         self._database = (os.environ.get("NEO4J_DATABASE") or "").strip() or None
@@ -102,7 +103,7 @@ class Neo4jBackend:
         if self._driver is not None:
             self._driver.close()
 
-    def get_networkx_graph(self) -> nx.DiGraph | nx.MultiDiGraph:
+    def get_networkx_graph(self) -> GraphCatalog:
         return self._ensure_catalog_graph()
 
     def set_context_db_path(self, db_path: Path | None) -> None:
@@ -115,10 +116,10 @@ class Neo4jBackend:
             return
         self._catalog_graph.graph["_db_path"] = resolved
 
-    def _ensure_catalog_graph(self) -> nx.DiGraph | nx.MultiDiGraph:
+    def _ensure_catalog_graph(self) -> GraphCatalog:
         if self._catalog_graph is not None:
             return self._catalog_graph
-        G = nx.DiGraph()
+        G = GraphCatalog()
         with self._session() as session:
             if session is None:
                 return G
@@ -147,6 +148,32 @@ class Neo4jBackend:
                     payload=payload if isinstance(payload, dict) else {},
                     dataset=node.get("dataset"),
                     **geometry,
+                )
+            rel_rows = session.run(MATCH_ALL_RELS, **self._dataset_params())
+            for record in rel_rows:
+                source_id = record["from_id"]
+                target_id = record["to_id"]
+                relation = record["r"]
+                if not source_id or not target_id or relation is None:
+                    continue
+                G.add_edge(
+                    source_id,
+                    target_id,
+                    relation=relation.get("relation"),
+                    source=relation.get("source"),
+                    dataset=relation.get("dataset"),
+                    distance=relation.get("distance"),
+                    vertical_gap=relation.get("vertical_gap"),
+                    overlap_area_xy=relation.get("overlap_area_xy"),
+                    intersection_volume=relation.get("intersection_volume"),
+                    contact_area=relation.get("contact_area"),
+                    axis_angle_deg=relation.get("axis_angle_deg"),
+                    parallel_score=relation.get("parallel_score"),
+                    perpendicular_score=relation.get("perpendicular_score"),
+                    facing_score=relation.get("facing_score"),
+                    support_score=relation.get("support_score"),
+                    containment_ratio=relation.get("containment_ratio"),
+                    edge_index=relation.get("edge_index"),
                 )
         G.graph["_payload_mode"] = "full"
         if self.selected_datasets:
@@ -403,17 +430,28 @@ class Neo4jBackend:
             return self._ok(action, {"class": target, "elements": matches})
 
         if action == "find_nodes":
-            # Keep fuzzy/class helpers consistent with the NetworkX path by
+            # Keep fuzzy/class helpers consistent with the in-memory path by
             # delegating to an in-memory catalog graph.
             catalog = self._ensure_catalog_graph()
             return query_ifc_graph_catalog(catalog, action, params, payload_mode)
 
         if action == "list_property_keys":
-            # Key discovery uses the same NetworkX-based helper logic.
+            # Key discovery uses the same in-memory helper logic.
             catalog = self._ensure_catalog_graph()
             return query_ifc_graph_catalog(catalog, action, params, payload_mode)
 
         if action in {"spatial_compare", "find_elements_within_clearance"}:
+            catalog = self._ensure_catalog_graph()
+            return query_ifc_graph_catalog(catalog, action, params, payload_mode)
+
+        if action in {
+            "trace_distribution_network",
+            "find_equipment_serving_space",
+            "find_shortest_path",
+            "find_by_classification",
+            "aggregate_elements",
+            "group_elements_by_property",
+        }:
             catalog = self._ensure_catalog_graph()
             return query_ifc_graph_catalog(catalog, action, params, payload_mode)
 
@@ -1088,9 +1126,9 @@ def _topology_neighbor_dedupe_key(node: Any, edge: Any) -> tuple[str, str, str]:
 
 
 def _scope_catalog_graph(
-    graph: nx.DiGraph | nx.MultiDiGraph | None,
+    graph: GraphCatalog | None,
     selected_datasets: tuple[str, ...],
-) -> nx.DiGraph | nx.MultiDiGraph | None:
+) -> GraphCatalog | None:
     if graph is None or not selected_datasets:
         return graph
 
@@ -1105,8 +1143,47 @@ def _scope_catalog_graph(
     return scoped_graph
 
 
+def _coerce_graph_catalog(graph: Any) -> GraphCatalog | None:
+    if graph is None:
+        return None
+    if isinstance(graph, GraphCatalog):
+        return graph
+    if not hasattr(graph, "nodes") or not hasattr(graph, "edges"):
+        return None
+
+    catalog = GraphCatalog()
+    graph_meta = getattr(graph, "graph", None)
+    if isinstance(graph_meta, dict):
+        catalog.graph.update(graph_meta)
+
+    try:
+        node_iter = graph.nodes(data=True)
+    except TypeError:
+        node_iter = graph.nodes()
+    for item in node_iter:
+        if isinstance(item, tuple) and len(item) == 2:
+            node_id, node_data = item
+            attrs = dict(node_data) if isinstance(node_data, dict) else {}
+        else:
+            node_id = item
+            attrs = {}
+        catalog.add_node(str(node_id), **attrs)
+
+    try:
+        edge_iter = graph.edges(keys=True, data=True)
+        for source_id, target_id, _edge_key, edge_data in edge_iter:
+            attrs = dict(edge_data) if isinstance(edge_data, dict) else {}
+            catalog.add_edge(str(source_id), str(target_id), **attrs)
+    except TypeError:
+        for source_id, target_id, edge_data in graph.edges(data=True):
+            attrs = dict(edge_data) if isinstance(edge_data, dict) else {}
+            catalog.add_edge(str(source_id), str(target_id), **attrs)
+
+    return catalog
+
+
 def query_ifc_graph_catalog(
-    graph: nx.DiGraph | nx.MultiDiGraph,
+    graph: GraphCatalog,
     action: str,
     params: dict[str, Any],
     payload_mode: str,
