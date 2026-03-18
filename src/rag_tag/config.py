@@ -75,6 +75,8 @@ class DefaultsConfig(BaseModel):
     agent_profile: str | None = None
     router_mode: str | None = None
     graph_orchestrator: str | None = None
+    graph_max_steps: int | None = Field(default=None, ge=1)
+    graph_output_retries: int | None = Field(default=None, ge=0)
 
 
 class GraphOrchestrationConfig(BaseModel):
@@ -87,8 +89,6 @@ class GraphOrchestrationConfig(BaseModel):
     reserved_orchestration_steps: int = 3
     specialist_step_cap: int | None = None
     fallback_to_graph_agent: bool = True
-    graph_max_steps: int | None = Field(default=None, ge=1)
-    graph_output_retries: int | None = Field(default=None, ge=0)
 
 
 class AppConfig(BaseModel):

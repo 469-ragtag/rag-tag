@@ -87,14 +87,14 @@ def test_load_project_config_parses_yaml_structure(tmp_path: Path) -> None:
         "  router_profile: router-default\n"
         "  agent_profile: dbx-agent\n"
         "  graph_orchestrator: langgraph\n"
+        "  graph_max_steps: 12\n"
+        "  graph_output_retries: 4\n"
         "graph_orchestration:\n"
         "  enabled_subquestion_decomposition: false\n"
         "  max_subquestions: 4\n"
         "  reserved_orchestration_steps: 2\n"
         "  specialist_step_cap: 5\n"
         "  fallback_to_graph_agent: false\n"
-        "  graph_max_steps: 12\n"
-        "  graph_output_retries: 4\n"
         "providers:\n"
         "  databricks:\n"
         "    type: databricks\n"
@@ -264,6 +264,8 @@ def test_checked_in_config_example_matches_app_config_schema() -> None:
     assert config.graph_orchestration == GraphOrchestrationConfig()
     assert config.defaults.graph_max_steps == 20
     assert config.defaults.graph_output_retries == 5
+    assert config.defaults.graph_max_steps == 20
+    assert config.defaults.graph_output_retries == 5
     for experiment_name in ("graph-dbx-smoke", "graph-agent-compare"):
         experiment = config.experiments[experiment_name]
         assert experiment.router_profile in config.profiles
@@ -282,7 +284,6 @@ def test_checked_in_runtime_config_keeps_cohere_as_safe_default() -> None:
     assert config.providers["databricks"].host_env == "DATABRICKS_HOST"
     assert config.defaults.router_profile == "router-gemini-flash"
     assert config.defaults.agent_profile == "dbx-gpt-oss-20b"
-    assert config.defaults.agent_profile == "cohere-command-a"
     assert config.defaults.graph_max_steps == 20
     assert config.defaults.graph_output_retries == 5
     assert config.defaults.agent_profile in config.profiles

@@ -8,9 +8,11 @@ from typing import Any
 import networkx as nx
 
 from rag_tag.agent import GraphAgent, LangGraphAgent
-from rag_tag.config import GraphOrchestrationConfig, load_project_config
-from rag_tag.agent import GraphAgent
-from rag_tag.config import get_default_graph_max_steps
+from rag_tag.config import (
+    GraphOrchestrationConfig,
+    get_default_graph_max_steps,
+    load_project_config,
+)
 from rag_tag.graph import GraphRuntime, ensure_graph_runtime, load_graph_runtime
 from rag_tag.graph_contract import merge_evidence_items
 from rag_tag.ifc_sql_tool import SqlQueryError, query_ifc_sql

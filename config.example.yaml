@@ -18,6 +18,8 @@ defaults:
   # Allowed values: pydanticai, langgraph
   # This controls graph-route orchestration only, not model/provider selection.
   graph_orchestrator: pydanticai
+  graph_max_steps: 20
+  graph_output_retries: 5
 
 graph_orchestration:
   # Tunables for graph-route orchestration behavior.
@@ -26,8 +28,6 @@ graph_orchestration:
   reserved_orchestration_steps: 3
   specialist_step_cap: null
   fallback_to_graph_agent: true
-  graph_max_steps: 20
-  graph_output_retries: 5
 
 providers:
   databricks:
