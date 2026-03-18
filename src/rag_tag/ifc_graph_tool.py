@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import networkx as nx
-
 from rag_tag.graph import (
     INTERNAL_PAYLOAD_MODE,
     LLM_PAYLOAD_MODE,
@@ -17,13 +15,13 @@ from rag_tag.graph import (
 
 
 def query_ifc_graph(
-    graph: GraphRuntime | nx.DiGraph | nx.MultiDiGraph,
+    graph: GraphRuntime | Any,
     action: str,
     params: dict[str, Any],
     *,
     payload_mode: str = LLM_PAYLOAD_MODE,
 ) -> dict[str, Any]:
-    """Public graph action facade with compatibility for raw NetworkX graphs."""
+    """Public graph action facade with compatibility for raw graph catalogs."""
     runtime = graph if isinstance(graph, GraphRuntime) else wrap_networkx_graph(graph)
     return query_graph_runtime(runtime, action, params, payload_mode=payload_mode)
 

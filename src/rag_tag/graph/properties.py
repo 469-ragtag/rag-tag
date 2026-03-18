@@ -7,7 +7,7 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Dict, Iterable
 
-import networkx as nx
+from rag_tag.graph.catalog import GraphCatalog
 
 _logger = logging.getLogger(__name__)
 
@@ -16,20 +16,20 @@ _CACHE_MISS = object()
 _PROPERTY_CACHE_MAX_ENTRIES = 2048
 
 
-def _graph_handle(value: Any) -> nx.DiGraph | nx.MultiDiGraph:
-    if isinstance(value, (nx.DiGraph, nx.MultiDiGraph)):
+def _graph_handle(value: Any) -> GraphCatalog:
+    if isinstance(value, GraphCatalog):
         return value
 
     if hasattr(value, "get_networkx_graph"):
         graph = value.get_networkx_graph()
-        if isinstance(graph, (nx.DiGraph, nx.MultiDiGraph)):
+        if isinstance(graph, GraphCatalog):
             return graph
 
     graph = getattr(value, "backend_handle", None)
-    if isinstance(graph, (nx.DiGraph, nx.MultiDiGraph)):
+    if isinstance(graph, GraphCatalog):
         return graph
 
-    raise TypeError(f"Expected graph runtime or NetworkX graph, got {type(value)!r}")
+    raise TypeError(f"Expected graph runtime or graph catalog, got {type(value)!r}")
 
 
 def _cache_slot(
@@ -294,7 +294,7 @@ def collect_dotted_keys_from_sqlite(
 
 
 def apply_property_filters(
-    G: nx.DiGraph | nx.MultiDiGraph,
+    G: GraphCatalog,
     node_id: str,
     filters: Dict[str, Any],
     *,
