@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from rag_tag.router.llm import _build_system_prompt
 from rag_tag.router.rules import route_question_rule
 
 
@@ -143,3 +144,73 @@ def test_explicit_quantity_filter_routes_to_sql() -> None:
     assert decision.sql_request.quantity_filters[0].field == "NetVolume"
     assert decision.sql_request.quantity_filters[0].op == "gte"
     assert decision.sql_request.quantity_filters[0].value == 10
+
+
+def test_materials_question_routes_to_graph() -> None:
+    decision = route_question_rule(
+        "What are the materials of all the walls located on the groundfloor?"
+    )
+
+    assert decision.route == "graph"
+    assert "materials/color" in decision.reason
+
+
+def test_named_element_comparison_routes_to_graph() -> None:
+    decision = route_question_rule(
+        "Compare the net volume of the right roof slab and the left roof slab. "
+        "Which is larger?"
+    )
+
+    assert decision.route == "graph"
+    assert "comparison between specific named elements" in decision.reason
+
+
+def test_color_fuzzy_named_object_lookup_routes_to_graph() -> None:
+    decision = route_question_rule(
+        "What is the color (RGB or Material) of the geo-reference element?"
+    )
+
+    assert decision.route == "graph"
+    assert "fuzzy named-object lookup" in decision.reason
+
+
+def test_room_containment_question_routes_to_graph() -> None:
+    decision = route_question_rule("Which doors are in the kitchen?")
+
+    assert decision.route == "graph"
+    assert "room/space containment" in decision.reason
+
+
+def test_zone_question_routes_to_graph() -> None:
+    decision = route_question_rule("Which spaces are in the fire zone A?")
+
+    assert decision.route == "graph"
+    assert "systems/serving/classification/zone membership" in decision.reason
+
+
+def test_ifc_space_with_level_routes_to_graph_for_correctness() -> None:
+    decision = route_question_rule("Count spaces on level 2")
+
+    assert decision.route == "graph"
+    assert "IfcSpace + level/storey questions" in decision.reason
+
+
+def test_name_word_filter_count_stays_sql() -> None:
+    decision = route_question_rule(
+        "How many elements have the word roof in their name?"
+    )
+
+    assert decision.route == "sql"
+    assert decision.sql_request is not None
+    assert decision.sql_request.intent == "count"
+    assert decision.sql_request.ifc_class == "IfcRoof"
+
+
+def test_llm_prompt_mentions_shared_capability_matrix() -> None:
+    prompt = _build_system_prompt()
+
+    assert "Shared capability matrix:" in prompt
+    assert "Graph-first categories" in prompt
+    assert "room/space containment membership" in prompt
+    assert "materials/color (unsupported by current SQLite schema)" in prompt
+    assert "deterministic count/list/aggregate/group" in prompt

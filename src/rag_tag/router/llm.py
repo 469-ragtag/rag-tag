@@ -4,6 +4,10 @@ from pydantic_ai import Agent
 
 from rag_tag.llm.pydantic_ai import get_router_model, get_router_model_settings
 
+from .capabilities import (
+    IFC_SPACE_LEVEL_GRAPH_REASON,
+    build_capability_matrix_prompt_block,
+)
 from .llm_models import LlmRouteResponse
 from .models import RouteDecision, SqlFieldRef, SqlRequest, SqlValueFilter
 
@@ -119,13 +123,19 @@ def _build_system_prompt() -> str:
         "execution lane: sql for bounded deterministic database questions, or "
         "graph for spatial/topological/multi-hop queries or anything involving "
         "adjacency, connectivity, paths, or vague relationships.\n\n"
+        f"{build_capability_matrix_prompt_block()}\n\n"
         "Decision criteria:\n"
         "- route='sql': Use for deterministic counts, lists, aggregates, and "
         "groupings over the known SQLite schema: elements, properties, and "
         "quantities. Allowed filters include IFC class, level, predefined_type, "
         "type_name, property filters, and quantity filters.\n"
         "- route='graph': Use for spatial relations, adjacency, connectivity, "
-        "paths, property-based constraints, or any multi-hop traversals.\n\n"
+        "paths, room/space containment, system/serving/classification/zone "
+        "membership, named-element comparisons, fuzzy named-object lookup, "
+        "materials/color questions, property-based constraints, or any multi-hop "
+        "traversals.\n\n"
+        "Correctness-first rule:\n"
+        f"- {IFC_SPACE_LEVEL_GRAPH_REASON}.\n\n"
         "Important SQL rules:\n"
         "- Never generate raw SQL text.\n"
         "- Only emit structured fields.\n"
@@ -182,7 +192,23 @@ def _build_system_prompt() -> str:
         "level_like=null, reason='spatial adjacency query'\n\n"
         "Q: Find doors near the stair core.\n"
         "A: route='graph', intent='none', ifc_class=null, "
-        "level_like=null, reason='spatial proximity query'"
+        "level_like=null, reason='spatial proximity query'\n\n"
+        "Q: Which doors are in the kitchen?\n"
+        "A: route='graph', intent='none', ifc_class=null, "
+        "level_like=null, reason='room/space containment query'\n\n"
+        "Q: What are the materials of all the walls located on the groundfloor?\n"
+        "A: route='graph', intent='none', ifc_class=null, "
+        "level_like=null, reason='materials require graph/context extraction'\n\n"
+        "Q: Compare the net volume of the right roof slab and the left roof slab. "
+        "Which is larger?\n"
+        "A: route='graph', intent='none', ifc_class=null, "
+        "level_like=null, reason='named-element comparison requires graph lookup'\n\n"
+        "Q: What is the color (RGB or Material) of the geo-reference element?\n"
+        "A: route='graph', intent='none', ifc_class=null, "
+        "level_like=null, reason='fuzzy name + color/material query'\n\n"
+        "Q: Count spaces on level 2.\n"
+        "A: route='graph', intent='none', ifc_class=null, "
+        "level_like=null, reason='IfcSpace+level routed to graph for correctness'"
     )
 
 

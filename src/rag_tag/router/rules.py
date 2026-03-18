@@ -4,6 +4,11 @@ import re
 
 from rag_tag.ifc_class_taxonomy import CLASS_ALIASES, normalize_ifc_class
 
+from .capabilities import (
+    IFC_SPACE_LEVEL_GRAPH_REASON,
+    detect_graph_first_reason,
+    is_ifc_space_level_graph_first,
+)
 from .models import (
     RouteDecision,
     SqlAggregateOp,
@@ -13,46 +18,6 @@ from .models import (
     SqlRequest,
     SqlValueFilter,
     normalize_sql_field_key,
-)
-
-_SPATIAL_CUES = (
-    "adjacent",
-    "near",
-    "within",
-    "distance",
-    "connected",
-    "connection",
-    "route",
-    "path",
-    "between",
-    "neighbor",
-    "neighbour",
-    "closest",
-    "far",
-    "touch",
-    "intersect",
-    "next to",
-    "beside",
-    "inside",
-    "contains",
-    "contain",
-    "contained",
-    "overlap",
-    "overlapping",
-    "touching",
-    "touches",
-    "above",
-    "below",
-    "in front of",
-    "behind",
-    "located",
-    "location",
-    "position",
-    "support",
-    "supporting",
-    "resting on",
-    "on top of",
-    "serving",
 )
 
 _COUNT_CUES = (
@@ -90,12 +55,6 @@ _AVG_CUES = ("average", "avg", "mean")
 _MIN_CUES = ("minimum", "min", "lowest", "smallest")
 _MAX_CUES = ("maximum", "max", "highest", "largest")
 _SUM_CUES = ("sum of", "summed", "total")
-_GRAPH_MACRO_CUES = (
-    "classification",
-    "classified",
-    "serves",
-    "served by",
-)
 _GROUP_CUES = (
     re.compile(r"\bgroup\b.*\bby\b"),
     re.compile(r"\bbreak\s+down\b.*\bby\b"),
@@ -177,12 +136,9 @@ def route_question_rule(question: str) -> RouteDecision:
     q = question.strip()
     q_lower = q.lower()
 
-    if (
-        _has_spatial_cues(q_lower)
-        or _has_relation_cues(q_lower)
-        or _has_macro_graph_cues(q_lower)
-    ):
-        return RouteDecision("graph", "Spatial/relationship cue detected", None)
+    graph_first_reason = detect_graph_first_reason(q)
+    if graph_first_reason is not None:
+        return RouteDecision("graph", graph_first_reason, None)
 
     measure_field = _detect_measure_field(q)
     sql_intent = _detect_sql_intent(
@@ -220,6 +176,9 @@ def route_question_rule(question: str) -> RouteDecision:
     if ifc_class is None and not _mentions_generic_elements(q_lower):
         return RouteDecision("graph", "SQL intent without class", None)
 
+    if is_ifc_space_level_graph_first(ifc_class, level_like):
+        return RouteDecision("graph", IFC_SPACE_LEVEL_GRAPH_REASON, None)
+
     aggregate_op: SqlAggregateOp | None = None
     aggregate_field = None
     group_by = None
@@ -253,18 +212,6 @@ def route_question_rule(question: str) -> RouteDecision:
         limit=limit,
     )
     return RouteDecision("sql", "Deterministic SQL intent detected", request)
-
-
-def _has_spatial_cues(question_lower: str) -> bool:
-    return any(cue in question_lower for cue in _SPATIAL_CUES)
-
-
-def _has_relation_cues(question_lower: str) -> bool:
-    return "contains" in question_lower or "contained" in question_lower
-
-
-def _has_macro_graph_cues(question_lower: str) -> bool:
-    return any(cue in question_lower for cue in _GRAPH_MACRO_CUES)
 
 
 def _has_property_cues(question_lower: str) -> bool:
