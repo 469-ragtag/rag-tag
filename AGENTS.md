@@ -28,7 +28,7 @@ Current state:
 - Graph is NetworkX with distance-based adjacency
 - SQL schema exists and is used for counts/lists
 - Router and graph agent are migrated to PydanticAI
-- Checked-in runtime config supports `config.yaml`, `config.yml`, and `config.json`
+- Runtime config discovery supports local `config.yaml`, `config.yml`, and `config.json`
 - Router default model: `google-gla:gemini-2.5-flash`
 - Graph agent default model: `cohere:command-a-03-2025`
 - Optional observability via Logfire (`--trace`)

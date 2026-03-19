@@ -10,6 +10,7 @@ wheels/
 # Virtual environments
 .venv
 .env
+config.yaml
 
 # OS artifacts
 .DS_Store

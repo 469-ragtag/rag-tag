@@ -42,14 +42,14 @@ uv run rag-tag-generate-ontology-map
 uv sync --group dev
 ```
 
-2. Copy the checked-in config and env templates
+2. Copy the checked-in config template and env template
 
 ```bash
 cp config.example.yaml config.yaml
 cp .env.sample .env
 ```
 
-3. Put shared defaults in `config.yaml` and secrets in `.env`
+3. Put shared defaults in your local `config.yaml` and secrets in `.env`
 
 ```bash
 DATABRICKS_TOKEN=...
@@ -57,9 +57,10 @@ GEMINI_API_KEY=...
 COHERE_API_KEY=...
 ```
 
-`config.yaml` is now the recommended place for provider settings, model profiles,
-default router/agent selections, and experiment groupings. Keep secrets and
-one-off shell overrides in `.env` or your shell environment.
+Start from `config.example.yaml`; it is the canonical checked-in reference for
+provider settings, model profiles, default router/agent selections, and
+experiment groupings. Keep your working `config.yaml` local (untracked), and
+keep secrets and one-off shell overrides in `.env` or your shell environment.
 
 4. Build artifacts
 
@@ -91,7 +92,8 @@ options such as `--tui`, `--db`, `--graph-dataset`, and `--trace`.
 
 ## Configuration
 
-Checked-in config is the recommended home for non-secret runtime defaults:
+Use `config.example.yaml` as the canonical checked-in reference, then copy it to
+a local `config.yaml` for non-secret runtime defaults:
 
 - `defaults` for shared router/agent profile selection and `router_mode`
 - `providers` for named provider configuration such as Databricks hosts
@@ -117,20 +119,18 @@ Override the discovered config file with either:
 - `uv run rag-tag --config ./path/to/config.yaml`
 - `RAG_TAG_CONFIG=./path/to/config.yaml uv run rag-tag`
 
-The full checked-in example lives in `config.example.yaml`.
+The full checked-in template lives in `config.example.yaml`.
 
 Practical split:
 
-- `config.yaml`: shared defaults you want to edit and commit
+- local `config.yaml`: shared defaults you want to edit for your environment
 - `.env`: secrets and machine-local overrides
 - CLI flags: per-run session options such as TUI mode, selected DB, dataset, and tracing
 
-The checked-in `config.yaml` defaults the graph agent to the current Cohere
-baseline so a normal checkout still runs without Databricks credentials. Switch
-to a Databricks profile by editing `defaults.agent_profile` or by using
-`--agent-profile` for a one-off run.
+`config.yaml` is intentionally gitignored so you can keep machine-local runtime
+defaults without committing them.
 
-Minimal setup for the same TUI command you use today:
+Minimal local `config.yaml` setup for the same TUI command you use today:
 
 `config.yaml`
 
@@ -234,7 +234,7 @@ serving endpoints before use.
 Databricks compatibility note:
 
 - Databricks rejects the OpenAI-style `parallel_tool_calls` request field.
-- Do not add `parallel_tool_calls` to Databricks profile settings in `config.yaml`.
+- Do not add `parallel_tool_calls` to Databricks profile settings in local config files.
 - `rag-tag` strips that field automatically for Databricks-backed profiles.
 
 ## Query modes

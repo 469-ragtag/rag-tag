@@ -1,28 +1,46 @@
-# Copy this file to config.yaml and adjust the values for your workspace.
-# Keep secrets such as DATABRICKS_TOKEN in .env, not in this file.
+# Canonical rag-tag config template.
 #
-# What belongs here:
-# - shared model/provider/profile defaults
-# - env var references such as host_env / base_url_env
-# - reusable experiment groupings
+# Usage:
+# 1) Copy to local `config.yaml` (kept untracked by .gitignore).
+# 2) Update profile/provider names for your workspace.
+# 3) Keep secrets in `.env` (or shell env), not in this file.
 #
-# What still belongs outside config today:
-# - `--tui`, `--db`, `--graph-dataset`, and `--trace` remain CLI flags
-# - secrets such as DATABRICKS_TOKEN / GEMINI_API_KEY / COHERE_API_KEY stay in .env
-# - do not set `parallel_tool_calls` for Databricks profiles; rag-tag strips it
+# Discovery order when no --config / RAG_TAG_CONFIG override is provided:
+#   config.yaml -> config.yml -> config.json
+#
+# Put in config:
+# - shared defaults (router/agent profiles, router mode, graph limits)
+# - provider wiring (env var names such as host_env/base_url_env/token_env)
+# - reusable profiles and experiment groupings
+#
+# Put in .env (or shell):
+# - API keys/tokens: DATABRICKS_TOKEN, GEMINI_API_KEY, COHERE_API_KEY
+# - provider host/base URL values referenced by *_env keys
+# - machine-local overrides (for example RAG_TAG_CONFIG)
+#
+# Keep CLI flags for per-run session behavior:
+# --tui, --db, --graph-dataset, --trace
 
 defaults:
+  # defaults: baseline selections used when no runtime override is provided.
   router_profile: router-gemini-flash
   agent_profile: dbx-claude-sonnet-4-6
+  # router_mode common values:
+  # - llm (or gemini): use LLM routing
+  # - rule (or rules / heuristic): use rule-based routing
+  # Empty/unset lets rag-tag auto-select based on available router config.
   router_mode: llm
-  # Allowed values: pydanticai, langgraph
-  # This controls graph-route orchestration only, not model/provider selection.
+  # graph_orchestrator allowed values: pydanticai, langgraph
+  # Controls graph-route orchestration runtime only (not profile/provider selection).
   graph_orchestrator: pydanticai
+  # Graph step budget for graph-agent execution (>=1).
   graph_max_steps: 20
+  # Retries for schema-constrained graph outputs (>=0).
   graph_output_retries: 5
 
 graph_orchestration:
-  # Tunables for graph-route orchestration behavior.
+  # graph_orchestration: advanced tunables for orchestrator behavior.
+  # Defaults shown here are current built-in defaults.
   enabled_subquestion_decomposition: true
   max_subquestions: 3
   reserved_orchestration_steps: 3
@@ -30,13 +48,20 @@ graph_orchestration:
   fallback_to_graph_agent: true
 
 providers:
+  # providers: named provider connection presets reused by profiles.
   databricks:
     type: databricks
-    # Read the Databricks workspace host from .env or shell env.
+    # Keep actual host/token values in .env and reference them here by env key.
+    # Use either host_env (workspace host) OR base_url_env (full OpenAI-compatible base URL).
     host_env: DATABRICKS_HOST
     token_env: DATABRICKS_TOKEN
 
 profiles:
+  # profiles: reusable model presets selected by defaults.* or CLI/env overrides.
+  # - model is provider-specific (for Databricks this is usually endpoint/model name).
+  # - provider is optional for direct providers (google-gla/cohere) and required
+  #   when referencing a named provider block above.
+  # - settings are passed to the model SDK/provider integration.
   router-gemini-flash:
     model: google-gla:gemini-2.5-flash
     settings:
@@ -51,8 +76,8 @@ profiles:
 
   dbx-claude-sonnet-4-6:
     provider: databricks
-    # For Databricks-backed profiles, model is the serving endpoint name.
-    # For Foundation Model API usage this is often the Databricks model name.
+    # For Databricks-backed profiles, model is typically a serving endpoint name.
+    # For Foundation Model API usage this may be a Databricks model identifier.
     model: databricks-claude-sonnet-4-6
     settings:
       temperature: 0.1
@@ -80,6 +105,10 @@ profiles:
       max_tokens: 1024
 
 experiments:
+  # experiments: named profile sets for repeatable comparisons
+  # (for example scripts/eval_graph_models.py --experiment <name>).
+  # router_profile / agent_profile set defaults for that experiment run.
+  # profiles lists the candidate profiles to evaluate.
   graph-dbx-smoke:
     description: Compare Databricks graph-agent profiles on the same questions.
     router_profile: router-gemini-flash

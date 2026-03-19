@@ -275,20 +275,10 @@ def test_checked_in_config_example_matches_app_config_schema() -> None:
         )
 
 
-def test_checked_in_runtime_config_keeps_cohere_as_safe_default() -> None:
+def test_repo_does_not_require_checked_in_runtime_config_yaml() -> None:
     config_path = Path(__file__).resolve().parents[1] / "config.yaml"
-    payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
 
-    config = AppConfig.model_validate(payload)
-
-    assert config.providers["databricks"].host_env == "DATABRICKS_HOST"
-    assert config.defaults.router_profile == "router-gemini-flash"
-    assert config.defaults.agent_profile == "dbx-gpt-oss-20b"
-    assert config.defaults.graph_max_steps == 20
-    assert config.defaults.graph_output_retries == 5
-    assert config.defaults.agent_profile in config.profiles
-    assert config.defaults.graph_orchestrator == "pydanticai"
-    assert config.graph_orchestration == GraphOrchestrationConfig()
+    assert not config_path.exists()
 
 
 def test_resolve_graph_orchestrator_defaults_to_pydanticai_without_config(
