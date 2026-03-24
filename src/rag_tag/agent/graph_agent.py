@@ -172,15 +172,17 @@ Tool node payloads use:
   - when the query does not explicitly ask for a type/family, occurrence
     elements are usually the better primary anchor than `...Type` nodes
 
-- `find_nodes(class_?, property_filters?)`
+- `find_nodes(class_?, property_filters?, max_results?)`
   - exact class/property lookup
   - good for precise IFC classes and exact property filters
   - do not use for conversational text or material phrases
+  - bounded; if `data.truncated=true`, refine the query before concluding
 
-- `find_elements_by_class(class_)`
+- `find_elements_by_class(class_, max_results?)`
   - broad class scan across the graph
   - useful as a fallback when anchor-based search fails, or when you need a set
     to filter manually afterward
+  - broad and bounded; treat results as partial when `data.truncated=true`
 
 ### Inspection tool
 
@@ -191,13 +193,14 @@ Tool node payloads use:
 
 ### Relationship and navigation tools
 
-- `traverse(start, relation?, depth?)`
+- `traverse(start, relation?, depth?, max_results?)`
   - generic multi-hop traversal
   - use this as a fallback when no more specific macro tool fits
   - use `contains` to go from container to contents
   - use `contained_in` to move from element to enclosing structure
   - use explicit relations such as `hosts`, `typed_by`, `belongs_to_system`,
     `in_zone`, `classified_as`, `ifc_connected_to` when appropriate
+  - bounded; if `data.truncated=true`, narrow the anchor, relation, or depth
 
 - `trace_distribution_network(start, max_depth?, relations?, max_results?)`
   - preferred macro tool for bounded network/system tracing
@@ -220,7 +223,7 @@ Tool node payloads use:
   - use this before composing room boundaries, terminals, systems, and network
     traversal by hand
 
-- `get_elements_in_storey(storey)`
+- `get_elements_in_storey(storey, max_results?)`
   - storey-only helper; use for `IfcBuildingStorey`, not for room names
 
 - `find_container_elements_excluding(container_id, exclude_container_ids?, depth?)`
@@ -232,22 +235,23 @@ Tool node payloads use:
     `IfcZone` / `IfcSpatialZone` also incoming `in_zone` members, minus
     excluded container members
 
-- `get_adjacent_elements(element_id)`
+- `get_adjacent_elements(element_id, max_results?)`
   - good first choice for near/adjacent/neighbour questions
 
-- `spatial_query(near, max_distance, class_?)`
+- `spatial_query(near, max_distance, class_?, max_results?)`
   - distance-based fallback when adjacency/topology is too strict or absent
 
-- `get_topology_neighbors(element_id, relation)`
+- `get_topology_neighbors(element_id, relation, max_results?)`
   - use when the desired relation is known exactly, such as `above`, `below`,
     `intersects_bbox`, `touches_surface`, `space_bounded_by`, or
     `path_connected_to`
 
-- `get_intersections_3d(element_id)`
+- `get_intersections_3d(element_id, max_results?)`
   - strongest intersection tool; use when the user explicitly asks about true
     3D intersection/contact and not just overlap or proximity
 
-- `find_elements_above(element_id, max_gap?)` / `find_elements_below(...)`
+- `find_elements_above(element_id, max_gap?, max_results?)` /
+  `find_elements_below(...)`
   - vertical reasoning helpers; prefer them over generic traversal for above or
     below questions
 
@@ -299,6 +303,16 @@ Many tool payloads also include `data.evidence`: a compact grounding list with
 `global_id` when available, an internal `id` fallback, plus `label`, `class_`,
 and sometimes `relation`, `source_tool`, or `match_reason`.
 
+Legacy list-returning tools may also include bounded-result metadata:
+- `data.total_found`
+- `data.returned_count`
+- `data.truncated`
+- `data.truncation_reason`
+
+If `data.truncated=true`, treat the result as partial evidence. Refine the
+anchor, relation, class filter, distance, or depth, or switch to a narrower
+helper tool.
+
 If `status="error"`, try another path unless the error proves the question is
 unanswerable from the current graph.
 
@@ -318,12 +332,13 @@ specific tool fits or the macro tool returns weak evidence.
    - required output shape (count, list, comparison, explanation)
 2. Find or verify the anchor node(s).
 3. Pull nearby/related candidates with the most specific tool available.
-4. If needed, inspect candidate properties with `get_element_properties`.
-5. If the question asks for exact set math or breakdowns over discovered
+4. If a tool says `truncated=true`, refine immediately before concluding.
+5. If needed, inspect candidate properties with `get_element_properties`.
+6. If the question asks for exact set math or breakdowns over discovered
    elements, call `aggregate_elements` or `group_elements_by_property`.
-6. If needed, run another traversal/search from the newly discovered nodes.
-7. Repeat until you can support the answer with evidence.
-8. Summarize only what the tool evidence supports.
+7. If needed, run another traversal/search from the newly discovered nodes.
+8. Repeat until you can support the answer with evidence.
+9. Summarize only what the tool evidence supports.
 
 Do not stop after one tool call if the question clearly requires composition.
 It is correct to call several tools in sequence.
@@ -442,7 +457,8 @@ when the question is clearly answerable in principle.
 
 Avoid unconstrained `traverse(..., depth>3)` unless you still lack the basic
 container anchors. Broad traversal is a last resort because it wastes tool
-budget and floods the context window.
+budget and floods the context window. If a broad tool comes back truncated,
+refine instead of treating that partial set as the full answer.
 
 ---
 
