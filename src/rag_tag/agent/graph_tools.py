@@ -580,7 +580,9 @@ def register_graph_tools(agent: Any) -> None:
 
         relation must be one of: above, below, overlaps_xy, intersects_bbox,
         intersects_3d, touches_surface, space_bounded_by, bounds_space,
-        path_connected_to. Returns a bounded candidate list.
+        path_connected_to. Returns a bounded candidate list. Depending on the
+        graph-build overlap policy, `overlaps_xy` may legitimately return no
+        neighbors even when vertical `above` / `below` edges exist.
         """
         return query_ifc_graph(
             ctx.deps,

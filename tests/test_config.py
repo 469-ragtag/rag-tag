@@ -6,14 +6,19 @@ from pathlib import Path
 
 import pytest
 import yaml
+from pydantic import ValidationError
 
 from rag_tag.config import (
     CONFIG_PATH_ENV_VAR,
     DEFAULT_DERIVED_EDGE_PRUNE_CLASSES,
+    DEFAULT_OVERLAP_XY_MIN_RATIO,
+    DEFAULT_OVERLAP_XY_MODE,
+    DEFAULT_OVERLAP_XY_TOP_K,
     AppConfig,
     DerivedEdgePruningConfig,
     GraphBuildConfig,
     GraphOrchestrationConfig,
+    OverlapXYConfig,
     discover_project_config,
     load_project_config,
     load_project_env,
@@ -103,6 +108,10 @@ def test_load_project_config_parses_yaml_structure(tmp_path: Path) -> None:
         "    enabled: false\n"
         "    exclude_classes:\n"
         "      - IfcFastener\n"
+        "  overlap_xy:\n"
+        "    mode: threshold\n"
+        "    min_ratio: 0.35\n"
+        "    top_k: 7\n"
         "providers:\n"
         "  databricks:\n"
         "    type: databricks\n"
@@ -141,7 +150,8 @@ def test_load_project_config_parses_yaml_structure(tmp_path: Path) -> None:
         derived_edge_pruning=DerivedEdgePruningConfig(
             enabled=False,
             exclude_classes=["IfcFastener"],
-        )
+        ),
+        overlap_xy=OverlapXYConfig(mode="threshold", min_ratio=0.35, top_k=7),
     )
     assert loaded.config.defaults.graph_max_steps == 12
     assert loaded.config.defaults.graph_output_retries == 4
@@ -271,7 +281,12 @@ def test_app_config_defaults_graph_build_pruning() -> None:
         derived_edge_pruning=DerivedEdgePruningConfig(
             enabled=True,
             exclude_classes=list(DEFAULT_DERIVED_EDGE_PRUNE_CLASSES),
-        )
+        ),
+        overlap_xy=OverlapXYConfig(
+            mode=DEFAULT_OVERLAP_XY_MODE,
+            min_ratio=DEFAULT_OVERLAP_XY_MIN_RATIO,
+            top_k=DEFAULT_OVERLAP_XY_TOP_K,
+        ),
     )
 
 
@@ -282,7 +297,12 @@ def test_app_config_accepts_custom_graph_build_pruning() -> None:
                 "derived_edge_pruning": {
                     "enabled": False,
                     "exclude_classes": ["IfcFastener", "IfcReinforcingBar"],
-                }
+                },
+                "overlap_xy": {
+                    "mode": "top_k",
+                    "min_ratio": 0.45,
+                    "top_k": 9,
+                },
             }
         }
     )
@@ -291,8 +311,34 @@ def test_app_config_accepts_custom_graph_build_pruning() -> None:
         derived_edge_pruning=DerivedEdgePruningConfig(
             enabled=False,
             exclude_classes=["IfcFastener", "IfcReinforcingBar"],
-        )
+        ),
+        overlap_xy=OverlapXYConfig(mode="top_k", min_ratio=0.45, top_k=9),
     )
+
+
+def test_app_config_accepts_each_overlap_xy_mode() -> None:
+    for mode in ("full", "threshold", "top_k", "none"):
+        config = AppConfig.model_validate(
+            {"graph_build": {"overlap_xy": {"mode": mode}}}
+        )
+        assert config.graph_build.overlap_xy.mode == mode
+
+
+def test_app_config_rejects_invalid_overlap_xy_mode() -> None:
+    with pytest.raises(ValidationError):
+        AppConfig.model_validate({"graph_build": {"overlap_xy": {"mode": "partial"}}})
+
+
+def test_app_config_rejects_invalid_overlap_xy_ratio_and_top_k() -> None:
+    with pytest.raises(ValidationError):
+        AppConfig.model_validate(
+            {"graph_build": {"overlap_xy": {"mode": "threshold", "min_ratio": 1.1}}}
+        )
+
+    with pytest.raises(ValidationError):
+        AppConfig.model_validate(
+            {"graph_build": {"overlap_xy": {"mode": "top_k", "top_k": 0}}}
+        )
 
 
 def test_checked_in_config_example_matches_app_config_schema() -> None:

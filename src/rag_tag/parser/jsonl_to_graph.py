@@ -29,7 +29,7 @@ import json
 import logging
 import math
 import os
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from itertools import product
 from pathlib import Path
@@ -39,7 +39,10 @@ import numpy as np
 import plotly.graph_objects as go
 import plotly.io as pio
 
-from rag_tag.config import load_project_config
+from rag_tag.config import (
+    DEFAULT_OVERLAP_XY_MODE,
+    load_project_config,
+)
 from rag_tag.paths import find_project_root
 
 LOG = logging.getLogger(__name__)
@@ -936,6 +939,25 @@ class DerivedEdgePruningPolicy:
     exclude_classes: frozenset[str]
 
 
+@dataclass(frozen=True)
+class OverlapXYPolicy:
+    """Resolved policy controlling raw ``overlaps_xy`` edge emission."""
+
+    mode: str
+    min_ratio: float
+    top_k: int
+
+
+@dataclass(frozen=True)
+class _OverlapXYCandidate:
+    """Positive-overlap candidate between two elements."""
+
+    source_id: str
+    target_id: str
+    overlap_area_xy: float
+    overlap_ratio: float
+
+
 def _normalize_ifc_class_name(value: object) -> str | None:
     if value is None:
         return None
@@ -981,6 +1003,94 @@ def _resolve_derived_edge_pruning_policy(
     )
 
 
+def _normalize_overlap_xy_mode(value: object | None) -> str:
+    if value is None:
+        return DEFAULT_OVERLAP_XY_MODE
+    normalized = str(value).strip().lower()
+    if normalized not in {"full", "threshold", "top_k", "none"}:
+        raise ValueError("overlap_xy mode must be one of: full, threshold, top_k, none")
+    return normalized
+
+
+def _resolve_overlap_xy_policy(
+    *,
+    mode: object | None = None,
+    min_ratio: object | None = None,
+    top_k: object | None = None,
+) -> OverlapXYPolicy:
+    configured = load_project_config(_MODULE_DIR).config.graph_build.overlap_xy
+    resolved_mode = _normalize_overlap_xy_mode(
+        configured.mode if mode is None else mode
+    )
+    resolved_min_ratio = configured.min_ratio if min_ratio is None else float(min_ratio)
+    resolved_top_k = configured.top_k if top_k is None else int(top_k)
+    if not 0.0 <= resolved_min_ratio <= 1.0:
+        raise ValueError("overlap_xy min_ratio must be between 0.0 and 1.0")
+    if resolved_top_k < 1:
+        raise ValueError("overlap_xy top_k must be >= 1")
+    return OverlapXYPolicy(
+        mode=resolved_mode,
+        min_ratio=resolved_min_ratio,
+        top_k=resolved_top_k,
+    )
+
+
+def _footprint_area_xy(
+    footprint: list[tuple[float, float]] | None, bbox: tuple
+) -> float:
+    if footprint is not None:
+        area = _polygon_area_xy(footprint)
+        if area > 0.0:
+            return area
+    min_x, min_y, _min_z = bbox[0]
+    max_x, max_y, _max_z = bbox[1]
+    return max(0.0, float(max_x) - float(min_x)) * max(0.0, float(max_y) - float(min_y))
+
+
+def _select_emitted_overlap_xy_candidates(
+    candidates: list[_OverlapXYCandidate],
+    *,
+    policy: OverlapXYPolicy,
+) -> tuple[set[tuple[str, str]], int, int]:
+    if not candidates or policy.mode == "none":
+        return set(), 0, 0
+    if policy.mode == "full":
+        emitted = {(item.source_id, item.target_id) for item in candidates}
+        return emitted, 0, 0
+    if policy.mode == "threshold":
+        emitted = {
+            (item.source_id, item.target_id)
+            for item in candidates
+            if item.overlap_ratio >= policy.min_ratio
+        }
+        return emitted, len(candidates) - len(emitted), 0
+
+    ranked_by_node: dict[str, list[_OverlapXYCandidate]] = defaultdict(list)
+    for item in candidates:
+        ranked_by_node[item.source_id].append(item)
+        ranked_by_node[item.target_id].append(item)
+
+    kept_pairs: set[tuple[str, str]] = set()
+    for node_id, node_candidates in ranked_by_node.items():
+        ordered = sorted(
+            node_candidates,
+            key=lambda item: (
+                -item.overlap_area_xy,
+                item.source_id if item.source_id != node_id else item.target_id,
+                item.target_id if item.source_id != node_id else item.source_id,
+            ),
+        )
+        for item in ordered[: policy.top_k]:
+            kept_pairs.add((item.source_id, item.target_id))
+
+    emitted = {
+        (item.source_id, item.target_id)
+        for item in candidates
+        if (item.source_id, item.target_id) in kept_pairs
+    }
+    return emitted, 0, len(candidates) - len(emitted)
+
+
 def _record_derived_edge_phase_stats(
     G: nx.DiGraph | nx.MultiDiGraph,
     phase: str,
@@ -1012,6 +1122,39 @@ def _record_derived_edge_phase_stats(
         sum(skipped_by_class.values()),
         edges_added,
         ", ".join(sorted(excluded_classes)) if excluded_classes else "<none>",
+    )
+
+
+def _record_overlap_xy_stats(
+    G: nx.DiGraph | nx.MultiDiGraph,
+    *,
+    policy: OverlapXYPolicy,
+    candidate_pairs: int,
+    emitted_pairs: int,
+    rejected_by_threshold: int,
+    rejected_by_top_k: int,
+) -> None:
+    graph_build = G.graph.setdefault("graph_build", {})
+    graph_build["overlap_xy"] = {
+        "mode": policy.mode,
+        "min_ratio": policy.min_ratio,
+        "top_k": policy.top_k,
+        "candidate_positive_overlap_pairs": candidate_pairs,
+        "emitted_overlap_pairs": emitted_pairs,
+        "emitted_overlap_edges": emitted_pairs * 2,
+        "rejected_by_threshold": rejected_by_threshold,
+        "rejected_by_top_k": rejected_by_top_k,
+    }
+    LOG.info(
+        "overlap_xy: mode=%s candidate_pairs=%d emitted_pairs=%d "
+        "rejected_by_threshold=%d rejected_by_top_k=%d min_ratio=%.3f top_k=%d",
+        policy.mode,
+        candidate_pairs,
+        emitted_pairs,
+        rejected_by_threshold,
+        rejected_by_top_k,
+        policy.min_ratio,
+        policy.top_k,
     )
 
 
@@ -1420,7 +1563,12 @@ def add_spatial_adjacency(
 
 
 def add_topology_facts(
-    G: nx.DiGraph | nx.MultiDiGraph, *, exclude_classes: object = None
+    G: nx.DiGraph | nx.MultiDiGraph,
+    *,
+    exclude_classes: object = None,
+    overlap_xy_mode: object | None = None,
+    overlap_xy_min_ratio: object | None = None,
+    overlap_xy_top_k: object | None = None,
 ) -> None:
     def _add_topology_edge(u: str, v: str, **attrs: object) -> None:
         """Add topology edge with explicit topology source semantics."""
@@ -1431,8 +1579,14 @@ def add_topology_facts(
     element_refs: list[tuple[str, str, str]] = []
     element_footprints: list[list[tuple[float, float]] | None] = []
     excluded_classes = _normalize_excluded_classes(exclude_classes)
+    overlap_xy_policy = _resolve_overlap_xy_policy(
+        mode=overlap_xy_mode,
+        min_ratio=overlap_xy_min_ratio,
+        top_k=overlap_xy_top_k,
+    )
     skipped_by_class: defaultdict[str, int] = defaultdict(int)
     edges_before = G.number_of_edges()
+    overlap_candidates: list[_OverlapXYCandidate] = []
 
     for n, d in G.nodes(data=True):
         if not str(n).startswith("Element::"):
@@ -1488,17 +1642,18 @@ def add_topology_facts(
             else:
                 overlap_area = _bbox_xy_overlap_area(bbox_a, bbox_b)
             if overlap_area > 0.0:
-                _add_topology_edge(
-                    a,
-                    b,
-                    relation="overlaps_xy",
-                    overlap_area_xy=overlap_area,
+                min_area = min(
+                    _footprint_area_xy(footprint_a, bbox_a),
+                    _footprint_area_xy(footprint_b, bbox_b),
                 )
-                _add_topology_edge(
-                    b,
-                    a,
-                    relation="overlaps_xy",
-                    overlap_area_xy=overlap_area,
+                overlap_ratio = overlap_area / min_area if min_area > 0.0 else 0.0
+                overlap_candidates.append(
+                    _OverlapXYCandidate(
+                        source_id=a,
+                        target_id=b,
+                        overlap_area_xy=overlap_area,
+                        overlap_ratio=overlap_ratio,
+                    )
                 )
 
             # Prefer exact OCC mesh boolean metrics when available.
@@ -1551,6 +1706,39 @@ def add_topology_facts(
                 gap = b_min_z - a_max_z
                 _add_topology_edge(b, a, relation="above", vertical_gap=gap)
                 _add_topology_edge(a, b, relation="below", vertical_gap=gap)
+
+    emitted_overlap_pairs, rejected_by_threshold, rejected_by_top_k = (
+        _select_emitted_overlap_xy_candidates(
+            overlap_candidates,
+            policy=overlap_xy_policy,
+        )
+    )
+    for candidate in overlap_candidates:
+        if (candidate.source_id, candidate.target_id) not in emitted_overlap_pairs:
+            continue
+        _add_topology_edge(
+            candidate.source_id,
+            candidate.target_id,
+            relation="overlaps_xy",
+            overlap_area_xy=candidate.overlap_area_xy,
+            overlap_ratio_xy=candidate.overlap_ratio,
+        )
+        _add_topology_edge(
+            candidate.target_id,
+            candidate.source_id,
+            relation="overlaps_xy",
+            overlap_area_xy=candidate.overlap_area_xy,
+            overlap_ratio_xy=candidate.overlap_ratio,
+        )
+
+    _record_overlap_xy_stats(
+        G,
+        policy=overlap_xy_policy,
+        candidate_pairs=len(overlap_candidates),
+        emitted_pairs=len(emitted_overlap_pairs),
+        rejected_by_threshold=rejected_by_threshold,
+        rejected_by_top_k=rejected_by_top_k,
+    )
 
     _record_derived_edge_phase_stats(
         G,
@@ -2399,6 +2587,936 @@ def plot_interactive_graph(G: nx.DiGraph | nx.MultiDiGraph, out_html: Path) -> N
     LOG.info("Visualization saved to %s", out_html)
 
 
+def plot_interactive_graph_overlap_modes(
+    graphs_by_mode: dict[str, nx.DiGraph | nx.MultiDiGraph],
+    out_html: Path,
+) -> None:
+    if not graphs_by_mode:
+        raise ValueError("At least one graph is required to render overlap modes.")
+
+    preferred_order = ["full", "threshold", "top_k", "none"]
+    ordered_modes = [
+        mode for mode in preferred_order if mode in graphs_by_mode
+    ] + sorted(mode for mode in graphs_by_mode if mode not in preferred_order)
+    base_mode = ordered_modes[0]
+    base_graph = graphs_by_mode[base_mode]
+
+    pos: dict[str, tuple[float, float, float] | None] = {}
+    for n, d in base_graph.nodes(data=True):
+        geom = d.get("geometry")
+        if geom is not None:
+            pos[n] = tuple(float(v) for v in geom)
+        else:
+            pos[n] = None
+
+    for n in base_graph.nodes:
+        if pos.get(n) is not None:
+            continue
+        child_positions = [
+            pos[c] for c in base_graph.successors(n) if pos.get(c) is not None
+        ]
+        if child_positions:
+            arr = np.array(child_positions, dtype=float)
+            pos[n] = tuple(float(v) for v in arr.mean(axis=0))
+        else:
+            pos[n] = (0.0, 0.0, 0.0)
+
+    node_color_map = {
+        "IfcProject": "#7c3aed",
+        "IfcBuilding": "#2563eb",
+        "IfcBuildingStorey": "#f97316",
+        "IfcSystem": "#0891b2",
+        "IfcZone": "#16a34a",
+    }
+    edge_color_map = {
+        "aggregates": "#6b7280",
+        "contains": "#1d4ed8",
+        "contained_in": "#2563eb",
+        "typed_by": "#ca8a04",
+        "connected_to": "#ef4444",
+        "adjacent_to": "#059669",
+        "intersects_bbox": "#f59e0b",
+        "overlaps_xy": "#0ea5e9",
+        "intersects_3d": "#b91c1c",
+        "touches_surface": "#9333ea",
+        "above": "#7c3aed",
+        "below": "#9333ea",
+        "hosts": "#b91c1c",
+        "hosted_by": "#dc2626",
+        "ifc_connected_to": "#0f766e",
+        "path_connected_to": "#0b6e4f",
+        "space_bounded_by": "#be123c",
+        "bounds_space": "#9f1239",
+        "belongs_to_system": "#0369a1",
+        "in_zone": "#15803d",
+        "classified_as": "#4f46e5",
+    }
+    edge_relation_explanations = {
+        "aggregates": "hierarchy decomposition",
+        "contains": "container to child",
+        "contained_in": "child to container",
+        "typed_by": "instance classified by type",
+        "connected_to": "bbox intersects or touches",
+        "adjacent_to": "spatially near within threshold",
+        "intersects_bbox": "3D bbox overlap",
+        "overlaps_xy": "2D footprint overlap",
+        "intersects_3d": "mesh-informed 3D intersection",
+        "touches_surface": "mesh-informed surface contact",
+        "above": "vertical ordering above",
+        "below": "vertical ordering below",
+        "hosts": "explicit IFC host relationship",
+        "hosted_by": "explicit IFC hosted-by relationship",
+        "ifc_connected_to": "explicit IFC connectivity",
+        "path_connected_to": "explicit IFC path connectivity",
+        "space_bounded_by": "IFC space boundary (space to element)",
+        "bounds_space": "IFC space boundary (element to space)",
+        "belongs_to_system": "assigned to IFC system",
+        "in_zone": "assigned to IFC zone",
+        "classified_as": "assigned IFC classification",
+    }
+
+    node_groups: dict[str, dict[str, list]] = {}
+    node_group_colors: dict[str, str] = {}
+    node_group_labels: dict[str, str] = {}
+    for n, d in base_graph.nodes(data=True):
+        x, y, z = pos[n] or (0.0, 0.0, 0.0)
+        cls = str(d.get("class_") or "Unknown")
+        group = node_groups.setdefault(cls, {"x": [], "y": [], "z": [], "hover": []})
+        if cls not in node_group_colors:
+            node_group_colors[cls] = node_color_map.get(cls, "#22c55e")
+            node_group_labels[cls] = f"Node: {cls}"
+        props = d.get("properties", {}) or {}
+        hover_props = "<br>".join(
+            f"<b>{k}</b>: {v}" for k, v in props.items() if v not in ("", None)
+        )
+        group["x"].append(x)
+        group["y"].append(y)
+        group["z"].append(z)
+        group["hover"].append(
+            f"<b>{d.get('label', n)}</b><br>Class: {cls}<br>{hover_props}"
+        )
+
+    def _collect_edge_groups(
+        graph: nx.DiGraph | nx.MultiDiGraph,
+        *,
+        only_relation: str | None = None,
+        exclude_relation: str | None = None,
+    ) -> dict[str, dict[str, list]]:
+        edge_groups: dict[str, dict[str, list]] = {}
+        for u, v, d in graph.edges(data=True):
+            rel = str(d.get("relation", "related_to"))
+            if only_relation is not None and rel != only_relation:
+                continue
+            if exclude_relation is not None and rel == exclude_relation:
+                continue
+            group = edge_groups.setdefault(
+                rel,
+                {
+                    "x": [],
+                    "y": [],
+                    "z": [],
+                    "mid_x": [],
+                    "mid_y": [],
+                    "mid_z": [],
+                    "label_x": [],
+                    "label_y": [],
+                    "label_z": [],
+                    "hover": [],
+                },
+            )
+            x0, y0, z0 = pos.get(u) or (0.0, 0.0, 0.0)
+            x1, y1, z1 = pos.get(v) or (0.0, 0.0, 0.0)
+            group["x"] += [x0, x1, None]
+            group["y"] += [y0, y1, None]
+            group["z"] += [z0, z1, None]
+            mx = (x0 + x1) / 2.0
+            my = (y0 + y1) / 2.0
+            mz = (z0 + z1) / 2.0
+            group["mid_x"].append(mx)
+            group["mid_y"].append(my)
+            group["mid_z"].append(mz)
+            group["label_x"].append(mx)
+            group["label_y"].append(my)
+            group["label_z"].append(mz)
+
+            source = d.get("source")
+            dist = d.get("distance")
+            meaning = edge_relation_explanations.get(rel, "graph relation")
+            msg = f"Relation: {rel}<br>Meaning: {meaning}"
+            if source is not None:
+                msg += f"<br>Source: {source}"
+            if dist is not None:
+                msg += f"<br>Distance: {float(dist):.3f}"
+            overlap_ratio = d.get("overlap_ratio_xy")
+            if overlap_ratio is not None:
+                msg += f"<br>Overlap ratio: {float(overlap_ratio):.3f}"
+            overlap_area = d.get("overlap_area_xy")
+            if overlap_area is not None:
+                msg += f"<br>Overlap area XY: {float(overlap_area):.3f}"
+            group["hover"].append(msg)
+        return edge_groups
+
+    base_edge_groups = _collect_edge_groups(base_graph, exclude_relation="overlaps_xy")
+    overlap_edge_groups_by_mode = {
+        mode: _collect_edge_groups(graph, only_relation="overlaps_xy")
+        for mode, graph in graphs_by_mode.items()
+    }
+
+    bbox_x: list[float | None] = []
+    bbox_y: list[float | None] = []
+    bbox_z: list[float | None] = []
+    bbox_edges = (
+        (0, 1),
+        (1, 2),
+        (2, 3),
+        (3, 0),
+        (4, 5),
+        (5, 6),
+        (6, 7),
+        (7, 4),
+        (0, 4),
+        (1, 5),
+        (2, 6),
+        (3, 7),
+    )
+    for node_id, node_data in base_graph.nodes(data=True):
+        if not str(node_id).startswith("Element::"):
+            continue
+        bbox = node_data.get("bbox")
+        if bbox is None:
+            continue
+        min_xyz, max_xyz = bbox
+        x0, y0, z0 = (float(min_xyz[0]), float(min_xyz[1]), float(min_xyz[2]))
+        x1, y1, z1 = (float(max_xyz[0]), float(max_xyz[1]), float(max_xyz[2]))
+        corners = [
+            (x0, y0, z0),
+            (x1, y0, z0),
+            (x1, y1, z0),
+            (x0, y1, z0),
+            (x0, y0, z1),
+            (x1, y0, z1),
+            (x1, y1, z1),
+            (x0, y1, z1),
+        ]
+        for a, b in bbox_edges:
+            ax, ay, az = corners[a]
+            bx, by, bz = corners[b]
+            bbox_x += [ax, bx, None]
+            bbox_y += [ay, by, None]
+            bbox_z += [az, bz, None]
+
+    traces: list[go.BaseTraceType] = []
+    trace_meta: list[tuple[str, str, str | None]] = []
+
+    if bbox_x:
+        traces.append(
+            go.Scatter3d(
+                x=bbox_x,
+                y=bbox_y,
+                z=bbox_z,
+                mode="lines",
+                line={"width": 2, "color": "#f59e0b"},
+                opacity=0.45,
+                hoverinfo="none",
+                name="BBox wireframe",
+                legendgroup="bbox",
+                showlegend=True,
+                visible=False,
+            )
+        )
+        trace_meta.append(("bbox", "bbox", None))
+
+    mesh_groups: dict[str, dict[str, list[int | float]]] = {}
+    for node_id, node_data in base_graph.nodes(data=True):
+        if not str(node_id).startswith("Element::"):
+            continue
+        mesh = node_data.get("mesh")
+        if mesh is None:
+            continue
+        vertices, faces = mesh
+        if not vertices or not faces:
+            continue
+        cls = str(node_data.get("class_") or "Element")
+        group = mesh_groups.setdefault(
+            cls, {"x": [], "y": [], "z": [], "i": [], "j": [], "k": []}
+        )
+        base = len(group["x"])
+        for vx, vy, vz in vertices:
+            group["x"].append(float(vx))
+            group["y"].append(float(vy))
+            group["z"].append(float(vz))
+        for a, b, c in faces:
+            group["i"].append(int(a) + base)
+            group["j"].append(int(b) + base)
+            group["k"].append(int(c) + base)
+
+    for idx, cls in enumerate(sorted(mesh_groups)):
+        mesh = mesh_groups[cls]
+        traces.append(
+            go.Mesh3d(
+                x=mesh["x"],
+                y=mesh["y"],
+                z=mesh["z"],
+                i=mesh["i"],
+                j=mesh["j"],
+                k=mesh["k"],
+                opacity=0.16,
+                color="#0ea5e9",
+                name=f"Mesh surface: {cls}",
+                legendgroup="mesh",
+                showlegend=idx == 0,
+                hoverinfo="skip",
+                flatshading=True,
+                visible=False,
+            )
+        )
+        trace_meta.append(("mesh", cls, None))
+
+    def _append_edge_group_traces(
+        edge_groups: dict[str, dict[str, list]],
+        *,
+        variant: str | None,
+    ) -> None:
+        for rel in sorted(edge_groups):
+            edge = edge_groups[rel]
+            edge_color = edge_color_map.get(rel, "#4b5563")
+            rel_expl = edge_relation_explanations.get(rel, "graph relation")
+            traces.append(
+                go.Scatter3d(
+                    x=edge["x"],
+                    y=edge["y"],
+                    z=edge["z"],
+                    mode="lines",
+                    line={"width": 3, "color": edge_color},
+                    hoverinfo="none",
+                    name=f"Edge: {rel} - {rel_expl}",
+                    legendgroup=f"edge::{variant or 'shared'}::{rel}",
+                    showlegend=True,
+                )
+            )
+            trace_meta.append(("edge", rel, variant))
+
+            traces.append(
+                go.Scatter3d(
+                    x=edge["mid_x"],
+                    y=edge["mid_y"],
+                    z=edge["mid_z"],
+                    mode="markers",
+                    marker={"size": 2, "color": edge_color, "opacity": 0.0},
+                    hoverinfo="text",
+                    hovertext=edge["hover"],
+                    showlegend=False,
+                    legendgroup=f"edge::{variant or 'shared'}::{rel}",
+                )
+            )
+            trace_meta.append(("edge_hover", rel, variant))
+
+            traces.append(
+                go.Scatter3d(
+                    x=edge["label_x"],
+                    y=edge["label_y"],
+                    z=edge["label_z"],
+                    mode="text",
+                    text=[rel] * len(edge["label_x"]),
+                    textposition="middle center",
+                    textfont={"size": 10, "color": edge_color},
+                    hoverinfo="none",
+                    showlegend=False,
+                    legendgroup=f"edge::{variant or 'shared'}::{rel}",
+                    visible=False,
+                )
+            )
+            trace_meta.append(("edge_label", rel, variant))
+
+    _append_edge_group_traces(base_edge_groups, variant=None)
+    for mode in ordered_modes:
+        _append_edge_group_traces(
+            overlap_edge_groups_by_mode.get(mode, {}),
+            variant=mode,
+        )
+
+    for group_key in sorted(node_groups):
+        node = node_groups[group_key]
+        node_color = node_group_colors.get(group_key, "#22c55e")
+        label = node_group_labels.get(group_key, f"Node: {group_key}")
+        traces.append(
+            go.Scatter3d(
+                x=node["x"],
+                y=node["y"],
+                z=node["z"],
+                mode="markers",
+                marker={"size": 6, "color": node_color},
+                hoverinfo="text",
+                hovertext=node["hover"],
+                name=label,
+                legendgroup=f"node::{group_key}",
+                showlegend=True,
+            )
+        )
+        trace_meta.append(("node", group_key, None))
+
+    def _mask(
+        filter_mode: str,
+        overlap_mode: str,
+        *,
+        show_edge_annotations: bool = False,
+        show_bboxes: bool = False,
+        show_meshes: bool = False,
+    ) -> list[bool]:
+        edge_categories = base_graph.graph.get("edge_categories", {})
+        hierarchy_rels = set(edge_categories.get("hierarchy", []))
+        spatial_rels = set(edge_categories.get("spatial", []))
+        topology_rels = set(edge_categories.get("topology", []))
+        explicit_rels = set(edge_categories.get("explicit", []))
+        visible: list[bool] = []
+        for kind, name, variant in trace_meta:
+            if kind == "bbox":
+                visible.append(show_bboxes)
+                continue
+            if kind == "mesh":
+                visible.append(show_meshes)
+                continue
+            if (
+                variant is not None
+                and name == "overlaps_xy"
+                and variant != overlap_mode
+            ):
+                visible.append(False)
+                continue
+            if filter_mode == "all":
+                visible.append(kind != "edge_label" or show_edge_annotations)
+            elif filter_mode == "nodes":
+                visible.append(kind == "node")
+            elif filter_mode == "edges":
+                visible.append(
+                    kind in {"edge", "edge_hover"}
+                    or (kind == "edge_label" and show_edge_annotations)
+                )
+            elif filter_mode == "hierarchy":
+                visible.append(
+                    kind == "node"
+                    or (kind in {"edge", "edge_hover"} and name in hierarchy_rels)
+                    or (
+                        kind == "edge_label"
+                        and show_edge_annotations
+                        and name in hierarchy_rels
+                    )
+                )
+            elif filter_mode == "spatial":
+                visible.append(
+                    kind == "node"
+                    or (kind in {"edge", "edge_hover"} and name in spatial_rels)
+                    or (
+                        kind == "edge_label"
+                        and show_edge_annotations
+                        and name in spatial_rels
+                    )
+                )
+            elif filter_mode == "topology":
+                visible.append(
+                    kind == "node"
+                    or (kind in {"edge", "edge_hover"} and name in topology_rels)
+                    or (
+                        kind == "edge_label"
+                        and show_edge_annotations
+                        and name in topology_rels
+                    )
+                )
+            elif filter_mode == "explicit":
+                visible.append(
+                    kind == "node"
+                    or (kind in {"edge", "edge_hover"} and name in explicit_rels)
+                    or (
+                        kind == "edge_label"
+                        and show_edge_annotations
+                        and name in explicit_rels
+                    )
+                )
+            else:
+                visible.append(kind != "edge_label" or show_edge_annotations)
+        return visible
+
+    filter_modes = [
+        "all",
+        "nodes",
+        "edges",
+        "hierarchy",
+        "spatial",
+        "topology",
+        "explicit",
+    ]
+    filter_masks: dict[str, dict[str, dict[str, list[bool]]]] = {}
+    for overlap_mode in ordered_modes:
+        filter_masks[overlap_mode] = {
+            filter_mode: {
+                "base": _mask(filter_mode, overlap_mode),
+                "with_annotations": _mask(
+                    filter_mode,
+                    overlap_mode,
+                    show_edge_annotations=True,
+                ),
+                "with_bboxes": _mask(
+                    filter_mode,
+                    overlap_mode,
+                    show_bboxes=True,
+                ),
+                "with_annotations_and_bboxes": _mask(
+                    filter_mode,
+                    overlap_mode,
+                    show_edge_annotations=True,
+                    show_bboxes=True,
+                ),
+                "with_meshes": _mask(
+                    filter_mode,
+                    overlap_mode,
+                    show_meshes=True,
+                ),
+                "with_annotations_and_meshes": _mask(
+                    filter_mode,
+                    overlap_mode,
+                    show_edge_annotations=True,
+                    show_meshes=True,
+                ),
+                "with_bboxes_and_meshes": _mask(
+                    filter_mode,
+                    overlap_mode,
+                    show_bboxes=True,
+                    show_meshes=True,
+                ),
+                "with_annotations_and_bboxes_and_meshes": _mask(
+                    filter_mode,
+                    overlap_mode,
+                    show_edge_annotations=True,
+                    show_bboxes=True,
+                    show_meshes=True,
+                ),
+            }
+            for filter_mode in filter_modes
+        }
+
+    fig = go.Figure(data=traces)
+    fig.update_layout(
+        title={"text": "IFC Graph (JSONL)", "x": 0.01, "xanchor": "left"},
+        scene={"aspectmode": "data"},
+        showlegend=False,
+        font={
+            "family": "Segoe UI, Tahoma, Arial, sans-serif",
+            "size": 14,
+            "color": "#1f3552",
+        },
+        margin={"l": 8, "r": 8, "t": 56, "b": 8},
+        paper_bgcolor="#f7f9fc",
+        plot_bgcolor="#f7f9fc",
+    )
+
+    legend_payloads: dict[str, dict[str, str]] = {}
+    for mode in ordered_modes:
+        graph = graphs_by_mode[mode]
+        relation_counts: Counter[str] = Counter()
+        for _source, _target, attrs in graph.edges(data=True):
+            relation_counts[str(attrs.get("relation", "related_to"))] += 1
+        edge_items = []
+        for rel in sorted(
+            relation_counts,
+            key=lambda name: (-relation_counts[name], name),
+        ):
+            rel_expl = edge_relation_explanations.get(rel, "graph relation")
+            edge_color = edge_color_map.get(rel, "#4b5563")
+            count = relation_counts[rel]
+            edge_items.append(
+                "<div class='legend-item'>"
+                f"<span class='swatch line' style='--swatch:{edge_color}'></span>"
+                "<span class='legend-item-text'>"
+                f"<span class='legend-item-main'>Edge: {html.escape(rel)}</span>"
+                f"<span class='legend-item-sub'>{html.escape(rel_expl)}</span>"
+                "</span>"
+                f"<span class='legend-count' title='Edge count'>{count}</span>"
+                "</div>"
+            )
+        legend_payloads[mode] = {
+            "total_edges": str(graph.number_of_edges()),
+            "edge_items_html": "".join(edge_items),
+        }
+
+    node_items = []
+    for group_key in sorted(node_groups):
+        node_color = node_group_colors.get(group_key, "#22c55e")
+        label = node_group_labels.get(group_key, f"Node: {group_key}")
+        node_items.append(
+            "<div class='legend-item'>"
+            f"<span class='swatch dot' style='--swatch:{node_color}'></span>"
+            f"<span>{html.escape(label)}</span>"
+            "</div>"
+        )
+
+    plotly_div = pio.to_html(
+        fig,
+        full_html=False,
+        include_plotlyjs=True,
+        config={"responsive": True, "displaylogo": False},
+        div_id="viewer",
+        default_width="100%",
+        default_height="100%",
+    )
+    initial_legend = legend_payloads[base_mode]
+    overlap_mode_buttons = "".join(
+        (
+            f"<button {'class="active" ' if mode == base_mode else ''}"
+            f'data-overlap-mode="{html.escape(mode)}">'
+            f"Overlap: {html.escape(mode)}</button>"
+        )
+        for mode in ordered_modes
+    )
+
+    page_html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>IFC Graph</title>
+  <style>
+    :root {{
+      --ui-font: "Segoe UI", Tahoma, Arial, sans-serif;
+      --ui-size: 14px;
+      --ui-fg: #1f3552;
+      --panel-bg: rgba(255, 255, 255, 0.94);
+      --panel-border: #b9c6d8;
+      --panel-shadow: 0 6px 18px rgba(31, 53, 82, 0.12);
+      --gap: 12px;
+      --radius: 10px;
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      margin: 0;
+      min-height: 100vh;
+      background: linear-gradient(180deg, #f7f9fc 0%, #eef3fb 100%);
+      color: var(--ui-fg);
+      font-family: var(--ui-font);
+      font-size: var(--ui-size);
+      padding: 14px;
+    }}
+    .app {{
+      width: 100%;
+      height: calc(100vh - 28px);
+      display: flex;
+      flex-direction: column;
+      gap: var(--gap);
+    }}
+    .toolbar {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      padding: 10px;
+      background: var(--panel-bg);
+      border: 1px solid var(--panel-border);
+      border-radius: var(--radius);
+      box-shadow: var(--panel-shadow);
+    }}
+    .toolbar button {{
+      flex: 1 1 120px;
+      min-height: 38px;
+      border: 1px solid #9fb1c9;
+      border-radius: 8px;
+      background: #f2f6fc;
+      color: var(--ui-fg);
+      font-family: var(--ui-font);
+      font-size: var(--ui-size);
+      cursor: pointer;
+      padding: 8px 14px;
+    }}
+    .toolbar button.active {{
+      background: #dbe9ff;
+      border-color: #4c79bd;
+      font-weight: 600;
+    }}
+    .toolbar button.toggle {{
+      flex: 0 1 180px;
+      background: #fff8ea;
+      border-color: #d8b474;
+    }}
+    .toolbar button.toggle.active {{
+      background: #ffe9bf;
+      border-color: #bf8a2f;
+    }}
+    .toolbar button[data-overlap-mode] {{
+      flex: 0 1 150px;
+      background: #edf7ef;
+      border-color: #7eb08e;
+    }}
+    .toolbar button[data-overlap-mode].active {{
+      background: #d9f0de;
+      border-color: #3c8d57;
+    }}
+    .viewer-shell {{
+      position: relative;
+      flex: 1;
+      min-height: 420px;
+      border: 1px solid var(--panel-border);
+      border-radius: var(--radius);
+      overflow: hidden;
+      background: #f7f9fc;
+    }}
+    #viewer {{
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+    }}
+    .legend {{
+      position: absolute;
+      right: 16px;
+      bottom: 16px;
+      width: min(420px, calc(100% - 32px));
+      max-height: 52vh;
+      overflow: auto;
+      background: var(--panel-bg);
+      border: 1px solid var(--panel-border);
+      border-radius: var(--radius);
+      box-shadow: var(--panel-shadow);
+      padding: 12px 14px;
+      z-index: 5;
+    }}
+    .legend h3 {{
+      margin: 0 0 8px 0;
+      font-size: 17px;
+      line-height: 1.2;
+    }}
+    .legend .section-title {{
+      margin: 10px 0 6px;
+      font-weight: 700;
+    }}
+    .legend .section-meta {{
+      margin: -2px 0 8px;
+      color: #51657f;
+      font-size: 12px;
+    }}
+    .legend-item {{
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin: 6px 0;
+      line-height: 1.3;
+    }}
+    .legend-item-text {{
+      min-width: 0;
+      flex: 1 1 auto;
+      display: flex;
+      flex-direction: column;
+      gap: 1px;
+    }}
+    .legend-item-main {{
+      font-weight: 600;
+    }}
+    .legend-item-sub {{
+      color: #51657f;
+      font-size: 12px;
+    }}
+    .legend-count {{
+      flex: 0 0 auto;
+      min-width: 38px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: #e7eef8;
+      border: 1px solid #c5d3e6;
+      color: #1f3552;
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+      font-weight: 700;
+    }}
+    .swatch {{
+      flex: 0 0 auto;
+      display: inline-block;
+      background: var(--swatch);
+    }}
+    .swatch.line {{
+      width: 30px;
+      height: 4px;
+      border-radius: 2px;
+    }}
+    .swatch.dot {{
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+    }}
+  </style>
+</head>
+<body>
+  <div class="app">
+    <div class="toolbar" role="toolbar" aria-label="Graph filters">
+      {overlap_mode_buttons}
+      <button class="active" data-mode="all">Show All</button>
+      <button data-mode="nodes">Nodes Only</button>
+      <button data-mode="edges">Edges Only</button>
+      <button data-mode="hierarchy">Hierarchy</button>
+      <button data-mode="spatial">Spatial</button>
+      <button data-mode="topology">Topology</button>
+      <button data-mode="explicit">Explicit IFC</button>
+      <button
+        id="toggle-edge-annotations"
+        class="toggle"
+        type="button"
+        aria-pressed="false"
+      >
+        Edge Labels: Off
+      </button>
+      <button
+        id="toggle-bboxes"
+        class="toggle"
+        type="button"
+        aria-pressed="false"
+      >
+        BBoxes: Off
+      </button>
+      <button
+        id="toggle-meshes"
+        class="toggle"
+        type="button"
+        aria-pressed="false"
+      >
+        Meshes: Off
+      </button>
+    </div>
+    <div class="viewer-shell">
+      {plotly_div}
+      <aside class="legend" aria-label="Graph legend">
+        <h3>Legend</h3>
+        <div class="section-meta" id="overlap-mode-summary">
+          Active overlap mode: {html.escape(base_mode)}
+        </div>
+        <div class="section-title">Edges</div>
+        <div class="section-meta" id="legend-total-edges">
+          Total directed edges shown: {initial_legend["total_edges"]}
+        </div>
+        <div id="legend-edge-items">{initial_legend["edge_items_html"]}</div>
+        <div class="section-title">Nodes</div>
+        {"".join(node_items)}
+      </aside>
+    </div>
+  </div>
+  <script>
+    const masks = {json.dumps(filter_masks)};
+    const legendPayloads = {json.dumps(legend_payloads)};
+    const viewer = document.getElementById("viewer");
+    const modeButtons = Array.from(
+      document.querySelectorAll(".toolbar button[data-mode]")
+    );
+    const overlapModeButtons = Array.from(
+      document.querySelectorAll(".toolbar button[data-overlap-mode]")
+    );
+    const toggleEdgeAnnotationsButton = document.getElementById(
+      "toggle-edge-annotations"
+    );
+    const toggleBboxesButton = document.getElementById("toggle-bboxes");
+    const toggleMeshesButton = document.getElementById("toggle-meshes");
+    const legendEdgeItems = document.getElementById("legend-edge-items");
+    const legendTotalEdges = document.getElementById("legend-total-edges");
+    const overlapModeSummary = document.getElementById("overlap-mode-summary");
+    let currentMode = "all";
+    let currentOverlapMode = {json.dumps(base_mode)};
+    let edgeAnnotationsEnabled = false;
+    let bboxesEnabled = false;
+    let meshesEnabled = false;
+
+    function maskKey() {{
+      const parts = [];
+      if (edgeAnnotationsEnabled) parts.push("annotations");
+      if (bboxesEnabled) parts.push("bboxes");
+      if (meshesEnabled) parts.push("meshes");
+      return parts.length ? `with_${{parts.join("_and_")}}` : "base";
+    }}
+
+    function updateLegend() {{
+      const payload = legendPayloads[currentOverlapMode];
+      if (!payload) return;
+      legendEdgeItems.innerHTML = payload.edge_items_html;
+      legendTotalEdges.textContent =
+        `Total directed edges shown: ${{payload.total_edges}}`;
+      overlapModeSummary.textContent =
+        `Active overlap mode: ${{currentOverlapMode}}`;
+    }}
+
+    function applyMode(mode) {{
+      if (!viewer || !viewer.data) return;
+      currentMode = mode;
+      const modeMasks = masks[currentOverlapMode] || masks[{json.dumps(base_mode)}];
+      const visible =
+        (modeMasks[mode] || modeMasks.all)[maskKey()] || modeMasks.all.base;
+      Plotly.restyle(viewer, {{ visible }});
+      modeButtons.forEach((btn) =>
+        btn.classList.toggle("active", btn.dataset.mode === mode)
+      );
+      overlapModeButtons.forEach((btn) =>
+        btn.classList.toggle("active", btn.dataset.overlapMode === currentOverlapMode)
+      );
+      updateLegend();
+    }}
+
+    modeButtons.forEach((btn) => {{
+      btn.addEventListener("click", () => applyMode(btn.dataset.mode));
+    }});
+
+    overlapModeButtons.forEach((btn) => {{
+      btn.addEventListener("click", () => {{
+        currentOverlapMode = btn.dataset.overlapMode;
+        applyMode(currentMode);
+      }});
+    }});
+
+    toggleEdgeAnnotationsButton?.addEventListener("click", () => {{
+      edgeAnnotationsEnabled = !edgeAnnotationsEnabled;
+      toggleEdgeAnnotationsButton.classList.toggle("active", edgeAnnotationsEnabled);
+      toggleEdgeAnnotationsButton.setAttribute(
+        "aria-pressed",
+        edgeAnnotationsEnabled ? "true" : "false"
+      );
+      toggleEdgeAnnotationsButton.textContent = edgeAnnotationsEnabled
+        ? "Edge Labels: On"
+        : "Edge Labels: Off";
+      applyMode(currentMode);
+    }});
+
+    toggleBboxesButton?.addEventListener("click", () => {{
+      bboxesEnabled = !bboxesEnabled;
+      toggleBboxesButton.classList.toggle("active", bboxesEnabled);
+      toggleBboxesButton.setAttribute(
+        "aria-pressed",
+        bboxesEnabled ? "true" : "false"
+      );
+      toggleBboxesButton.textContent = bboxesEnabled
+        ? "BBoxes: On"
+        : "BBoxes: Off";
+      applyMode(currentMode);
+    }});
+
+    toggleMeshesButton?.addEventListener("click", () => {{
+      meshesEnabled = !meshesEnabled;
+      toggleMeshesButton.classList.toggle("active", meshesEnabled);
+      toggleMeshesButton.setAttribute(
+        "aria-pressed",
+        meshesEnabled ? "true" : "false"
+      );
+      toggleMeshesButton.textContent = meshesEnabled
+        ? "Meshes: On"
+        : "Meshes: Off";
+      applyMode(currentMode);
+    }});
+
+    applyMode(currentMode);
+
+    window.addEventListener("resize", () => {{
+      if (viewer && viewer.data) {{
+        Plotly.Plots.resize(viewer);
+      }}
+    }});
+  </script>
+</body>
+</html>
+"""
+    out_html.parent.mkdir(parents=True, exist_ok=True)
+    out_html.write_text(page_html, encoding="utf-8")
+    LOG.info("Visualization saved to %s", out_html)
+
+
 def build_graph(
     jsonl_paths: list[Path] | None = None,
     dataset: str | None = None,
@@ -2406,6 +3524,9 @@ def build_graph(
     *,
     derived_edge_pruning_enabled: bool | None = None,
     derived_edge_prune_classes: object = None,
+    overlap_xy_mode: object | None = None,
+    overlap_xy_min_ratio: object | None = None,
+    overlap_xy_top_k: object | None = None,
 ) -> nx.MultiDiGraph:
     # auto-detect jsonl files if no paths given
     # called with no args from query_service
@@ -2439,14 +3560,30 @@ def build_graph(
         enabled=derived_edge_pruning_enabled,
         exclude_classes=derived_edge_prune_classes,
     )
+    overlap_xy_policy = _resolve_overlap_xy_policy(
+        mode=overlap_xy_mode,
+        min_ratio=overlap_xy_min_ratio,
+        top_k=overlap_xy_top_k,
+    )
 
     G = build_graph_from_jsonl(jsonl_paths, payload_mode=_mode)
     G.graph.setdefault("graph_build", {})["derived_edge_pruning"] = {
         "enabled": pruning_policy.enabled,
         "exclude_classes": sorted(pruning_policy.exclude_classes),
     }
+    G.graph["graph_build"]["overlap_xy"] = {
+        "mode": overlap_xy_policy.mode,
+        "min_ratio": overlap_xy_policy.min_ratio,
+        "top_k": overlap_xy_policy.top_k,
+    }
     add_spatial_adjacency(G, exclude_classes=pruning_policy.exclude_classes)
-    add_topology_facts(G, exclude_classes=pruning_policy.exclude_classes)
+    add_topology_facts(
+        G,
+        exclude_classes=pruning_policy.exclude_classes,
+        overlap_xy_mode=overlap_xy_policy.mode,
+        overlap_xy_min_ratio=overlap_xy_policy.min_ratio,
+        overlap_xy_top_k=overlap_xy_policy.top_k,
+    )
     return G
 
 
@@ -2482,6 +3619,32 @@ def main() -> None:
         default=False,
         help="Skip HTML visualization (graph still built and stats printed).",
     )
+    ap.add_argument(
+        "--overlap-xy-mode",
+        type=_normalize_overlap_xy_mode,
+        default=None,
+        help=(
+            "Raw overlaps_xy emission mode: full, threshold, top_k, or none. "
+            "Default comes from config and now defaults to none."
+        ),
+    )
+    ap.add_argument(
+        "--overlap-xy-min-ratio",
+        type=float,
+        default=None,
+        help=(
+            "Minimum overlap ratio used only when --overlap-xy-mode=threshold. "
+            "Ratio = overlap_area / min(footprint areas)."
+        ),
+    )
+    ap.add_argument(
+        "--overlap-xy-top-k",
+        type=int,
+        default=None,
+        help=(
+            "Maximum retained overlap neighbors per node when --overlap-xy-mode=top_k."
+        ),
+    )
     args = ap.parse_args()
 
     script_dir = Path(__file__).resolve().parent
@@ -2496,8 +3659,20 @@ def main() -> None:
         return
 
     print(f"Building graph from {len(jsonl_files)} JSONL file(s)...")
-    G = build_graph(jsonl_files)
+    G = build_graph(
+        jsonl_files,
+        overlap_xy_mode=args.overlap_xy_mode,
+        overlap_xy_min_ratio=args.overlap_xy_min_ratio,
+        overlap_xy_top_k=args.overlap_xy_top_k,
+    )
     print(f"Graph: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges")
+    overlap_xy_stats = G.graph.get("graph_build", {}).get("overlap_xy", {})
+    print(
+        "overlap_xy: "
+        f"mode={overlap_xy_stats.get('mode')} "
+        f"min_ratio={overlap_xy_stats.get('min_ratio')} "
+        f"top_k={overlap_xy_stats.get('top_k')}"
+    )
 
     if not args.no_viz:
         html_path = out_dir / "ifc_graph.html"

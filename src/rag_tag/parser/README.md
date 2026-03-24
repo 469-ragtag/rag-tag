@@ -48,6 +48,71 @@ Single-file conversion example:
 uv run rag-tag-ifc-to-jsonl --ifc-file IFC-Files/Building-Architecture.ifc --out-dir output
 ```
 
+## Overlap edge modes
+
+`jsonl_to_graph.py` can compute XY footprint overlap internally for vertical
+topology while controlling whether raw `overlaps_xy` edges are emitted. Configure
+this in `graph_build.overlap_xy`:
+
+- `full`: emit every positive-overlap pair
+- `threshold`: emit only pairs whose overlap ratio passes `min_ratio`
+- `top_k`: emit each node's strongest `top_k` overlaps using symmetric retention
+- `none`: do not emit raw `overlaps_xy` edges
+
+Default behavior:
+
+- `mode: none`
+
+Recommended first-pass values:
+
+- `mode: threshold` with `min_ratio: 0.20`
+- `mode: top_k` with `top_k: 5`
+
+Important note:
+
+- `above` / `below` still use positive XY overlap internally even when raw
+  `overlaps_xy` edges are reduced or disabled.
+
+Example config snippet:
+
+```yaml
+graph_build:
+  overlap_xy:
+    mode: none
+    min_ratio: 0.20
+    top_k: 5
+```
+
+You can also choose a mode directly from the normal graph-generation CLI:
+
+```bash
+uv run rag-tag-jsonl-to-graph --overlap-xy-mode none
+uv run rag-tag-jsonl-to-graph --overlap-xy-mode threshold --overlap-xy-min-ratio 0.20
+uv run rag-tag-jsonl-to-graph --overlap-xy-mode top_k --overlap-xy-top-k 5
+uv run rag-tag-jsonl-to-graph --overlap-xy-mode full
+```
+
+To compare overlap modes on graph density and graph-question behavior:
+
+```bash
+uv run python scripts/eval_overlap_modes.py \
+  --jsonl output/BigBuildingBIMModel.jsonl \
+  --db output/BigBuildingBIMModel.db \
+  --graph-dataset BigBuildingBIMModel \
+  --output output/eval_overlap_modes.json
+```
+
+Optional focused comparisons:
+
+```bash
+uv run python scripts/eval_overlap_modes.py \
+  --jsonl output/BigBuildingBIMModel.jsonl \
+  --modes threshold top_k none \
+  --threshold-min-ratio 0.20 \
+  --top-k 5 \
+  --skip-questions
+```
+
 ## JSONL record shape (high level)
 
 Each line is one element record. Key blocks:

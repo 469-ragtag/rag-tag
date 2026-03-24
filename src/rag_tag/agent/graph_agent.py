@@ -251,6 +251,9 @@ Tool node payloads use:
   - use when the desired relation is known exactly, such as `above`, `below`,
     `intersects_bbox`, `touches_surface`, `space_bounded_by`, or
     `path_connected_to`
+  - `overlaps_xy` may be absent on dense-model graph builds even when
+    `above`/`below` remain available; prefer the vertical helper tools for
+    above/below questions
 
 - `get_intersections_3d(element_id, max_results?)`
   - strongest intersection tool; use when the user explicitly asks about true
