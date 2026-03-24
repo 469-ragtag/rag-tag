@@ -18,6 +18,11 @@ from .runner import (
     evaluate_benchmark_dataset,
 )
 from .runtime import temporary_runtime_overrides
+from .strategies import (
+    BenchmarkPromptStrategy,
+    BenchmarkStrategySettings,
+    resolve_benchmark_strategy,
+)
 from .task_runner import (
     BenchmarkTaskBundle,
     BenchmarkTaskResult,
@@ -29,7 +34,9 @@ __all__ = [
     "BenchmarkCase",
     "BenchmarkDataset",
     "BenchmarkExperimentConfig",
+    "BenchmarkPromptStrategy",
     "BenchmarkRoute",
+    "BenchmarkStrategySettings",
     "BenchmarkTaskBundle",
     "BenchmarkTaskResult",
     "BenchmarkUsage",
@@ -40,6 +47,7 @@ __all__ = [
     "build_eval_dataset",
     "evaluate_benchmark_dataset",
     "load_benchmark_dataset",
+    "resolve_benchmark_strategy",
     "run_benchmark_case",
     "temporary_runtime_overrides",
 ]

@@ -11,6 +11,7 @@ from rag_tag.evals.dataset import BenchmarkCase
 from rag_tag.query_service import GraphExecutor, execute_query
 
 from .runtime import temporary_runtime_overrides
+from .strategies import resolve_benchmark_strategy
 
 
 @dataclass(frozen=True)
@@ -88,11 +89,14 @@ def run_benchmark_case(
     """Run one benchmark case through the shared router/execution pipeline."""
 
     started_at = time.perf_counter()
+    strategy_settings = resolve_benchmark_strategy(prompt_strategy)
 
     with temporary_runtime_overrides(
         config_path=config_path,
         router_profile=router_profile,
         agent_profile=agent_profile,
+        graph_orchestrator_override=strategy_settings.graph_orchestrator_override,
+        graph_prompt_append=strategy_settings.graph_prompt_append,
     ):
         bundle = execute_query(
             case.question,

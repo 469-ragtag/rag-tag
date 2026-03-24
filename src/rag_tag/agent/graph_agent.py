@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from collections.abc import Sequence
 from pathlib import Path
@@ -34,6 +35,7 @@ from .models import (
 
 _logger = logging.getLogger(__name__)
 _MODULE_DIR = Path(__file__).resolve().parent
+_BENCHMARK_GRAPH_PROMPT_APPEND_ENV_VAR = "RAG_TAG_BENCHMARK_GRAPH_PROMPT_APPEND"
 
 # Maximum number of *additional* retry attempts when the provider returns
 # INVALID_TOOL_GENERATION (HTTP 422).  The first attempt is attempt 0, so the
@@ -492,6 +494,16 @@ If you have enough evidence, stop reasoning and call `final_result`
 immediately. Do not restate the answer outside the tool call first.
 """.strip()
 
+
+def build_system_prompt() -> str:
+    """Return the graph-agent system prompt plus any benchmark-only appendix."""
+
+    appendix = os.getenv(_BENCHMARK_GRAPH_PROMPT_APPEND_ENV_VAR)
+    if appendix is None or not appendix.strip():
+        return SYSTEM_PROMPT
+    return f"{SYSTEM_PROMPT}\n\n---\n\n{appendix.strip()}"
+
+
 # ---------------------------------------------------------------------------
 # Agent
 # ---------------------------------------------------------------------------
@@ -580,7 +592,7 @@ class GraphAgent:
             model,
             deps_type=GraphRuntime,
             output_type=_FINAL_RESULT_TOOL,
-            system_prompt=SYSTEM_PROMPT,
+            system_prompt=build_system_prompt(),
             model_settings=model_settings,
             retries=2,
             output_retries=resolved_output_retries,

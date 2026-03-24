@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,7 @@ from rag_tag.router import RouteDecision, SqlRequest, route_question
 _MODULE_DIR = Path(__file__).resolve().parent
 
 _VALID_GRAPH_ORCHESTRATORS = frozenset({"pydanticai", "langgraph"})
+_BENCHMARK_GRAPH_ORCHESTRATOR_ENV_VAR = "RAG_TAG_BENCHMARK_GRAPH_ORCHESTRATOR"
 GraphExecutor = GraphAgent | LangGraphAgent
 
 
@@ -73,6 +75,17 @@ def resolve_graph_orchestrator() -> str:
     Defaults to ``"pydanticai"`` when the config key is absent or blank.
     Raises ``ValueError`` for unrecognized configured values.
     """
+    env_override = os.getenv(_BENCHMARK_GRAPH_ORCHESTRATOR_ENV_VAR)
+    if env_override is not None and env_override.strip():
+        orchestrator = env_override.strip().lower()
+        if orchestrator not in _VALID_GRAPH_ORCHESTRATORS:
+            allowed = ", ".join(sorted(_VALID_GRAPH_ORCHESTRATORS))
+            raise ValueError(
+                "Unsupported benchmark graph orchestrator override="
+                f"{env_override!r}. Allowed values: {allowed}."
+            )
+        return orchestrator
+
     loaded = load_project_config(Path(__file__).resolve().parent)
     configured = loaded.config.defaults.graph_orchestrator
     if configured is None or not configured.strip():
