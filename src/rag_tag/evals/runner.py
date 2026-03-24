@@ -42,6 +42,7 @@ class BenchmarkExperimentConfig:
     answer_judge_model: str | None = None
     include_answer_judge: bool = True
     debug_llm_io: bool = False
+    report_metadata: dict[str, Any] | None = None
 
 
 def _supports_state_reuse(experiment: BenchmarkExperimentConfig) -> bool:
@@ -90,7 +91,10 @@ def evaluate_benchmark_dataset(
     )
 
     state: dict[str, object | None] | None
-    state = {"runtime": None, "agent": None} if _supports_state_reuse(experiment) else None
+    if _supports_state_reuse(experiment):
+        state = {"runtime": None, "agent": None}
+    else:
+        state = None
     try:
         report = dataset.evaluate_sync(
             lambda case: _run_case_with_state(case, experiment=experiment, state=state),
@@ -168,7 +172,7 @@ def _build_case_metadata(case: BenchmarkCase) -> BenchmarkCaseMetadata:
 def _build_experiment_metadata(
     experiment: BenchmarkExperimentConfig,
 ) -> dict[str, Any]:
-    return {
+    metadata = {
         "router_profile": experiment.router_profile,
         "agent_profile": experiment.agent_profile,
         "prompt_strategy": experiment.prompt_strategy,
@@ -181,3 +185,6 @@ def _build_experiment_metadata(
         "max_concurrency": experiment.max_concurrency,
         "state_reuse_enabled": _supports_state_reuse(experiment),
     }
+    if experiment.report_metadata:
+        metadata.update(experiment.report_metadata)
+    return metadata

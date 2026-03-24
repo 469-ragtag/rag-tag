@@ -60,6 +60,7 @@ def test_langgraph_agent_aggregates_orchestration_and_specialist_usage() -> None
             "fallback_to_graph_agent": False,
         },
     )()
+
     def invoke(state: dict[str, object]) -> dict[str, object]:
         agent._record_usage({"input_tokens": 9, "output_tokens": 2})
         return {

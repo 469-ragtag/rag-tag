@@ -1,5 +1,15 @@
 """Benchmark dataset loading utilities for Pydantic Evals integration."""
 
+from .benchmark import (
+    BenchmarkCliConfig,
+    BenchmarkCombination,
+    BenchmarkSuiteEntry,
+    BenchmarkSuiteResult,
+    build_benchmark_cli_config,
+    expand_benchmark_matrix,
+    load_benchmark_dataset_with_tags,
+    run_benchmark_suite,
+)
 from .dataset import (
     BenchmarkCase,
     BenchmarkDataset,
@@ -33,11 +43,15 @@ from .task_runner import (
 
 __all__ = [
     "BenchmarkCase",
+    "BenchmarkCliConfig",
+    "BenchmarkCombination",
     "BenchmarkDataset",
     "BenchmarkExperimentConfig",
     "BenchmarkPromptStrategy",
     "BenchmarkRoute",
     "BenchmarkStrategySettings",
+    "BenchmarkSuiteEntry",
+    "BenchmarkSuiteResult",
     "BenchmarkTaskBundle",
     "BenchmarkTaskResult",
     "BenchmarkUsage",
@@ -46,11 +60,15 @@ __all__ = [
     "NoExecutionError",
     "RouteMatchesExpected",
     "aggregate_benchmark_usage",
+    "build_benchmark_cli_config",
     "build_default_answer_judge",
     "build_eval_dataset",
     "evaluate_benchmark_dataset",
+    "expand_benchmark_matrix",
+    "load_benchmark_dataset_with_tags",
     "load_benchmark_dataset",
     "resolve_benchmark_strategy",
+    "run_benchmark_suite",
     "run_benchmark_case",
     "temporary_runtime_overrides",
 ]
