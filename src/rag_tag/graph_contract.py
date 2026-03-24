@@ -121,48 +121,80 @@ KNOWN_RELATION_SOURCE_SET = frozenset(KNOWN_RELATION_SOURCES)
 # ---------------------------------------------------------------------------
 
 EVIDENCE_LIMIT = 5
+_BOUNDED_LIST_METADATA_DEFAULTS: dict[str, Any] = {
+    "total_found": 0,
+    "returned_count": 0,
+    "truncated": False,
+    "truncation_reason": None,
+}
 
 # Defaults also define required field presence for each action's data payload.
 ACTION_DATA_DEFAULTS: dict[str, dict[str, Any]] = {
-    "get_elements_in_storey": {"storey": None, "elements": [], "evidence": []},
-    "find_elements_by_class": {"class": None, "elements": [], "evidence": []},
-    "get_adjacent_elements": {"element_id": None, "adjacent": [], "evidence": []},
+    "get_elements_in_storey": {
+        "storey": None,
+        "elements": [],
+        "evidence": [],
+        **_BOUNDED_LIST_METADATA_DEFAULTS,
+    },
+    "find_elements_by_class": {
+        "class": None,
+        "elements": [],
+        "evidence": [],
+        **_BOUNDED_LIST_METADATA_DEFAULTS,
+    },
+    "get_adjacent_elements": {
+        "element_id": None,
+        "adjacent": [],
+        "evidence": [],
+        **_BOUNDED_LIST_METADATA_DEFAULTS,
+    },
     "get_topology_neighbors": {
         "element_id": None,
         "relation": None,
         "neighbors": [],
         "evidence": [],
+        **_BOUNDED_LIST_METADATA_DEFAULTS,
     },
     "get_intersections_3d": {
         "element_id": None,
         "intersections_3d": [],
         "evidence": [],
+        **_BOUNDED_LIST_METADATA_DEFAULTS,
     },
-    "find_nodes": {"class": None, "elements": [], "evidence": []},
+    "find_nodes": {
+        "class": None,
+        "elements": [],
+        "evidence": [],
+        **_BOUNDED_LIST_METADATA_DEFAULTS,
+    },
     "traverse": {
         "start": None,
         "relation": None,
         "depth": 1,
         "results": [],
         "evidence": [],
+        **_BOUNDED_LIST_METADATA_DEFAULTS,
     },
     "spatial_query": {
         "near": None,
         "max_distance": None,
         "results": [],
         "evidence": [],
+        **_BOUNDED_LIST_METADATA_DEFAULTS,
     },
     "find_elements_above": {
         "element_id": None,
         "max_gap": None,
         "results": [],
         "evidence": [],
+        **_BOUNDED_LIST_METADATA_DEFAULTS,
     },
     "find_elements_below": {
         "element_id": None,
         "max_gap": None,
         "results": [],
         "evidence": [],
+        **_BOUNDED_LIST_METADATA_DEFAULTS,
     },
     "get_element_properties": {
         "id": None,

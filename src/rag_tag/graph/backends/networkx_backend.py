@@ -4,6 +4,7 @@ import json
 import logging
 import re
 import sqlite3
+from bisect import insort
 from collections import deque
 from typing import Any, Iterable
 
@@ -114,6 +115,19 @@ _EQUIPMENT_CLASS_NAMES = {
     "IfcTubeBundle",
     "IfcValve",
 }
+_LEGACY_BOUNDED_ACTION_DEFAULTS = {
+    "find_nodes": 50,
+    "traverse": 25,
+    "spatial_query": 50,
+    "get_elements_in_storey": 50,
+    "find_elements_by_class": 50,
+    "get_adjacent_elements": 25,
+    "get_topology_neighbors": 25,
+    "get_intersections_3d": 25,
+    "find_elements_above": 25,
+    "find_elements_below": 25,
+}
+_LEGACY_BOUNDED_ACTION_HARD_CAP = 100
 
 
 def _ok_action(action: str, data: dict[str, Any] | None) -> dict[str, Any]:
@@ -609,6 +623,107 @@ class NetworkXGraphBackend:
                 "label": G.nodes[node_id].get("label"),
                 "class_": G.nodes[node_id].get("class_"),
             }
+
+        def parse_legacy_max_results(action_name: str) -> int | dict[str, Any]:
+            default_limit = _LEGACY_BOUNDED_ACTION_DEFAULTS.get(action_name)
+            if default_limit is None:
+                return {
+                    "error": f"Unsupported bounded action: {action_name}",
+                    "code": "invalid",
+                }
+            try:
+                requested = int(params.get("max_results", default_limit))
+            except (TypeError, ValueError):
+                return {
+                    "error": "Invalid param: max_results must be an integer",
+                    "code": "invalid",
+                }
+            if requested < 1:
+                return {"error": "max_results must be >= 1", "code": "invalid"}
+            return min(requested, _LEGACY_BOUNDED_ACTION_HARD_CAP)
+
+        def stable_sort_text(value: Any) -> str:
+            if value is None:
+                return ""
+            return str(value)
+
+        def numeric_rank(value: Any, *, descending: bool) -> tuple[int, float]:
+            try:
+                numeric = float(value)
+            except (TypeError, ValueError):
+                return (1, 0.0)
+            return (0, -numeric if descending else numeric)
+
+        def item_label_id_sort_key(item: dict[str, Any]) -> tuple[str, str]:
+            return (
+                stable_sort_text(item.get("label")),
+                stable_sort_text(item.get("id")),
+            )
+
+        def insert_bounded_sorted_item(
+            selected: list[tuple[tuple[Any, ...], int, dict[str, Any]]],
+            *,
+            item: dict[str, Any],
+            sort_key: tuple[Any, ...],
+            sequence: int,
+            max_results: int,
+        ) -> None:
+            insort(selected, (sort_key, sequence, item))
+            if len(selected) > max_results:
+                selected.pop()
+
+        def finalize_bounded_list_data(
+            data: dict[str, Any],
+            *,
+            items_key: str,
+            items: list[dict[str, Any]],
+            total_found: int,
+            max_results: int,
+        ) -> dict[str, Any]:
+            truncated = total_found > len(items)
+            truncation_reason = None
+            if truncated:
+                truncation_reason = (
+                    f"Results truncated to {max_results} item(s) to stay bounded."
+                )
+            stable_data = dict(data)
+            stable_data[items_key] = items
+            stable_data["total_found"] = total_found
+            stable_data["returned_count"] = len(items)
+            stable_data["truncated"] = truncated
+            stable_data["truncation_reason"] = truncation_reason
+            if truncated:
+                warnings = list(stable_data.get("warnings") or [])
+                warnings.append(truncation_reason)
+                stable_data["warnings"] = warnings
+            return stable_data
+
+        def spatial_item_sort_key(item: dict[str, Any]) -> tuple[Any, ...]:
+            return (
+                numeric_rank(item.get("distance"), descending=False),
+                *item_label_id_sort_key(item),
+            )
+
+        def topology_item_sort_key(item: dict[str, Any]) -> tuple[Any, ...]:
+            relation = stable_sort_text(item.get("relation"))
+            if relation in {"above", "below"}:
+                metric_order = 0
+                metric_key = numeric_rank(item.get("vertical_gap"), descending=False)
+            elif item.get("intersection_volume") is not None:
+                metric_order = 1
+                metric_key = numeric_rank(
+                    item.get("intersection_volume"), descending=True
+                )
+            elif item.get("contact_area") is not None:
+                metric_order = 2
+                metric_key = numeric_rank(item.get("contact_area"), descending=True)
+            elif item.get("overlap_area_xy") is not None:
+                metric_order = 3
+                metric_key = numeric_rank(item.get("overlap_area_xy"), descending=True)
+            else:
+                metric_order = 4
+                metric_key = (1, 0.0)
+            return (metric_order, metric_key, *item_label_id_sort_key(item))
 
         def resolve_graph_node(
             node_ref: str,
@@ -1186,6 +1301,13 @@ class NetworkXGraphBackend:
                 return _err("Missing param: storey", "missing_param")
             if not isinstance(storey, str):
                 return _err("Invalid param: storey must be a string", "invalid")
+            max_results_value = parse_legacy_max_results(action)
+            if isinstance(max_results_value, dict):
+                return _err(
+                    str(max_results_value["error"]),
+                    str(max_results_value["code"]),
+                )
+            max_results = max_results_value
             node, err = resolve_storey_node(storey)
             if err:
                 error_msg = err.get("error", "Unknown error")
@@ -1210,20 +1332,36 @@ class NetworkXGraphBackend:
                 "IfcTypeObject",
             }
 
-            elements = []
+            selected: list[tuple[tuple[Any, ...], int, dict[str, Any]]] = []
+            total_found = 0
             for e in storey_elements(node):
                 cls = G.nodes[e].get("class_")
                 if cls in container_classes:
                     continue
-                elements.append(
-                    {
-                        "id": e,
-                        "global_id": node_global_id(e),
-                        "label": G.nodes[e].get("label"),
-                        "class_": cls,
-                    }
+                item = {
+                    "id": e,
+                    "global_id": node_global_id(e),
+                    "label": G.nodes[e].get("label"),
+                    "class_": cls,
+                }
+                total_found += 1
+                insert_bounded_sorted_item(
+                    selected,
+                    item=item,
+                    sort_key=item_label_id_sort_key(item),
+                    sequence=total_found,
+                    max_results=max_results,
                 )
-            return _ok_action(action, {"storey": storey, "elements": elements})
+            return _ok_action(
+                action,
+                finalize_bounded_list_data(
+                    {"storey": storey, "elements": []},
+                    items_key="elements",
+                    items=[entry[2] for entry in selected],
+                    total_found=total_found,
+                    max_results=max_results,
+                ),
+            )
 
         if action == "find_elements_by_class":
             cls = params.get("class")
@@ -1231,15 +1369,38 @@ class NetworkXGraphBackend:
                 return _err("Missing param: class", "missing_param")
             if not isinstance(cls, str):
                 return _err("Invalid param: class must be a string", "invalid")
+            max_results_value = parse_legacy_max_results(action)
+            if isinstance(max_results_value, dict):
+                return _err(
+                    str(max_results_value["error"]),
+                    str(max_results_value["code"]),
+                )
+            max_results = max_results_value
             target = normalize_class(cls)
 
-            matches = []
+            selected: list[tuple[tuple[Any, ...], int, dict[str, Any]]] = []
+            total_found = 0
             for n, d in G.nodes(data=True):
                 if str(d.get("class_", "")).lower() == target.lower():
-                    matches.append(
-                        build_node_payload(n, d, payload_mode=resolved_payload_mode)
+                    item = build_node_payload(n, d, payload_mode=resolved_payload_mode)
+                    total_found += 1
+                    insert_bounded_sorted_item(
+                        selected,
+                        item=item,
+                        sort_key=item_label_id_sort_key(item),
+                        sequence=total_found,
+                        max_results=max_results,
                     )
-            return _ok_action(action, {"class": target, "elements": matches})
+            return _ok_action(
+                action,
+                finalize_bounded_list_data(
+                    {"class": target, "elements": []},
+                    items_key="elements",
+                    items=[entry[2] for entry in selected],
+                    total_found=total_found,
+                    max_results=max_results,
+                ),
+            )
 
         if action == "get_adjacent_elements":
             element_id = params.get("element_id")
@@ -1247,6 +1408,13 @@ class NetworkXGraphBackend:
                 return _err("Missing param: element_id", "missing_param")
             if not isinstance(element_id, str):
                 return _err("Invalid param: element_id must be a string", "invalid")
+            max_results_value = parse_legacy_max_results(action)
+            if isinstance(max_results_value, dict):
+                return _err(
+                    str(max_results_value["error"]),
+                    str(max_results_value["code"]),
+                )
+            max_results = max_results_value
             resolved, err = resolve_element_id(element_id)
             if err:
                 error_msg = err.get("error", "Unknown error")
@@ -1262,21 +1430,37 @@ class NetworkXGraphBackend:
             if resolved is None:
                 return _err(f"Element not found: {element_id}", "not_found")
 
-            neighbors = []
+            selected: list[tuple[tuple[Any, ...], int, dict[str, Any]]] = []
+            total_found = 0
             for nbr, edge in spatial_neighbors(resolved):
                 current_relation = edge_relation(edge)
-                neighbors.append(
-                    {
-                        "id": nbr,
-                        "global_id": node_global_id(nbr),
-                        "label": G.nodes[nbr].get("label"),
-                        "class_": G.nodes[nbr].get("class_"),
-                        "relation": current_relation,
-                        "distance": edge.get("distance"),
-                        "source": edge_source(edge, current_relation),
-                    }
+                item = {
+                    "id": nbr,
+                    "global_id": node_global_id(nbr),
+                    "label": G.nodes[nbr].get("label"),
+                    "class_": G.nodes[nbr].get("class_"),
+                    "relation": current_relation,
+                    "distance": edge.get("distance"),
+                    "source": edge_source(edge, current_relation),
+                }
+                total_found += 1
+                insert_bounded_sorted_item(
+                    selected,
+                    item=item,
+                    sort_key=spatial_item_sort_key(item),
+                    sequence=total_found,
+                    max_results=max_results,
                 )
-            return _ok_action(action, {"element_id": resolved, "adjacent": neighbors})
+            return _ok_action(
+                action,
+                finalize_bounded_list_data(
+                    {"element_id": resolved, "adjacent": []},
+                    items_key="adjacent",
+                    items=[entry[2] for entry in selected],
+                    total_found=total_found,
+                    max_results=max_results,
+                ),
+            )
 
         if action == "get_topology_neighbors":
             element_id = params.get("element_id")
@@ -1289,6 +1473,13 @@ class NetworkXGraphBackend:
                 return _err("Missing param: relation", "missing_param")
             if not isinstance(relation, str):
                 return _err("Invalid param: relation must be a string", "invalid")
+            max_results_value = parse_legacy_max_results(action)
+            if isinstance(max_results_value, dict):
+                return _err(
+                    str(max_results_value["error"]),
+                    str(max_results_value["code"]),
+                )
+            max_results = max_results_value
 
             relation_value = normalize_relation_name(relation)
             allowed = set(TOPOLOGY_RELATIONS)
@@ -1314,31 +1505,44 @@ class NetworkXGraphBackend:
             if resolved is None:
                 return _err(f"Element not found: {element_id}", "not_found")
 
-            neighbors = []
+            selected: list[tuple[tuple[Any, ...], int, dict[str, Any]]] = []
+            total_found = 0
             for nbr, edge in topology_neighbors(resolved, {relation_value}):
                 current_relation = edge_relation(edge)
-                neighbors.append(
-                    {
-                        "id": nbr,
-                        "global_id": node_global_id(nbr),
-                        "label": G.nodes[nbr].get("label"),
-                        "class_": G.nodes[nbr].get("class_"),
-                        "relation": current_relation,
-                        "vertical_gap": edge.get("vertical_gap"),
-                        "overlap_area_xy": edge.get("overlap_area_xy"),
-                        "intersection_volume": edge.get("intersection_volume"),
-                        "contact_area": edge.get("contact_area"),
-                        "source": edge_source(edge, current_relation),
-                    }
+                item = {
+                    "id": nbr,
+                    "global_id": node_global_id(nbr),
+                    "label": G.nodes[nbr].get("label"),
+                    "class_": G.nodes[nbr].get("class_"),
+                    "relation": current_relation,
+                    "vertical_gap": edge.get("vertical_gap"),
+                    "overlap_area_xy": edge.get("overlap_area_xy"),
+                    "intersection_volume": edge.get("intersection_volume"),
+                    "contact_area": edge.get("contact_area"),
+                    "source": edge_source(edge, current_relation),
+                }
+                total_found += 1
+                insert_bounded_sorted_item(
+                    selected,
+                    item=item,
+                    sort_key=topology_item_sort_key(item),
+                    sequence=total_found,
+                    max_results=max_results,
                 )
 
             return _ok_action(
                 action,
-                {
-                    "element_id": resolved,
-                    "relation": relation_value,
-                    "neighbors": neighbors,
-                },
+                finalize_bounded_list_data(
+                    {
+                        "element_id": resolved,
+                        "relation": relation_value,
+                        "neighbors": [],
+                    },
+                    items_key="neighbors",
+                    items=[entry[2] for entry in selected],
+                    total_found=total_found,
+                    max_results=max_results,
+                ),
             )
 
         if action == "get_intersections_3d":
@@ -1347,6 +1551,13 @@ class NetworkXGraphBackend:
                 return _err("Missing param: element_id", "missing_param")
             if not isinstance(element_id, str):
                 return _err("Invalid param: element_id must be a string", "invalid")
+            max_results_value = parse_legacy_max_results(action)
+            if isinstance(max_results_value, dict):
+                return _err(
+                    str(max_results_value["error"]),
+                    str(max_results_value["code"]),
+                )
+            max_results = max_results_value
 
             resolved, err = resolve_element_id(element_id)
             if err:
@@ -1363,29 +1574,50 @@ class NetworkXGraphBackend:
             if resolved is None:
                 return _err(f"Element not found: {element_id}", "not_found")
 
-            neighbors = []
+            selected: list[tuple[tuple[Any, ...], int, dict[str, Any]]] = []
+            total_found = 0
             for nbr, edge in topology_neighbors(resolved, {"intersects_3d"}):
                 current_relation = edge_relation(edge)
-                neighbors.append(
-                    {
-                        "id": nbr,
-                        "global_id": node_global_id(nbr),
-                        "label": G.nodes[nbr].get("label"),
-                        "class_": G.nodes[nbr].get("class_"),
-                        "relation": current_relation,
-                        "intersection_volume": edge.get("intersection_volume"),
-                        "contact_area": edge.get("contact_area"),
-                        "source": edge_source(edge, current_relation),
-                    }
+                item = {
+                    "id": nbr,
+                    "global_id": node_global_id(nbr),
+                    "label": G.nodes[nbr].get("label"),
+                    "class_": G.nodes[nbr].get("class_"),
+                    "relation": current_relation,
+                    "intersection_volume": edge.get("intersection_volume"),
+                    "contact_area": edge.get("contact_area"),
+                    "source": edge_source(edge, current_relation),
+                }
+                total_found += 1
+                insert_bounded_sorted_item(
+                    selected,
+                    item=item,
+                    sort_key=topology_item_sort_key(item),
+                    sequence=total_found,
+                    max_results=max_results,
                 )
             return _ok_action(
-                action, {"element_id": resolved, "intersections_3d": neighbors}
+                action,
+                finalize_bounded_list_data(
+                    {"element_id": resolved, "intersections_3d": []},
+                    items_key="intersections_3d",
+                    items=[entry[2] for entry in selected],
+                    total_found=total_found,
+                    max_results=max_results,
+                ),
             )
 
         if action == "find_nodes":
             cls = params.get("class")
             if cls is not None and not isinstance(cls, str):
                 return _err("Invalid param: class must be a string", "invalid")
+            max_results_value = parse_legacy_max_results(action)
+            if isinstance(max_results_value, dict):
+                return _err(
+                    str(max_results_value["error"]),
+                    str(max_results_value["code"]),
+                )
+            max_results = max_results_value
             class_filter = normalize_class(cls) if cls else None
             property_filters = params.get("property_filters", {})
             if property_filters and not isinstance(property_filters, dict):
@@ -1402,7 +1634,8 @@ class NetworkXGraphBackend:
                 db_lookup_conn = open_lookup_connection(runtime.context_db_path)
                 runtime.caches["db_lookup_conn"] = db_lookup_conn
 
-            matches = []
+            selected: list[tuple[tuple[Any, ...], int, dict[str, Any]]] = []
+            total_found = 0
             try:
                 for n, d in G.nodes(data=True):
                     if class_filter is not None:
@@ -1414,15 +1647,30 @@ class NetworkXGraphBackend:
                         db_conn=db_lookup_conn,
                     ):
                         continue
-                    matches.append(
-                        build_node_payload(n, d, payload_mode=resolved_payload_mode)
+                    item = build_node_payload(n, d, payload_mode=resolved_payload_mode)
+                    total_found += 1
+                    insert_bounded_sorted_item(
+                        selected,
+                        item=item,
+                        sort_key=item_label_id_sort_key(item),
+                        sequence=total_found,
+                        max_results=max_results,
                     )
             finally:
                 if db_lookup_conn is not None:
                     db_lookup_conn.close()
                     if runtime.caches.get("db_lookup_conn") is db_lookup_conn:
                         runtime.caches.pop("db_lookup_conn", None)
-            return _ok_action(action, {"class": class_filter, "elements": matches})
+            return _ok_action(
+                action,
+                finalize_bounded_list_data(
+                    {"class": class_filter, "elements": []},
+                    items_key="elements",
+                    items=[entry[2] for entry in selected],
+                    total_found=total_found,
+                    max_results=max_results,
+                ),
+            )
 
         if action == "traverse":
             start = params.get("start")
@@ -1437,6 +1685,13 @@ class NetworkXGraphBackend:
                 depth = int(params.get("depth", 1))
             except (TypeError, ValueError):
                 return _err("Invalid param: depth must be an integer", "invalid")
+            max_results_value = parse_legacy_max_results(action)
+            if isinstance(max_results_value, dict):
+                return _err(
+                    str(max_results_value["error"]),
+                    str(max_results_value["code"]),
+                )
+            max_results = max_results_value
             if start not in G:
                 return _err(f"Start node not found: {start}", "not_found")
             if depth < 1:
@@ -1444,7 +1699,8 @@ class NetworkXGraphBackend:
 
             visited = {start}
             frontier = {start}
-            results = []
+            results: list[dict[str, Any]] = []
+            total_found = 0
             relation_filter: set[str] | None = None
             relation_value: str | None = None
             if relation_param is not None:
@@ -1481,6 +1737,9 @@ class NetworkXGraphBackend:
                         visited.add(nbr)
                         next_frontier.add(nbr)
                         for edge, current_relation in matched_edges:
+                            total_found += 1
+                            if len(results) >= max_results:
+                                continue
                             results.append(
                                 {
                                     "from": node,
@@ -1498,18 +1757,31 @@ class NetworkXGraphBackend:
 
             return _ok_action(
                 action,
-                {
-                    "start": start,
-                    "relation": relation_value,
-                    "depth": depth,
-                    "results": results,
-                },
+                finalize_bounded_list_data(
+                    {
+                        "start": start,
+                        "relation": relation_value,
+                        "depth": depth,
+                        "results": [],
+                    },
+                    items_key="results",
+                    items=results,
+                    total_found=total_found,
+                    max_results=max_results,
+                ),
             )
 
         if action == "spatial_query":
             cls = params.get("class")
             if cls is not None and not isinstance(cls, str):
                 return _err("Invalid param: class must be a string", "invalid")
+            max_results_value = parse_legacy_max_results(action)
+            if isinstance(max_results_value, dict):
+                return _err(
+                    str(max_results_value["error"]),
+                    str(max_results_value["code"]),
+                )
+            max_results = max_results_value
             class_filter = normalize_class(cls) if cls else None
             near = params.get("near")
             max_distance = params.get("max_distance")
@@ -1538,7 +1810,8 @@ class NetworkXGraphBackend:
             except (TypeError, ValueError):
                 return _err("Invalid param: max_distance must be a number", "invalid")
 
-            results = []
+            selected: list[tuple[tuple[Any, ...], int, dict[str, Any]]] = []
+            total_found = 0
             for nbr, edge in spatial_neighbors(resolved):
                 dist = edge.get("distance")
                 if dist is None or float(dist) > max_distance_value:
@@ -1550,24 +1823,36 @@ class NetworkXGraphBackend:
                     ):
                         continue
                 current_relation = edge_relation(edge)
-                results.append(
-                    {
-                        "id": nbr,
-                        "global_id": node_global_id(nbr),
-                        "label": G.nodes[nbr].get("label"),
-                        "class_": G.nodes[nbr].get("class_"),
-                        "relation": current_relation,
-                        "distance": dist,
-                        "source": edge_source(edge, current_relation),
-                    }
+                item = {
+                    "id": nbr,
+                    "global_id": node_global_id(nbr),
+                    "label": G.nodes[nbr].get("label"),
+                    "class_": G.nodes[nbr].get("class_"),
+                    "relation": current_relation,
+                    "distance": dist,
+                    "source": edge_source(edge, current_relation),
+                }
+                total_found += 1
+                insert_bounded_sorted_item(
+                    selected,
+                    item=item,
+                    sort_key=spatial_item_sort_key(item),
+                    sequence=total_found,
+                    max_results=max_results,
                 )
             return _ok_action(
                 action,
-                {
-                    "near": resolved,
-                    "max_distance": max_distance_value,
-                    "results": results,
-                },
+                finalize_bounded_list_data(
+                    {
+                        "near": resolved,
+                        "max_distance": max_distance_value,
+                        "results": [],
+                    },
+                    items_key="results",
+                    items=[entry[2] for entry in selected],
+                    total_found=total_found,
+                    max_results=max_results,
+                ),
             )
 
         if action == "find_elements_above":
@@ -1583,6 +1868,13 @@ class NetworkXGraphBackend:
                     max_gap_value = float(max_gap)
                 except (TypeError, ValueError):
                     return _err("Invalid param: max_gap must be a number", "invalid")
+            max_results_value = parse_legacy_max_results(action)
+            if isinstance(max_results_value, dict):
+                return _err(
+                    str(max_results_value["error"]),
+                    str(max_results_value["code"]),
+                )
+            max_results = max_results_value
 
             resolved, err = resolve_element_id(element_id)
             if err:
@@ -1599,7 +1891,8 @@ class NetworkXGraphBackend:
             if resolved is None:
                 return _err(f"Element not found: {element_id}", "not_found")
 
-            results = []
+            selected: list[tuple[tuple[Any, ...], int, dict[str, Any]]] = []
+            total_found = 0
             for nbr, edge in topology_neighbors(resolved, {"below"}):
                 gap = edge.get("vertical_gap")
                 if (
@@ -1609,24 +1902,36 @@ class NetworkXGraphBackend:
                 ):
                     continue
                 current_relation = edge_relation(edge)
-                results.append(
-                    {
-                        "id": nbr,
-                        "global_id": node_global_id(nbr),
-                        "label": G.nodes[nbr].get("label"),
-                        "class_": G.nodes[nbr].get("class_"),
-                        "relation": "above",
-                        "vertical_gap": gap,
-                        "source": edge_source(edge, current_relation),
-                    }
+                item = {
+                    "id": nbr,
+                    "global_id": node_global_id(nbr),
+                    "label": G.nodes[nbr].get("label"),
+                    "class_": G.nodes[nbr].get("class_"),
+                    "relation": "above",
+                    "vertical_gap": gap,
+                    "source": edge_source(edge, current_relation),
+                }
+                total_found += 1
+                insert_bounded_sorted_item(
+                    selected,
+                    item=item,
+                    sort_key=topology_item_sort_key(item),
+                    sequence=total_found,
+                    max_results=max_results,
                 )
             return _ok_action(
                 action,
-                {
-                    "element_id": resolved,
-                    "max_gap": max_gap_value,
-                    "results": results,
-                },
+                finalize_bounded_list_data(
+                    {
+                        "element_id": resolved,
+                        "max_gap": max_gap_value,
+                        "results": [],
+                    },
+                    items_key="results",
+                    items=[entry[2] for entry in selected],
+                    total_found=total_found,
+                    max_results=max_results,
+                ),
             )
 
         if action == "find_elements_below":
@@ -1642,6 +1947,13 @@ class NetworkXGraphBackend:
                     max_gap_value = float(max_gap)
                 except (TypeError, ValueError):
                     return _err("Invalid param: max_gap must be a number", "invalid")
+            max_results_value = parse_legacy_max_results(action)
+            if isinstance(max_results_value, dict):
+                return _err(
+                    str(max_results_value["error"]),
+                    str(max_results_value["code"]),
+                )
+            max_results = max_results_value
 
             resolved, err = resolve_element_id(element_id)
             if err:
@@ -1658,7 +1970,8 @@ class NetworkXGraphBackend:
             if resolved is None:
                 return _err(f"Element not found: {element_id}", "not_found")
 
-            results = []
+            selected: list[tuple[tuple[Any, ...], int, dict[str, Any]]] = []
+            total_found = 0
             for nbr, edge in topology_neighbors(resolved, {"above"}):
                 gap = edge.get("vertical_gap")
                 if (
@@ -1668,24 +1981,36 @@ class NetworkXGraphBackend:
                 ):
                     continue
                 current_relation = edge_relation(edge)
-                results.append(
-                    {
-                        "id": nbr,
-                        "global_id": node_global_id(nbr),
-                        "label": G.nodes[nbr].get("label"),
-                        "class_": G.nodes[nbr].get("class_"),
-                        "relation": "below",
-                        "vertical_gap": gap,
-                        "source": edge_source(edge, current_relation),
-                    }
+                item = {
+                    "id": nbr,
+                    "global_id": node_global_id(nbr),
+                    "label": G.nodes[nbr].get("label"),
+                    "class_": G.nodes[nbr].get("class_"),
+                    "relation": "below",
+                    "vertical_gap": gap,
+                    "source": edge_source(edge, current_relation),
+                }
+                total_found += 1
+                insert_bounded_sorted_item(
+                    selected,
+                    item=item,
+                    sort_key=topology_item_sort_key(item),
+                    sequence=total_found,
+                    max_results=max_results,
                 )
             return _ok_action(
                 action,
-                {
-                    "element_id": resolved,
-                    "max_gap": max_gap_value,
-                    "results": results,
-                },
+                finalize_bounded_list_data(
+                    {
+                        "element_id": resolved,
+                        "max_gap": max_gap_value,
+                        "results": [],
+                    },
+                    items_key="results",
+                    items=[entry[2] for entry in selected],
+                    total_found=total_found,
+                    max_results=max_results,
+                ),
             )
 
         if action == "list_property_keys":
