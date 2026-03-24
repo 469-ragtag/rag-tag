@@ -121,6 +121,10 @@ def test_fuzzy_find_nodes_prefers_ifc_building_for_generic_building_query() -> N
         "Element::building-proxy",
     ]
     assert matches[0]["class_"] == "IfcBuilding"
+    assert result["data"]["total_found"] == 2
+    assert result["data"]["returned_count"] == 2
+    assert result["data"]["truncated"] is False
+    assert result["data"]["truncation_reason"] is None
 
 
 def test_fuzzy_find_nodes_prefers_ifc_site_for_generic_site_query() -> None:

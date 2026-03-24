@@ -31,6 +31,9 @@ _CLASS_FUZZY_THRESHOLD = 72
 _TYPE_INTENT_TERMS = ("type", "family", "template", "style", "kind")
 _LEGACY_SCAN_MAX_RESULTS = 50
 _LEGACY_NEIGHBOR_MAX_RESULTS = 25
+_LEGACY_BOUNDED_ACTION_HARD_CAP = 100
+_FUZZY_FIND_NODES_DEFAULT_RESULTS = 10
+_FUZZY_FIND_NODES_HARD_CAP = 25
 _QUERY_TERM_PATTERN = re.compile(r"[a-z0-9]+")
 _CONTAINER_CLASSES = {
     "IfcProject",
@@ -160,17 +163,42 @@ def _generic_container_target_class(query: str) -> str | None:
     return matched_targets[0]
 
 
+def _normalize_fuzzy_result_limit(
+    requested_limit: Any,
+    *,
+    param_name: str,
+) -> tuple[int | None, dict[str, Any] | None]:
+    """Return a validated, hard-capped fuzzy result limit."""
+    try:
+        parsed_limit = int(requested_limit)
+    except (TypeError, ValueError):
+        return None, make_error_envelope(
+            f"Invalid param: {param_name} must be an integer",
+            "invalid",
+        )
+    if parsed_limit < 1:
+        return None, make_error_envelope(
+            f"{param_name} must be >= 1",
+            "invalid",
+        )
+    return min(parsed_limit, _FUZZY_FIND_NODES_HARD_CAP), None
+
+
 def _fuzzy_find_nodes_impl(
     runtime: GraphRuntime,
     query: str,
     class_filter: str | None = None,
-    top_k: int = 10,
+    top_k: int = _FUZZY_FIND_NODES_DEFAULT_RESULTS,
     min_score: float = 50.0,
 ) -> dict[str, Any]:
     """Score nodes by fuzzy-matching query against label, ObjectType, Description.
 
     Returns a standard envelope dict (status/data/error).
     """
+    bounded_top_k, error = _normalize_fuzzy_result_limit(top_k, param_name="top_k")
+    if error is not None:
+        return error
+
     G = get_networkx_graph(runtime)
     results: list[dict[str, Any]] = []
     query_has_type_intent = _query_has_type_intent(query)
@@ -241,7 +269,14 @@ def _fuzzy_find_nodes_impl(
             str(item["id"]),
         )
     )
-    visible_results = results[:top_k]
+    visible_results = results[:bounded_top_k]
+    total_found = len(results)
+    truncated = total_found > len(visible_results)
+    truncation_reason = None
+    if truncated:
+        truncation_reason = (
+            f"Results truncated to {bounded_top_k} item(s) to stay bounded."
+        )
     evidence = collect_evidence(
         visible_results,
         source_tool="fuzzy_find_nodes",
@@ -253,7 +288,11 @@ def _fuzzy_find_nodes_impl(
             "query": query,
             "class_filter": class_filter,
             "matches": visible_results,
-            "total": len(results),
+            "total": total_found,
+            "total_found": total_found,
+            "returned_count": len(visible_results),
+            "truncated": truncated,
+            "truncation_reason": truncation_reason,
             "evidence": evidence,
         },
         "error": None,
@@ -265,6 +304,7 @@ def _find_container_elements_excluding_impl(
     container_id: str,
     exclude_container_ids: list[str] | None = None,
     depth: int = 4,
+    max_results: int = _LEGACY_SCAN_MAX_RESULTS,
 ) -> dict[str, Any]:
     """Return non-container members of one container minus excluded containers."""
     graph = get_networkx_graph(runtime)
@@ -289,6 +329,23 @@ def _find_container_elements_excluding_impl(
             "invalid",
         )
 
+    try:
+        requested_max_results = int(max_results)
+    except (TypeError, ValueError):
+        return make_error_envelope(
+            "Invalid param: max_results must be an integer",
+            "invalid",
+        )
+    if requested_max_results < 1:
+        return make_error_envelope(
+            "max_results must be >= 1",
+            "invalid",
+        )
+    bounded_max_results = min(
+        requested_max_results,
+        _LEGACY_BOUNDED_ACTION_HARD_CAP,
+    )
+
     included = _collect_container_descendants(graph, [container_id], depth=depth)
     excluded = _collect_container_descendants(
         graph,
@@ -302,6 +359,8 @@ def _find_container_elements_excluding_impl(
             str(node_id),
         ),
     )
+    total_found = len(element_ids)
+    visible_element_ids = element_ids[:bounded_max_results]
 
     elements = [
         {
@@ -313,16 +372,27 @@ def _find_container_elements_excluding_impl(
             ),
             "payload": None,
         }
-        for node_id in element_ids
+        for node_id in visible_element_ids
     ]
+
+    truncated = total_found > len(elements)
+    truncation_reason = None
+    if truncated:
+        truncation_reason = (
+            f"Results truncated to {bounded_max_results} item(s) to stay bounded."
+        )
 
     return {
         "status": "ok",
         "data": {
             "container_id": container_id,
             "exclude_container_ids": exclude_container_ids,
-            "count": len(element_ids),
+            "count": total_found,
             "elements": elements,
+            "total_found": total_found,
+            "returned_count": len(elements),
+            "truncated": truncated,
+            "truncation_reason": truncation_reason,
             "evidence": collect_evidence(
                 elements,
                 source_tool="find_container_elements_excluding",
@@ -400,11 +470,14 @@ def register_graph_tools(agent: Any) -> None:
         ctx: RunContext[GraphRuntime],
         query: str,
         class_filter: str | None = None,
-        top_k: int = 10,
+        top_k: int = _FUZZY_FIND_NODES_DEFAULT_RESULTS,
     ) -> dict[str, Any]:
         """Fuzzy-search for graph nodes by matching query against common text fields."""
+        bounded_top_k, error = _normalize_fuzzy_result_limit(top_k, param_name="top_k")
+        if error is not None:
+            return error
         return _fuzzy_find_nodes_impl(
-            ctx.deps, query, class_filter=class_filter, top_k=top_k
+            ctx.deps, query, class_filter=class_filter, top_k=bounded_top_k
         )
 
     @agent.tool
@@ -433,7 +506,17 @@ def register_graph_tools(agent: Any) -> None:
         """
         # Multi-word input means descriptive name, not IFC class.
         if class_ and " " in class_.strip():
-            return _fuzzy_find_nodes_impl(ctx.deps, class_, top_k=max_results)
+            bounded_max_results, error = _normalize_fuzzy_result_limit(
+                max_results,
+                param_name="max_results",
+            )
+            if error is not None:
+                return error
+            return _fuzzy_find_nodes_impl(
+                ctx.deps,
+                class_,
+                top_k=bounded_max_results,
+            )
 
         normalized_class = class_
         if class_:
@@ -529,6 +612,7 @@ def register_graph_tools(agent: Any) -> None:
         container_id: str,
         exclude_container_ids: list[str] | None = None,
         depth: int = 4,
+        max_results: int = _LEGACY_SCAN_MAX_RESULTS,
     ) -> dict[str, Any]:
         """List elements inside one container while excluding other containers.
 
@@ -541,6 +625,7 @@ def register_graph_tools(agent: Any) -> None:
             container_id,
             exclude_container_ids=exclude_container_ids,
             depth=depth,
+            max_results=max_results,
         )
 
     @agent.tool

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import inspect
 from collections.abc import Callable
+from types import SimpleNamespace
 from typing import Any
 
 import networkx as nx
@@ -43,6 +44,49 @@ def test_traverse_is_bounded_and_preserves_discovery_order() -> None:
     assert [item["relation"] for item in data["results"]] == ["hosts", "typed_by"]
     assert data["total_found"] == 3
     assert data["returned_count"] == 2
+    assert data["truncated"] is True
+    assert data["truncation_reason"] is not None
+
+
+def test_traverse_depth_two_truncation_is_deterministic() -> None:
+    graph = nx.MultiDiGraph()
+    for node_id, label, global_id in [
+        ("Element::A", "Root", "A"),
+        ("Element::B", "Branch B", "B"),
+        ("Element::C", "Branch C", "C"),
+        ("Element::D", "Leaf D", "D"),
+        ("Element::E", "Leaf E", "E"),
+        ("Element::F", "Leaf F", "F"),
+        ("Element::G", "Leaf G", "G"),
+    ]:
+        graph.add_node(node_id, **_make_node(node_id, label, "IfcWall", global_id))
+
+    graph.add_edge("Element::A", "Element::C", relation="hosts", source="ifc")
+    graph.add_edge("Element::A", "Element::B", relation="hosts", source="ifc")
+    graph.add_edge("Element::B", "Element::E", relation="hosts", source="ifc")
+    graph.add_edge("Element::B", "Element::D", relation="hosts", source="ifc")
+    graph.add_edge("Element::C", "Element::G", relation="hosts", source="ifc")
+    graph.add_edge("Element::C", "Element::F", relation="hosts", source="ifc")
+
+    result = query_ifc_graph(
+        graph,
+        "traverse",
+        {"start": "Element::A", "depth": 2, "max_results": 4},
+    )
+
+    assert result["status"] == "ok"
+    data = result["data"]
+    assert not missing_required_action_fields("traverse", data)
+    assert [
+        (item["from"], item["to"], item["relation"]) for item in data["results"]
+    ] == [
+        ("Element::A", "Element::B", "hosts"),
+        ("Element::A", "Element::C", "hosts"),
+        ("Element::B", "Element::D", "hosts"),
+        ("Element::B", "Element::E", "hosts"),
+    ]
+    assert data["total_found"] == 6
+    assert data["returned_count"] == 4
     assert data["truncated"] is True
     assert data["truncation_reason"] is not None
 
@@ -285,10 +329,12 @@ def test_graph_tools_expose_batch1_max_results_defaults() -> None:
     register_graph_tools(agent)
 
     scan_defaults = {
+        "fuzzy_find_nodes": 10,
         "find_nodes": 50,
         "spatial_query": 50,
         "get_elements_in_storey": 50,
         "find_elements_by_class": 50,
+        "find_container_elements_excluding": 50,
     }
     neighbor_defaults = {
         "traverse": 25,
@@ -301,4 +347,88 @@ def test_graph_tools_expose_batch1_max_results_defaults() -> None:
 
     for tool_name, expected_default in {**scan_defaults, **neighbor_defaults}.items():
         signature = inspect.signature(agent.tools[tool_name])
-        assert signature.parameters["max_results"].default == expected_default
+        param_name = "top_k" if tool_name == "fuzzy_find_nodes" else "max_results"
+        assert signature.parameters[param_name].default == expected_default
+
+
+def test_fuzzy_find_nodes_tool_returns_bounded_metadata_and_hard_cap() -> None:
+    class DummyAgent:
+        def __init__(self) -> None:
+            self.tools: dict[str, Callable[..., Any]] = {}
+
+        def tool(self, func: Callable[..., Any]) -> Callable[..., Any]:
+            self.tools[func.__name__] = func
+            return func
+
+    graph = nx.MultiDiGraph()
+    for index in range(30):
+        node_id = f"Element::{index:02d}"
+        graph.add_node(
+            node_id,
+            **_make_node(node_id, "panel", "IfcWall", f"G{index:02d}"),
+        )
+
+    agent = DummyAgent()
+    register_graph_tools(agent)
+
+    result = agent.tools["fuzzy_find_nodes"](
+        SimpleNamespace(deps=graph),
+        query="panel",
+        top_k=999,
+    )
+
+    assert result["status"] == "ok"
+    data = result["data"]
+    assert [item["id"] for item in data["matches"][:3]] == [
+        "Element::00",
+        "Element::01",
+        "Element::02",
+    ]
+    assert data["total"] == 30
+    assert data["total_found"] == 30
+    assert data["returned_count"] == 25
+    assert data["truncated"] is True
+    assert data["truncation_reason"] == (
+        "Results truncated to 25 item(s) to stay bounded."
+    )
+
+
+def test_find_nodes_multi_word_fallback_returns_fuzzy_bounded_metadata() -> None:
+    class DummyAgent:
+        def __init__(self) -> None:
+            self.tools: dict[str, Callable[..., Any]] = {}
+
+        def tool(self, func: Callable[..., Any]) -> Callable[..., Any]:
+            self.tools[func.__name__] = func
+            return func
+
+    graph = nx.MultiDiGraph()
+    for index in range(4):
+        node_id = f"Element::{index:02d}"
+        graph.add_node(
+            node_id,
+            **_make_node(node_id, "plumbing wall", "IfcWall", f"W{index:02d}"),
+        )
+
+    agent = DummyAgent()
+    register_graph_tools(agent)
+
+    result = agent.tools["find_nodes"](
+        SimpleNamespace(deps=graph),
+        class_="plumbing wall",
+        max_results=2,
+    )
+
+    assert result["status"] == "ok"
+    data = result["data"]
+    assert [item["id"] for item in data["matches"]] == [
+        "Element::00",
+        "Element::01",
+    ]
+    assert data["total"] == 4
+    assert data["total_found"] == 4
+    assert data["returned_count"] == 2
+    assert data["truncated"] is True
+    assert data["truncation_reason"] == (
+        "Results truncated to 2 item(s) to stay bounded."
+    )

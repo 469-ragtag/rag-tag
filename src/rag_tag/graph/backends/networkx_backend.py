@@ -647,6 +647,9 @@ class NetworkXGraphBackend:
                 return ""
             return str(value)
 
+        def stable_node_order(node_ids: Iterable[Any]) -> list[Any]:
+            return sorted(node_ids, key=stable_sort_text)
+
         def numeric_rank(value: Any, *, descending: bool) -> tuple[int, float]:
             try:
                 numeric = float(value)
@@ -1698,7 +1701,7 @@ class NetworkXGraphBackend:
                 return _err("Depth must be >= 1", "invalid")
 
             visited = {start}
-            frontier = {start}
+            frontier = [start]
             results: list[dict[str, Any]] = []
             total_found = 0
             relation_filter: set[str] | None = None
@@ -1716,9 +1719,9 @@ class NetworkXGraphBackend:
                 relation_filter = {relation_value}
 
             for _ in range(depth):
-                next_frontier = set()
-                for node in frontier:
-                    for nbr in G.successors(node):
+                next_frontier: list[str] = []
+                for node in stable_node_order(frontier):
+                    for nbr in stable_node_order(G.successors(node)):
                         matched_edges = []
                         for edge in iter_edge_dicts(node, nbr):
                             current_relation = edge_relation(edge)
@@ -1735,7 +1738,7 @@ class NetworkXGraphBackend:
                         if nbr in visited:
                             continue
                         visited.add(nbr)
-                        next_frontier.add(nbr)
+                        next_frontier.append(nbr)
                         for edge, current_relation in matched_edges:
                             total_found += 1
                             if len(results) >= max_results:
