@@ -126,6 +126,4 @@ def load_benchmark_dataset(dataset_path: str | Path) -> BenchmarkDataset:
     try:
         return BenchmarkDataset.model_validate(payload)
     except ValidationError as exc:
-        raise ValueError(
-            f"Invalid benchmark dataset file {candidate}: {exc}"
-        ) from exc
+        raise ValueError(f"Invalid benchmark dataset file {candidate}: {exc}") from exc
