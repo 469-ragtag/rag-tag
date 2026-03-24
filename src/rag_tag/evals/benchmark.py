@@ -120,8 +120,7 @@ def build_benchmark_cli_config(
     combinations = expand_benchmark_matrix(
         router_profiles=router_profiles
         or _list_or_empty(experiment, "router_profiles"),
-        agent_profiles=agent_profiles
-        or _list_or_empty(experiment, "agent_profiles"),
+        agent_profiles=agent_profiles or _list_or_empty(experiment, "agent_profiles"),
         prompt_strategies=prompt_strategies
         or _list_or_empty(experiment, "prompt_strategies"),
         fallback_router_profile=experiment.router_profile if experiment else None,
