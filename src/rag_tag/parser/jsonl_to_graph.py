@@ -2051,14 +2051,26 @@ def plot_interactive_graph(G: nx.DiGraph | nx.MultiDiGraph, out_html: Path) -> N
         plot_bgcolor="#f7f9fc",
     )
 
+    edge_relation_counts = {
+        rel: len(edge["mid_x"]) for rel, edge in edge_groups.items()
+    }
+    total_edges = sum(edge_relation_counts.values())
+
     edge_items = []
-    for rel in sorted(edge_groups):
+    for rel in sorted(
+        edge_groups, key=lambda name: (-edge_relation_counts[name], name)
+    ):
         rel_expl = edge_relation_explanations.get(rel, "graph relation")
         edge_color = edge_color_map.get(rel, "#4b5563")
+        count = edge_relation_counts[rel]
         edge_items.append(
             "<div class='legend-item'>"
             f"<span class='swatch line' style='--swatch:{edge_color}'></span>"
-            f"<span>Edge: {html.escape(rel)} - {html.escape(rel_expl)}</span>"
+            "<span class='legend-item-text'>"
+            f"<span class='legend-item-main'>Edge: {html.escape(rel)}</span>"
+            f"<span class='legend-item-sub'>{html.escape(rel_expl)}</span>"
+            "</span>"
+            f"<span class='legend-count' title='Edge count'>{count}</span>"
             "</div>"
         )
 
@@ -2191,12 +2203,43 @@ def plot_interactive_graph(G: nx.DiGraph | nx.MultiDiGraph, out_html: Path) -> N
       margin: 10px 0 6px;
       font-weight: 700;
     }}
+    .legend .section-meta {{
+      margin: -2px 0 8px;
+      color: #51657f;
+      font-size: 12px;
+    }}
     .legend-item {{
       display: flex;
       align-items: center;
       gap: 8px;
       margin: 6px 0;
       line-height: 1.3;
+    }}
+    .legend-item-text {{
+      min-width: 0;
+      flex: 1 1 auto;
+      display: flex;
+      flex-direction: column;
+      gap: 1px;
+    }}
+    .legend-item-main {{
+      font-weight: 600;
+    }}
+    .legend-item-sub {{
+      color: #51657f;
+      font-size: 12px;
+    }}
+    .legend-count {{
+      flex: 0 0 auto;
+      min-width: 38px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: #e7eef8;
+      border: 1px solid #c5d3e6;
+      color: #1f3552;
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+      font-weight: 700;
     }}
     .swatch {{
       flex: 0 0 auto;
@@ -2255,6 +2298,7 @@ def plot_interactive_graph(G: nx.DiGraph | nx.MultiDiGraph, out_html: Path) -> N
       <aside class="legend" aria-label="Graph legend">
         <h3>Legend</h3>
         <div class="section-title">Edges</div>
+        <div class="section-meta">Total directed edges shown: {total_edges}</div>
         {"".join(edge_items)}
         <div class="section-title">Nodes</div>
         {"".join(node_items)}

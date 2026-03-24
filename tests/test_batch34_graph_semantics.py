@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -18,6 +19,7 @@ from rag_tag.parser.jsonl_to_graph import (
     add_topology_facts,
     build_graph,
     build_graph_from_jsonl,
+    plot_interactive_graph,
 )
 
 
@@ -394,3 +396,67 @@ def test_batch3_build_graph_honors_config_and_explicit_opt_out(
         attrs.get("source") == "topology" and "Element::member-1" in {u, v}
         for u, v, attrs in opt_out.edges(data=True)
     )
+
+
+def test_plot_interactive_graph_legend_includes_edge_counts(tmp_path: Path) -> None:
+    graph = nx.MultiDiGraph()
+    graph.add_node(
+        "IfcBuilding",
+        label="Building",
+        class_="IfcBuilding",
+        geometry=(0.0, 0.0, 0.0),
+        properties={},
+    )
+    graph.add_node(
+        "Storey::L1",
+        label="Level 1",
+        class_="IfcBuildingStorey",
+        geometry=(0.0, 1.0, 0.0),
+        properties={},
+    )
+    graph.add_node(
+        "Element::A",
+        label="Wall A",
+        class_="IfcWall",
+        geometry=(1.0, 0.0, 0.0),
+        properties={},
+    )
+    graph.add_node(
+        "Element::B",
+        label="Wall B",
+        class_="IfcWall",
+        geometry=(1.0, 1.0, 0.0),
+        properties={},
+    )
+
+    graph.add_edge("IfcBuilding", "Storey::L1", relation="aggregates")
+    graph.add_edge("Storey::L1", "Element::A", relation="contains")
+    graph.add_edge("Storey::L1", "Element::B", relation="contains")
+    graph.add_edge(
+        "Element::A",
+        "Element::B",
+        relation="adjacent_to",
+        source="heuristic",
+    )
+
+    out_html = tmp_path / "ifc_graph.html"
+    plot_interactive_graph(graph, out_html)
+
+    html_text = out_html.read_text(encoding="utf-8")
+    legend_start = html_text.index('<aside class="legend" aria-label="Graph legend">')
+    legend_end = html_text.index("</aside>", legend_start)
+    legend_html = html_text[legend_start:legend_end]
+
+    assert "Total directed edges shown: 4" in legend_html
+    assert re.search(
+        r"Edge: contains</span><span class='legend-item-sub'>container to child</span>"
+        r"</span><span class='legend-count' title='Edge count'>2</span>",
+        legend_html,
+    )
+    assert re.search(
+        r"Edge: aggregates</span>"
+        r"<span class='legend-item-sub'>hierarchy decomposition</span>"
+        r"</span><span class='legend-count' title='Edge count'>1</span>",
+        legend_html,
+    )
+    assert legend_html.index("Edge: contains") < legend_html.index("Edge: adjacent_to")
