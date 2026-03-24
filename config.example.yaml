@@ -129,3 +129,9 @@ experiments:
       - dbx-gpt-oss-20b
       - dbx-llama-4-maverick
       - dbx-gemma-3-12b
+
+  benchmark-e2e-v1:
+    description: Starter end-to-end benchmark experiment using the YAML question set.
+    router_profile: router-gemini-flash
+    agent_profile: cohere-command-a
+    questions_file: evals/benchmark_cases_v1.yaml

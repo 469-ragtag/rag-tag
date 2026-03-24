@@ -111,7 +111,8 @@ def test_load_project_config_parses_yaml_structure(tmp_path: Path) -> None:
         "experiments:\n"
         "  graph-compare:\n"
         "    router_profile: router-default\n"
-        "    agent_profile: dbx-agent\n",
+        "    agent_profile: dbx-agent\n"
+        "    questions_file: evals/benchmark_cases_v1.yaml\n",
         encoding="utf-8",
     )
 
@@ -137,6 +138,9 @@ def test_load_project_config_parses_yaml_structure(tmp_path: Path) -> None:
     assert loaded.config.profiles["dbx-agent"].provider == "databricks"
     assert loaded.config.profiles["dbx-agent"].settings == {"temperature": 0.1}
     assert loaded.config.experiments["graph-compare"].agent_profile == "dbx-agent"
+    assert loaded.config.experiments["graph-compare"].questions_file == (
+        "evals/benchmark_cases_v1.yaml"
+    )
 
 
 def test_load_project_config_uses_explicit_relative_json_path(tmp_path: Path) -> None:
@@ -273,6 +277,9 @@ def test_checked_in_config_example_matches_app_config_schema() -> None:
         assert all(
             profile_name in config.profiles for profile_name in experiment.profiles
         )
+
+    benchmark_experiment = config.experiments["benchmark-e2e-v1"]
+    assert benchmark_experiment.questions_file == "evals/benchmark_cases_v1.yaml"
 
 
 def test_repo_does_not_require_checked_in_runtime_config_yaml() -> None:

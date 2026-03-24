@@ -1,0 +1,201 @@
+dataset_name: benchmark_cases_v1
+cases:
+  - id: q001
+    question: How many walls are in the model?
+    expected_route: sql
+    reference_points:
+      - chooses sql routing for a deterministic count query
+      - returns a grounded count of wall elements
+      - avoids unsupported graph-only reasoning
+    tags: [sql, count, walls]
+    max_duration_s: 10
+
+  - id: q002
+    question: List all spaces located in the groundfloor.
+    expected_route: graph
+    reference_points:
+      - identifies the ground floor or matching storey correctly
+      - returns space elements grounded in containment evidence
+      - avoids inventing spaces not supported by the model
+    tags: [graph, spaces, level, containment]
+    max_duration_s: 20
+
+  - id: q003
+    question: How many slabs are there, and what are their names?
+    expected_route: sql
+    reference_points:
+      - treats the request as a deterministic listing/count task
+      - returns slab names grounded in retrieved data
+      - keeps the count consistent with the returned set
+    tags: [sql, count, list, slabs]
+    max_duration_s: 12
+
+  - id: q004
+    question: What is the total number of building element proxies in the project?
+    expected_route: sql
+    reference_points:
+      - chooses sql routing for a bounded count query
+      - counts only building element proxy entities
+      - returns a deterministic total
+    tags: [sql, count, proxies]
+    max_duration_s: 10
+
+  - id: q005
+    question: How many elements have the word "roof" in their name?
+    expected_route: sql
+    reference_points:
+      - uses deterministic name-based filtering
+      - counts only elements whose name matches the roof term
+      - avoids unsupported spatial reasoning
+    tags: [sql, count, name-filter, roof]
+    max_duration_s: 10
+
+  - id: q006
+    question: What building storey contains the chimney?
+    expected_route: graph
+    reference_points:
+      - identifies the chimney anchor correctly
+      - follows containment to the correct building storey
+      - reports uncertainty if no grounded storey is found
+    tags: [graph, containment, storey, chimney]
+    max_duration_s: 20
+
+  - id: q007
+    question: What elements are contained directly inside the Single-family house building, excluding storeys?
+    expected_route: graph
+    reference_points:
+      - identifies the Single-family house building correctly
+      - returns only directly contained elements
+      - excludes storeys from the final set
+    tags: [graph, containment, building, filter]
+    max_duration_s: 20
+
+  - id: q008
+    question: Which site contains the "origin" element?
+    expected_route: graph
+    reference_points:
+      - resolves the origin element anchor correctly
+      - traces containment to the site level
+      - does not fabricate site relationships
+    tags: [graph, containment, site, origin]
+    max_duration_s: 20
+
+  - id: q009
+    question: What elements make up the roof assembly?
+    expected_route: graph
+    reference_points:
+      - identifies the roof assembly anchor correctly
+      - returns grounded member elements of that assembly
+      - avoids adding unsupported parts
+    tags: [graph, assembly, containment, roof]
+    max_duration_s: 20
+
+  - id: q010
+    question: Are there any proxy elements located directly inside the living room?
+    expected_route: graph
+    reference_points:
+      - identifies the living room space correctly
+      - checks direct containment rather than loose proximity
+      - answers yes or no only from grounded evidence
+    tags: [graph, containment, proxies, living-room]
+    max_duration_s: 20
+
+  - id: q011
+    question: Find the material of the kitchen furniture.
+    expected_route: graph
+    reference_points:
+      - identifies the kitchen furniture anchor correctly
+      - retrieves material information from grounded data
+      - avoids fabricating material names
+    tags: [graph, material, furniture, kitchen]
+    max_duration_s: 20
+
+  - id: q012
+    question: What is the net volume and area of the left roof slab?
+    expected_route: graph
+    reference_points:
+      - identifies the left roof slab correctly
+      - returns grounded quantity values for net volume and area
+      - avoids mixing values from other slabs
+    tags: [graph, quantity, slab, roof]
+    max_duration_s: 20
+
+  - id: q013
+    question: What is the length, width, and volume of the left outer wall?
+    expected_route: graph
+    reference_points:
+      - identifies the left outer wall correctly
+      - returns grounded dimensional values
+      - keeps all reported measurements tied to the same wall
+    tags: [graph, quantity, dimensions, wall]
+    max_duration_s: 20
+
+  - id: q014
+    question: Does the ground floor slab have a fire rating?
+    expected_route: graph
+    reference_points:
+      - identifies the ground floor slab correctly
+      - checks for a grounded fire rating property
+      - states absence clearly when no fire rating is present
+    tags: [graph, property, slab, fire-rating]
+    max_duration_s: 20
+
+  - id: q015
+    question: What material is used for the sand bedding?
+    expected_route: graph
+    reference_points:
+      - resolves the sand bedding anchor correctly
+      - returns grounded material information
+      - avoids unsupported substitutions or guesses
+    tags: [graph, material, bedding]
+    max_duration_s: 20
+
+  - id: q016
+    question: The kitchen furniture is in a specific space. What zone does that space belong to?
+    expected_route: graph
+    reference_points:
+      - identifies the kitchen furniture and its containing space
+      - traces the space to its zone membership
+      - reports the zone only if supported by evidence
+    tags: [graph, multi-hop, zone, kitchen]
+    max_duration_s: 25
+
+  - id: q017
+    question: What are the materials of all the walls located on the groundfloor?
+    expected_route: graph
+    reference_points:
+      - identifies walls associated with the ground floor correctly
+      - returns grounded material information for each wall or grouped set
+      - avoids fabricating materials for unmatched walls
+    tags: [graph, material, walls, level]
+    max_duration_s: 25
+
+  - id: q018
+    question: Find the entry hall. What building storey is it on, and what building is that storey in?
+    expected_route: graph
+    reference_points:
+      - identifies the entry hall anchor correctly
+      - returns the containing building storey
+      - returns the building associated with that storey
+    tags: [graph, multi-hop, storey, building, entry-hall]
+    max_duration_s: 25
+
+  - id: q019
+    question: Compare the net volume of the right roof slab and the left roof slab. Which is larger?
+    expected_route: graph
+    reference_points:
+      - identifies both roof slab anchors correctly
+      - compares grounded net volume values
+      - states which slab is larger only if the evidence supports it
+    tags: [graph, comparison, quantity, roof]
+    max_duration_s: 25
+
+  - id: q020
+    question: Trace the full containment path of the "kitchen" element from the project level down.
+    expected_route: graph
+    reference_points:
+      - identifies the kitchen element anchor correctly
+      - returns the containment chain in order
+      - keeps the path grounded from project level to the target element
+    tags: [graph, path, containment, kitchen]
+    max_duration_s: 25

@@ -63,6 +63,7 @@ class ExperimentConfig(BaseModel):
     description: str | None = None
     router_profile: str | None = None
     agent_profile: str | None = None
+    questions_file: str | None = None
     profiles: list[str] = Field(default_factory=list)
 
 
