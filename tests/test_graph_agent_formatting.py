@@ -70,6 +70,8 @@ def test_system_prompt_guides_generic_container_anchor_discipline() -> None:
 def test_system_prompt_prefers_containment_helpers_before_broad_topology() -> None:
     assert "`contains`, `contained_in`" in SYSTEM_PROMPT
     assert "`get_elements_in_storey`" in SYSTEM_PROMPT
+    assert "`find_same_storey_elements`" in SYSTEM_PROMPT
+    assert "`find_elements_inside_footprint`" in SYSTEM_PROMPT
     assert "`find_container_elements_excluding`" in SYSTEM_PROMPT
     assert "before\n    broad topology traversal" in SYSTEM_PROMPT
 
@@ -77,6 +79,14 @@ def test_system_prompt_prefers_containment_helpers_before_broad_topology() -> No
 def test_system_prompt_treats_intersects_bbox_as_noisy_last_resort() -> None:
     assert "Use `intersects_bbox` only as a noisy last resort" in SYSTEM_PROMPT
     assert "Treat `intersects_bbox` as a noisy fallback" in SYSTEM_PROMPT
+
+
+def test_system_prompt_covers_alignment_footprint_and_shared_boundary_tools() -> None:
+    assert "`aligned_with`" in SYSTEM_PROMPT
+    assert "`shares_boundary_with`" in SYSTEM_PROMPT
+    assert "inside footprint" in SYSTEM_PROMPT
+    assert "find_elements_inside_footprint" in SYSTEM_PROMPT
+    assert "find_same_storey_elements" in SYSTEM_PROMPT
 
 
 def test_schema_correction_hint_is_explicit_about_real_tool_calls() -> None:

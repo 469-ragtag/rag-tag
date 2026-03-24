@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 import sqlite3
 from bisect import insort
@@ -69,6 +70,23 @@ _DIRECTIONAL_TOPOLOGY_RELATIONS = {
     "space_bounded_by",
     "bounds_space",
 }
+_ALIGNED_WITH_ALLOWED_CLASSES = {
+    "IfcWall",
+    "IfcBeam",
+    "IfcMember",
+    "IfcCurtainWall",
+    "IfcRailing",
+}
+_CONTAINER_CLASS_NAMES = {
+    "IfcProject",
+    "IfcSite",
+    "IfcBuilding",
+    "IfcBuildingStorey",
+    "IfcSpace",
+    "IfcZone",
+    "IfcSpatialZone",
+    "IfcTypeObject",
+}
 _TERMINAL_CLASS_NAMES = {
     "IfcFlowTerminal",
     "IfcDistributionPort",
@@ -121,6 +139,8 @@ _LEGACY_BOUNDED_ACTION_DEFAULTS = {
     "spatial_query": 50,
     "get_elements_in_storey": 50,
     "find_elements_by_class": 50,
+    "find_elements_inside_footprint": 50,
+    "find_same_storey_elements": 50,
     "get_adjacent_elements": 25,
     "get_topology_neighbors": 25,
     "get_intersections_3d": 25,
@@ -276,6 +296,7 @@ class NetworkXGraphBackend:
                     "space_bounded_by",
                     "bounds_space",
                     "path_connected_to",
+                    "shares_boundary_with",
                 }:
                     return "ifc"
                 return "topology"
@@ -402,6 +423,41 @@ class NetworkXGraphBackend:
 
             return None, {"error": f"Storey not found: {storey_query}"}
 
+        def resolve_graph_or_storey_node(
+            node_ref: str,
+        ) -> tuple[str | None, dict[str, Any] | None]:
+            resolved, err = resolve_graph_node(node_ref)
+            if resolved is not None:
+                return resolved, None
+            if err and "Ambiguous" in str(err.get("error", "")):
+                return None, err
+
+            resolved_storey, storey_err = resolve_storey_node(node_ref)
+            if resolved_storey is not None:
+                return resolved_storey, None
+            if storey_err and "Ambiguous" in str(storey_err.get("error", "")):
+                return None, {
+                    "error": "Ambiguous node_id",
+                    "candidates": storey_err.get("candidates", []),
+                }
+            return None, err or storey_err
+
+        def node_class_name(node_id: str) -> str | None:
+            raw = G.nodes[node_id].get("class_")
+            if raw is None:
+                return None
+            text = str(raw).strip()
+            return text or None
+
+        def node_dataset(node_id: str) -> str | None:
+            raw = G.nodes[node_id].get("dataset")
+            if isinstance(raw, str) and raw.strip():
+                return raw
+            return None
+
+        def node_is_container(node_id: str) -> bool:
+            return node_class_name(node_id) in _CONTAINER_CLASS_NAMES
+
         def storey_elements(start: str) -> Iterable[str]:
             visited = {start}
             q = deque([start])
@@ -419,6 +475,306 @@ class NetworkXGraphBackend:
                     visited.add(nbr)
                     q.append(nbr)
                     yield nbr
+
+        def non_container_descendants(start: str) -> list[str]:
+            return [
+                node_id
+                for node_id in storey_elements(start)
+                if not node_is_container(node_id)
+            ]
+
+        def resolve_storey_for_node(node_id: str) -> tuple[str | None, str | None]:
+            if node_id not in G:
+                return None, None
+            if node_class_name(node_id) == "IfcBuildingStorey":
+                return node_id, "self"
+
+            visited = {node_id}
+            queue: deque[str] = deque([node_id])
+            while queue:
+                current = queue.popleft()
+                for nbr in G.successors(current):
+                    has_contained_in = any(
+                        normalize_relation_name(edge.get("relation")) == "contained_in"
+                        for edge in iter_edge_dicts(current, nbr)
+                    )
+                    if not has_contained_in or nbr in visited:
+                        continue
+                    if node_class_name(nbr) == "IfcBuildingStorey":
+                        return nbr, "contained_in"
+                    visited.add(nbr)
+                    queue.append(nbr)
+
+            props = G.nodes[node_id].get("properties") or {}
+            if not isinstance(props, dict):
+                return None, None
+            level_value = props.get("Level")
+            if not isinstance(level_value, str) or not level_value.strip():
+                return None, None
+
+            normalized_level = normalize_text(level_value)
+            dataset_key = node_dataset(node_id)
+            matches = [
+                candidate_id
+                for candidate_id, candidate_data in G.nodes(data=True)
+                if node_class_name(candidate_id) == "IfcBuildingStorey"
+                and (dataset_key is None or node_dataset(candidate_id) == dataset_key)
+                and normalize_text(str(candidate_data.get("label", "")))
+                == normalized_level
+            ]
+            if len(matches) == 1:
+                return matches[0], "level"
+            return None, None
+
+        def element_node_ids_for_dataset(
+            dataset_key: str | None,
+        ) -> list[str]:
+            return [
+                node_id
+                for node_id in G.nodes
+                if str(node_id).startswith("Element::")
+                and (dataset_key is None or node_dataset(str(node_id)) == dataset_key)
+                and not node_is_container(str(node_id))
+            ]
+
+        def node_plan_point(
+            node_id: str,
+        ) -> tuple[tuple[float, float] | None, str | None]:
+            data = G.nodes[node_id]
+            geometry = data.get("geometry")
+            if isinstance(geometry, (list, tuple)) and len(geometry) >= 2:
+                try:
+                    return (float(geometry[0]), float(geometry[1])), "centroid"
+                except (TypeError, ValueError):
+                    pass
+
+            bbox = data.get("bbox")
+            if (
+                isinstance(bbox, (list, tuple))
+                and len(bbox) == 2
+                and isinstance(bbox[0], (list, tuple))
+                and isinstance(bbox[1], (list, tuple))
+                and len(bbox[0]) >= 2
+                and len(bbox[1]) >= 2
+            ):
+                try:
+                    return (
+                        (
+                            (float(bbox[0][0]) + float(bbox[1][0])) * 0.5,
+                            (float(bbox[0][1]) + float(bbox[1][1])) * 0.5,
+                        ),
+                        "bbox_center_fallback",
+                    )
+                except (TypeError, ValueError):
+                    return None, None
+            return None, None
+
+        def point_in_polygon_xy(
+            point: tuple[float, float],
+            polygon: list[tuple[float, float]],
+        ) -> bool:
+            x, y = point
+            inside = False
+            epsilon = 1e-9
+
+            for index, (x1, y1) in enumerate(polygon):
+                x2, y2 = polygon[(index + 1) % len(polygon)]
+                dx = x2 - x1
+                dy = y2 - y1
+                cross = (x - x1) * dy - (y - y1) * dx
+                if abs(cross) <= epsilon:
+                    dot = (x - x1) * (x - x2) + (y - y1) * (y - y2)
+                    if dot <= epsilon:
+                        return True
+
+                intersects = ((y1 > y) != (y2 > y)) and (
+                    x <= ((x2 - x1) * (y - y1) / ((y2 - y1) or epsilon)) + x1 + epsilon
+                )
+                if intersects:
+                    inside = not inside
+            return inside
+
+        def point_in_bbox_2d(
+            point: tuple[float, float],
+            bbox_2d: tuple[float, float, float, float],
+        ) -> bool:
+            x, y = point
+            min_x, min_y, max_x, max_y = bbox_2d
+            epsilon = 1e-9
+            return (
+                min_x - epsilon <= x <= max_x + epsilon
+                and min_y - epsilon <= y <= max_y + epsilon
+            )
+
+        def node_footprint_geometry(
+            node_id: str,
+        ) -> tuple[
+            list[tuple[float, float]] | None, tuple[float, float, float, float] | None
+        ]:
+            data = G.nodes[node_id]
+            footprint = data.get("footprint_polygon")
+            if isinstance(footprint, list) and len(footprint) >= 3:
+                parsed_footprint: list[tuple[float, float]] = []
+                for point in footprint:
+                    if isinstance(point, (list, tuple)) and len(point) == 2:
+                        parsed_footprint.append((float(point[0]), float(point[1])))
+                if len(parsed_footprint) >= 3:
+                    return parsed_footprint, None
+
+            bbox_2d = data.get("footprint_bbox_2d")
+            if isinstance(bbox_2d, (list, tuple)) and len(bbox_2d) == 4:
+                try:
+                    return None, tuple(float(value) for value in bbox_2d)
+                except (TypeError, ValueError):
+                    return None, None
+            return None, None
+
+        def aligned_signature(node_id: str) -> dict[str, Any] | None:
+            if node_class_name(node_id) not in _ALIGNED_WITH_ALLOWED_CLASSES:
+                return None
+
+            obb = G.nodes[node_id].get("obb")
+            if not isinstance(obb, dict):
+                return None
+            axes = obb.get("axes")
+            extents = obb.get("extents")
+            center = obb.get("center")
+            if (
+                not isinstance(axes, (list, tuple))
+                or len(axes) < 2
+                or not isinstance(extents, (list, tuple))
+                or len(extents) < 2
+                or not isinstance(center, (list, tuple))
+                or len(center) < 2
+            ):
+                return None
+
+            axis_candidates: list[tuple[float, tuple[float, float], float]] = []
+            short_extents: list[float] = []
+            for raw_axis, raw_extent in zip(axes[:2], extents[:2], strict=False):
+                if not isinstance(raw_axis, (list, tuple)) or len(raw_axis) < 2:
+                    return None
+                try:
+                    axis_x = float(raw_axis[0])
+                    axis_y = float(raw_axis[1])
+                    extent = abs(float(raw_extent))
+                except (TypeError, ValueError):
+                    return None
+                axis_len = math.hypot(axis_x, axis_y)
+                if axis_len <= 1e-9 or extent <= 1e-9:
+                    continue
+                normalized_axis = (axis_x / axis_len, axis_y / axis_len)
+                axis_candidates.append((extent * axis_len, normalized_axis, extent))
+                short_extents.append(extent)
+
+            if len(axis_candidates) < 2:
+                return None
+
+            axis_candidates.sort(key=lambda item: item[0], reverse=True)
+            try:
+                center_xy = (float(center[0]), float(center[1]))
+            except (TypeError, ValueError):
+                return None
+
+            return {
+                "axis": axis_candidates[0][1],
+                "center_xy": center_xy,
+                "short_extent": min(short_extents),
+            }
+
+        def aligned_neighbors(
+            node_id: str,
+        ) -> tuple[list[dict[str, Any]], str | None]:
+            anchor_class = node_class_name(node_id)
+            if anchor_class not in _ALIGNED_WITH_ALLOWED_CLASSES:
+                return [], (
+                    "`aligned_with` is only available for elongated core classes "
+                    "such as walls, beams, members, curtain walls, and railings."
+                )
+
+            anchor_signature = aligned_signature(node_id)
+            if anchor_signature is None:
+                return [], "Aligned-with reasoning requires valid OBB data."
+
+            anchor_storey_id, _anchor_storey_method = resolve_storey_for_node(node_id)
+            anchor_dataset = node_dataset(node_id)
+            results: list[dict[str, Any]] = []
+
+            for candidate_id in element_node_ids_for_dataset(anchor_dataset):
+                if candidate_id == node_id:
+                    continue
+                if node_class_name(candidate_id) not in _ALIGNED_WITH_ALLOWED_CLASSES:
+                    continue
+
+                candidate_signature = aligned_signature(candidate_id)
+                if candidate_signature is None:
+                    continue
+
+                anchor_axis_x, anchor_axis_y = anchor_signature["axis"]
+                candidate_axis_x, candidate_axis_y = candidate_signature["axis"]
+                dot = (
+                    anchor_axis_x * candidate_axis_x + anchor_axis_y * candidate_axis_y
+                )
+                if dot < 0.0:
+                    candidate_axis_x *= -1.0
+                    candidate_axis_y *= -1.0
+                    dot *= -1.0
+                dot = max(-1.0, min(1.0, dot))
+                angle_deg = math.degrees(math.acos(dot))
+                if angle_deg > 10.0:
+                    continue
+
+                blend_x = anchor_axis_x + candidate_axis_x
+                blend_y = anchor_axis_y + candidate_axis_y
+                blend_len = math.hypot(blend_x, blend_y)
+                if blend_len <= 1e-9:
+                    ref_axis_x, ref_axis_y = anchor_axis_x, anchor_axis_y
+                else:
+                    ref_axis_x = blend_x / blend_len
+                    ref_axis_y = blend_y / blend_len
+
+                perp_x, perp_y = -ref_axis_y, ref_axis_x
+                delta_x = (
+                    candidate_signature["center_xy"][0]
+                    - anchor_signature["center_xy"][0]
+                )
+                delta_y = (
+                    candidate_signature["center_xy"][1]
+                    - anchor_signature["center_xy"][1]
+                )
+                lateral_offset_xy = abs(delta_x * perp_x + delta_y * perp_y)
+                offset_limit = max(
+                    0.25,
+                    min(
+                        float(anchor_signature["short_extent"]),
+                        float(candidate_signature["short_extent"]),
+                    ),
+                )
+                if lateral_offset_xy > offset_limit:
+                    continue
+
+                candidate_storey_id, _candidate_storey_method = resolve_storey_for_node(
+                    candidate_id
+                )
+                same_storey = (
+                    anchor_storey_id is not None
+                    and candidate_storey_id == anchor_storey_id
+                )
+
+                item = compact_node(candidate_id)
+                item.update(
+                    {
+                        "relation": "aligned_with",
+                        "source": "topology",
+                        "angle_deg": round(angle_deg, 6),
+                        "lateral_offset_xy": round(lateral_offset_xy, 6),
+                        "same_storey": same_storey,
+                        "storey_id": candidate_storey_id,
+                    }
+                )
+                results.append(item)
+
+            return results, None
 
         def spatial_neighbors(node_id: str) -> Iterable[tuple[str, dict[str, Any]]]:
             seen: set[tuple[str, str, str]] = set()
@@ -724,6 +1080,15 @@ class NetworkXGraphBackend:
                 metric_order = 4
                 metric_key = (1, 0.0)
             return (metric_order, metric_key, *item_label_id_sort_key(item))
+
+        def aligned_item_sort_key(item: dict[str, Any]) -> tuple[Any, ...]:
+            same_storey = 0 if item.get("same_storey") else 1
+            return (
+                same_storey,
+                numeric_rank(item.get("angle_deg"), descending=False),
+                numeric_rank(item.get("lateral_offset_xy"), descending=False),
+                *item_label_id_sort_key(item),
+            )
 
         def resolve_graph_node(
             node_ref: str,
@@ -1321,22 +1686,11 @@ class NetworkXGraphBackend:
             if node is None:
                 return _err(f"Storey not found: {storey}", "not_found")
 
-            container_classes = {
-                "IfcProject",
-                "IfcSite",
-                "IfcBuilding",
-                "IfcBuildingStorey",
-                "IfcSpace",
-                "IfcZone",
-                "IfcSpatialZone",
-                "IfcTypeObject",
-            }
-
             selected: list[tuple[tuple[Any, ...], int, dict[str, Any]]] = []
             total_found = 0
             for e in storey_elements(node):
                 cls = G.nodes[e].get("class_")
-                if cls in container_classes:
+                if node_is_container(e):
                     continue
                 item = {
                     "id": e,
@@ -1401,6 +1755,197 @@ class NetworkXGraphBackend:
                     max_results=max_results,
                 ),
             )
+
+        if action == "find_elements_inside_footprint":
+            container = params.get("container")
+            cls = params.get("class")
+            if not container:
+                return _err("Missing param: container", "missing_param")
+            if not isinstance(container, str):
+                return _err("Invalid param: container must be a string", "invalid")
+            if cls is not None and not isinstance(cls, str):
+                return _err("Invalid param: class must be a string", "invalid")
+            max_results_value = parse_legacy_max_results(action)
+            if isinstance(max_results_value, dict):
+                return _err(
+                    str(max_results_value["error"]),
+                    str(max_results_value["code"]),
+                )
+            max_results = max_results_value
+            class_filter = normalize_class(cls) if cls else None
+
+            resolved_container, err = resolve_graph_or_storey_node(container)
+            if err:
+                error_msg = err.get("error", "Unknown error")
+                if "Ambiguous" in str(error_msg):
+                    return _err(
+                        str(error_msg),
+                        "ambiguous",
+                        {"candidates": err.get("candidates", [])},
+                    )
+                if "Invalid" in str(error_msg):
+                    return _err(str(error_msg), "invalid")
+                return _err(str(error_msg), "not_found")
+            if resolved_container is None:
+                return _err(f"Container not found: {container}", "not_found")
+
+            footprint_polygon, footprint_bbox_2d = node_footprint_geometry(
+                resolved_container
+            )
+            if footprint_polygon is None and footprint_bbox_2d is None:
+                return _err(
+                    (
+                        "Resolved container does not have footprint geometry. "
+                        "This helper requires a footprint polygon or 2D footprint bbox."
+                    ),
+                    "no_geometry",
+                )
+
+            candidate_ids = non_container_descendants(resolved_container)
+            if not candidate_ids:
+                candidate_ids = element_node_ids_for_dataset(
+                    node_dataset(resolved_container)
+                )
+
+            selected: list[tuple[tuple[Any, ...], int, dict[str, Any]]] = []
+            total_found = 0
+            for candidate_id in sorted(set(candidate_ids)):
+                if candidate_id == resolved_container:
+                    continue
+                if class_filter is not None:
+                    if str(G.nodes[candidate_id].get("class_", "")).lower() != (
+                        class_filter.lower()
+                    ):
+                        continue
+
+                point_xy, inside_method = node_plan_point(candidate_id)
+                if point_xy is None or inside_method is None:
+                    continue
+
+                is_inside = (
+                    point_in_polygon_xy(point_xy, footprint_polygon)
+                    if footprint_polygon is not None
+                    else point_in_bbox_2d(point_xy, footprint_bbox_2d)
+                )
+                if not is_inside:
+                    continue
+
+                storey_id, _storey_method = resolve_storey_for_node(candidate_id)
+                item = compact_node(candidate_id)
+                item.update(
+                    {
+                        "inside_method": inside_method,
+                        "storey_id": storey_id,
+                    }
+                )
+                total_found += 1
+                insert_bounded_sorted_item(
+                    selected,
+                    item=item,
+                    sort_key=item_label_id_sort_key(item),
+                    sequence=total_found,
+                    max_results=max_results,
+                )
+
+            return _ok_action(
+                action,
+                finalize_bounded_list_data(
+                    {
+                        "container": resolved_container,
+                        "class": class_filter,
+                        "elements": [],
+                    },
+                    items_key="elements",
+                    items=[entry[2] for entry in selected],
+                    total_found=total_found,
+                    max_results=max_results,
+                ),
+            )
+
+        if action == "find_same_storey_elements":
+            anchor = params.get("anchor")
+            cls = params.get("class")
+            if not anchor:
+                return _err("Missing param: anchor", "missing_param")
+            if not isinstance(anchor, str):
+                return _err("Invalid param: anchor must be a string", "invalid")
+            if cls is not None and not isinstance(cls, str):
+                return _err("Invalid param: class must be a string", "invalid")
+            max_results_value = parse_legacy_max_results(action)
+            if isinstance(max_results_value, dict):
+                return _err(
+                    str(max_results_value["error"]),
+                    str(max_results_value["code"]),
+                )
+            max_results = max_results_value
+            class_filter = normalize_class(cls) if cls else None
+
+            resolved_anchor, err = resolve_graph_or_storey_node(anchor)
+            if err:
+                error_msg = err.get("error", "Unknown error")
+                if "Ambiguous" in str(error_msg):
+                    return _err(
+                        str(error_msg),
+                        "ambiguous",
+                        {"candidates": err.get("candidates", [])},
+                    )
+                if "Invalid" in str(error_msg):
+                    return _err(str(error_msg), "invalid")
+                return _err(str(error_msg), "not_found")
+            if resolved_anchor is None:
+                return _err(f"Anchor not found: {anchor}", "not_found")
+
+            storey_id, storey_method = resolve_storey_for_node(resolved_anchor)
+            if storey_id is None:
+                return _err(
+                    (
+                        "Could not resolve a containing storey for the anchor. "
+                        "This helper uses containment first and exact Level-label "
+                        "fallback only."
+                    ),
+                    "not_found",
+                )
+
+            selected: list[tuple[tuple[Any, ...], int, dict[str, Any]]] = []
+            total_found = 0
+            for candidate_id in non_container_descendants(storey_id):
+                if candidate_id == resolved_anchor:
+                    continue
+                if class_filter is not None:
+                    if str(G.nodes[candidate_id].get("class_", "")).lower() != (
+                        class_filter.lower()
+                    ):
+                        continue
+                item = compact_node(candidate_id)
+                item.update(
+                    {
+                        "same_storey": True,
+                        "storey_id": storey_id,
+                    }
+                )
+                total_found += 1
+                insert_bounded_sorted_item(
+                    selected,
+                    item=item,
+                    sort_key=item_label_id_sort_key(item),
+                    sequence=total_found,
+                    max_results=max_results,
+                )
+
+            data = finalize_bounded_list_data(
+                {
+                    "anchor": resolved_anchor,
+                    "storey_id": storey_id,
+                    "class": class_filter,
+                    "elements": [],
+                },
+                items_key="elements",
+                items=[entry[2] for entry in selected],
+                total_found=total_found,
+                max_results=max_results,
+            )
+            data["storey_resolution"] = storey_method
+            return _ok_action(action, data)
 
         if action == "get_adjacent_elements":
             element_id = params.get("element_id")
@@ -1507,43 +2052,61 @@ class NetworkXGraphBackend:
 
             selected: list[tuple[tuple[Any, ...], int, dict[str, Any]]] = []
             total_found = 0
-            for nbr, edge in topology_neighbors(resolved, {relation_value}):
-                current_relation = edge_relation(edge)
-                item = {
-                    "id": nbr,
-                    "global_id": node_global_id(nbr),
-                    "label": G.nodes[nbr].get("label"),
-                    "class_": G.nodes[nbr].get("class_"),
-                    "relation": current_relation,
-                    "vertical_gap": edge.get("vertical_gap"),
-                    "overlap_area_xy": edge.get("overlap_area_xy"),
-                    "intersection_volume": edge.get("intersection_volume"),
-                    "contact_area": edge.get("contact_area"),
-                    "source": edge_source(edge, current_relation),
-                }
-                total_found += 1
-                insert_bounded_sorted_item(
-                    selected,
-                    item=item,
-                    sort_key=topology_item_sort_key(item),
-                    sequence=total_found,
-                    max_results=max_results,
-                )
+            warnings: list[str] = []
+            if relation_value == "aligned_with":
+                aligned_items, alignment_warning = aligned_neighbors(resolved)
+                if alignment_warning:
+                    warnings.append(alignment_warning)
+                for item in aligned_items:
+                    total_found += 1
+                    insert_bounded_sorted_item(
+                        selected,
+                        item=item,
+                        sort_key=aligned_item_sort_key(item),
+                        sequence=total_found,
+                        max_results=max_results,
+                    )
+            else:
+                for nbr, edge in topology_neighbors(resolved, {relation_value}):
+                    current_relation = edge_relation(edge)
+                    item = {
+                        "id": nbr,
+                        "global_id": node_global_id(nbr),
+                        "label": G.nodes[nbr].get("label"),
+                        "class_": G.nodes[nbr].get("class_"),
+                        "relation": current_relation,
+                        "vertical_gap": edge.get("vertical_gap"),
+                        "overlap_area_xy": edge.get("overlap_area_xy"),
+                        "intersection_volume": edge.get("intersection_volume"),
+                        "contact_area": edge.get("contact_area"),
+                        "shared_boundary_elements": edge.get(
+                            "shared_boundary_elements"
+                        ),
+                        "source": edge_source(edge, current_relation),
+                    }
+                    total_found += 1
+                    insert_bounded_sorted_item(
+                        selected,
+                        item=item,
+                        sort_key=topology_item_sort_key(item),
+                        sequence=total_found,
+                        max_results=max_results,
+                    )
 
-            return _ok_action(
-                action,
-                finalize_bounded_list_data(
-                    {
-                        "element_id": resolved,
-                        "relation": relation_value,
-                        "neighbors": [],
-                    },
-                    items_key="neighbors",
-                    items=[entry[2] for entry in selected],
-                    total_found=total_found,
-                    max_results=max_results,
-                ),
+            data = finalize_bounded_list_data(
+                {
+                    "element_id": resolved,
+                    "relation": relation_value,
+                    "neighbors": [],
+                },
+                items_key="neighbors",
+                items=[entry[2] for entry in selected],
+                total_found=total_found,
+                max_results=max_results,
             )
+            if warnings:
+                data["warnings"] = warnings
+            return _ok_action(action, data)
 
         if action == "get_intersections_3d":
             element_id = params.get("element_id")

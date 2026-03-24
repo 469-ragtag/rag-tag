@@ -917,6 +917,74 @@ def _add_explicit_relationships(
         _add_ifc_edge_once(node_id, cls_nid, "classified_as")
 
 
+def _add_shared_space_boundary_edges(
+    G: nx.DiGraph | nx.MultiDiGraph,
+) -> int:
+    """Connect spaces that share one or more explicit IFC boundary elements."""
+
+    def _iter_edge_attrs_between(u: str, v: str):
+        edge_data = G.get_edge_data(u, v)
+        if edge_data is None:
+            return
+        if G.is_multigraph():
+            for attrs in edge_data.values():
+                if isinstance(attrs, dict):
+                    yield attrs
+            return
+        if isinstance(edge_data, dict):
+            yield edge_data
+
+    def _has_relation(u: str, v: str, relation: str) -> bool:
+        for attrs in _iter_edge_attrs_between(u, v) or ():
+            if str(attrs.get("relation", "")).strip().lower() == relation:
+                return True
+        return False
+
+    boundary_to_spaces: dict[str, set[str]] = defaultdict(set)
+    for space_id, space_data in G.nodes(data=True):
+        if _normalize_ifc_class_name(space_data.get("class_")) != "IfcSpace":
+            continue
+        for boundary_id in G.successors(space_id):
+            if boundary_id not in G or boundary_id == space_id:
+                continue
+            if _normalize_ifc_class_name(G.nodes[boundary_id].get("class_")) == (
+                "IfcOpeningElement"
+            ):
+                continue
+            has_space_boundary = any(
+                str(attrs.get("relation", "")).strip().lower() == "space_bounded_by"
+                and str(attrs.get("source", "")).strip().lower() == "ifc"
+                for attrs in _iter_edge_attrs_between(space_id, boundary_id) or ()
+            )
+            if has_space_boundary:
+                boundary_to_spaces[boundary_id].add(space_id)
+
+    pair_to_boundaries: dict[tuple[str, str], set[str]] = defaultdict(set)
+    for boundary_id, space_ids in boundary_to_spaces.items():
+        ordered_spaces = sorted(space_ids)
+        for index, source_id in enumerate(ordered_spaces):
+            for target_id in ordered_spaces[index + 1 :]:
+                pair_to_boundaries[(source_id, target_id)].add(boundary_id)
+
+    edges_added = 0
+    for (source_id, target_id), shared_boundary_elements in sorted(
+        pair_to_boundaries.items()
+    ):
+        edge_attrs = {
+            "relation": "shares_boundary_with",
+            "source": "ifc",
+            "derived_from": "space_bounded_by",
+            "shared_boundary_elements": sorted(shared_boundary_elements),
+        }
+        if not _has_relation(source_id, target_id, "shares_boundary_with"):
+            G.add_edge(source_id, target_id, **edge_attrs)
+            edges_added += 1
+        if not _has_relation(target_id, source_id, "shares_boundary_with"):
+            G.add_edge(target_id, source_id, **edge_attrs)
+            edges_added += 1
+    return edges_added
+
+
 # --- graph construction ---
 
 
@@ -1172,6 +1240,7 @@ def build_graph_from_jsonl(
         "hierarchy": ["aggregates", "contains", "contained_in"],
         "spatial": ["adjacent_to", "connected_to"],
         "topology": [
+            "aligned_with",
             "intersects_bbox",
             "overlaps_xy",
             "above",
@@ -1180,6 +1249,7 @@ def build_graph_from_jsonl(
             "touches_surface",
             "space_bounded_by",
             "bounds_space",
+            "shares_boundary_with",
             "path_connected_to",
         ],
         # explicit IFC relationships extracted from the Relationships block (Batch 0+)
@@ -1264,6 +1334,11 @@ def build_graph_from_jsonl(
                         properties=_flat_properties(rec),
                         geometry=centroid,
                         bbox=bbox,
+                        footprint_bbox_2d=(
+                            (bbox[0][0], bbox[0][1], bbox[1][0], bbox[1][1])
+                            if bbox
+                            else None
+                        ),
                         footprint_polygon=footprint_poly,
                         obb=obb,
                         local_placement_matrix=placement,
@@ -1279,6 +1354,11 @@ def build_graph_from_jsonl(
                         geometry=centroid,
                         bbox=bbox,
                         mesh=mesh,
+                        footprint_bbox_2d=(
+                            (bbox[0][0], bbox[0][1], bbox[1][0], bbox[1][1])
+                            if bbox
+                            else None
+                        ),
                         footprint_polygon=footprint_poly,
                         obb=obb,
                         local_placement_matrix=placement,
@@ -1298,6 +1378,11 @@ def build_graph_from_jsonl(
                         geometry=centroid,
                         bbox=bbox,
                         mesh=mesh,
+                        footprint_bbox_2d=(
+                            (bbox[0][0], bbox[0][1], bbox[1][0], bbox[1][1])
+                            if bbox
+                            else None
+                        ),
                         footprint_polygon=footprint_poly,
                         obb=obb,
                         local_placement_matrix=placement,
@@ -1370,6 +1455,12 @@ def build_graph_from_jsonl(
     explicit_edge_count = G.number_of_edges() - _before
     if explicit_edge_count:
         LOG.info("Added %d explicit IFC relationship edge(s)", explicit_edge_count)
+    shared_boundary_edge_count = _add_shared_space_boundary_edges(G)
+    if shared_boundary_edge_count:
+        LOG.info(
+            "Added %d shared space boundary edge(s)",
+            shared_boundary_edge_count,
+        )
 
     G.graph["datasets"] = sorted(set(dataset_keys))
 
@@ -1786,11 +1877,13 @@ def plot_interactive_graph(G: nx.DiGraph | nx.MultiDiGraph, out_html: Path) -> N
         "connected_to": "#ef4444",
         "adjacent_to": "#059669",
         "intersects_bbox": "#f59e0b",
+        "aligned_with": "#0f766e",
         "overlaps_xy": "#0ea5e9",
         "intersects_3d": "#b91c1c",
         "touches_surface": "#9333ea",
         "above": "#7c3aed",
         "below": "#9333ea",
+        "shares_boundary_with": "#be185d",
         "hosts": "#b91c1c",
         "hosted_by": "#dc2626",
         "ifc_connected_to": "#0f766e",
@@ -1809,11 +1902,13 @@ def plot_interactive_graph(G: nx.DiGraph | nx.MultiDiGraph, out_html: Path) -> N
         "connected_to": "bbox intersects or touches",
         "adjacent_to": "spatially near within threshold",
         "intersects_bbox": "3D bbox overlap",
+        "aligned_with": "orientation-aligned in plan",
         "overlaps_xy": "2D footprint overlap",
         "intersects_3d": "mesh-informed 3D intersection",
         "touches_surface": "mesh-informed surface contact",
         "above": "vertical ordering above",
         "below": "vertical ordering below",
+        "shares_boundary_with": "spaces share explicit boundary elements",
         "hosts": "explicit IFC host relationship",
         "hosted_by": "explicit IFC hosted-by relationship",
         "ifc_connected_to": "explicit IFC connectivity",

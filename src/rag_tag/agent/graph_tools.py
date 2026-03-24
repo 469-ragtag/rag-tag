@@ -524,6 +524,47 @@ def register_graph_tools(agent: Any) -> None:
         )
 
     @agent.tool
+    def find_elements_inside_footprint(
+        ctx: RunContext[GraphRuntime],
+        container: str,
+        class_: str | None = None,
+        max_results: int = _LEGACY_SCAN_MAX_RESULTS,
+    ) -> dict[str, Any]:
+        """Find bounded elements whose plan point falls inside a container footprint.
+
+        Use this for footprint/plan-area questions such as:
+        - elements inside a room footprint
+        - objects within a storey/building plan area
+        """
+        params: dict[str, Any] = {
+            "container": container,
+            "max_results": max_results,
+        }
+        if class_ is not None:
+            params["class"] = class_
+        return query_ifc_graph(ctx.deps, "find_elements_inside_footprint", params)
+
+    @agent.tool
+    def find_same_storey_elements(
+        ctx: RunContext[GraphRuntime],
+        anchor: str,
+        class_: str | None = None,
+        max_results: int = _LEGACY_SCAN_MAX_RESULTS,
+    ) -> dict[str, Any]:
+        """Find bounded non-container elements on the same resolved storey.
+
+        Prefer this over broad topology or distance searches when the user asks
+        for elements on the same floor/storey as an anchor object or room.
+        """
+        params: dict[str, Any] = {
+            "anchor": anchor,
+            "max_results": max_results,
+        }
+        if class_ is not None:
+            params["class"] = class_
+        return query_ifc_graph(ctx.deps, "find_same_storey_elements", params)
+
+    @agent.tool
     def find_container_elements_excluding(
         ctx: RunContext[GraphRuntime],
         container_id: str,
@@ -578,11 +619,12 @@ def register_graph_tools(agent: Any) -> None:
     ) -> dict[str, Any]:
         """Get topology neighbors for one relation.
 
-        relation must be one of: above, below, overlaps_xy, intersects_bbox,
-        intersects_3d, touches_surface, space_bounded_by, bounds_space,
-        path_connected_to. Returns a bounded candidate list. Depending on the
-        graph-build overlap policy, `overlaps_xy` may legitimately return no
-        neighbors even when vertical `above` / `below` edges exist.
+        relation must be one of: above, below, aligned_with, overlaps_xy,
+        intersects_bbox, intersects_3d, touches_surface, space_bounded_by,
+        bounds_space, shares_boundary_with, path_connected_to. Returns a
+        bounded candidate list. Depending on the graph-build overlap policy,
+        `overlaps_xy` may legitimately return no neighbors even when vertical
+        `above` / `below` edges exist.
         """
         return query_ifc_graph(
             ctx.deps,

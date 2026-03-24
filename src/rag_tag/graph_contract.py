@@ -20,6 +20,8 @@ from typing import Any
 CANONICAL_ACTIONS: tuple[str, ...] = (
     "get_elements_in_storey",
     "find_elements_by_class",
+    "find_elements_inside_footprint",
+    "find_same_storey_elements",
     "get_adjacent_elements",
     "get_topology_neighbors",
     "get_intersections_3d",
@@ -70,12 +72,14 @@ SPATIAL_RELATIONS: tuple[str, ...] = (
 TOPOLOGY_RELATIONS: tuple[str, ...] = (
     "above",
     "below",
+    "aligned_with",
     "overlaps_xy",
     "intersects_bbox",
     "intersects_3d",
     "touches_surface",
     "space_bounded_by",
     "bounds_space",
+    "shares_boundary_with",
     "path_connected_to",
 )
 
@@ -137,6 +141,21 @@ ACTION_DATA_DEFAULTS: dict[str, dict[str, Any]] = {
         **_BOUNDED_LIST_METADATA_DEFAULTS,
     },
     "find_elements_by_class": {
+        "class": None,
+        "elements": [],
+        "evidence": [],
+        **_BOUNDED_LIST_METADATA_DEFAULTS,
+    },
+    "find_elements_inside_footprint": {
+        "container": None,
+        "class": None,
+        "elements": [],
+        "evidence": [],
+        **_BOUNDED_LIST_METADATA_DEFAULTS,
+    },
+    "find_same_storey_elements": {
+        "anchor": None,
+        "storey_id": None,
         "class": None,
         "elements": [],
         "evidence": [],
@@ -258,6 +277,8 @@ ACTION_REQUIRED_DATA_FIELDS: dict[str, tuple[str, ...]] = {
 ACTION_EVIDENCE_FIELDS: dict[str, tuple[str, ...]] = {
     "get_elements_in_storey": ("elements",),
     "find_elements_by_class": ("elements",),
+    "find_elements_inside_footprint": ("elements",),
+    "find_same_storey_elements": ("elements",),
     "get_adjacent_elements": ("adjacent",),
     "get_topology_neighbors": ("neighbors",),
     "get_intersections_3d": ("intersections_3d",),

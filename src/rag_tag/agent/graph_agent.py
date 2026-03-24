@@ -134,8 +134,9 @@ Tool node payloads use:
 
 - Hierarchy: `aggregates`, `contains`, `contained_in`
 - Spatial: `adjacent_to`, `connected_to`
-- Topology: `above`, `below`, `overlaps_xy`, `intersects_bbox`,
-  `intersects_3d`, `touches_surface`, `space_bounded_by`, `bounds_space`,
+- Topology: `above`, `below`, `aligned_with`, `overlaps_xy`,
+  `intersects_bbox`, `intersects_3d`, `touches_surface`,
+  `space_bounded_by`, `bounds_space`, `shares_boundary_with`,
   `path_connected_to`
 - Explicit IFC: `hosts`, `hosted_by`, `ifc_connected_to`, `typed_by`,
   `belongs_to_system`, `in_zone`, `classified_as`
@@ -148,6 +149,8 @@ Tool node payloads use:
 - hierarchy edges may have `source=null`
 - `space_bounded_by`, `bounds_space`, and `path_connected_to` are topology-style
   relations but may still surface `source="ifc"`
+- `shares_boundary_with` is a topology-style relation derived from explicit IFC
+  space-boundary evidence and may also surface `source="ifc"`
 
 ### Important caveats
 
@@ -232,6 +235,17 @@ Tool node payloads use:
 - `get_elements_in_storey(storey, max_results?)`
   - storey-only helper; use for `IfcBuildingStorey`, not for room names
 
+- `find_elements_inside_footprint(container, class_?, max_results?)`
+  - preferred helper for "inside footprint", "within plan area", or "inside
+    this room/storey/building outline" questions
+  - precision-first: uses footprint geometry and centroid-style plan points, not
+    loose overlap heuristics
+
+- `find_same_storey_elements(anchor, class_?, max_results?)`
+  - preferred helper for "same floor/storey as X" questions
+  - use this before broader spatial or topology fan-out when floor scoping is
+    the main constraint
+
 - `find_container_elements_excluding(container_id, exclude_container_ids?, depth?)`
   - best for set-difference questions such as "elements in the building but not
     on the ground floor"
@@ -249,8 +263,8 @@ Tool node payloads use:
 
 - `get_topology_neighbors(element_id, relation, max_results?)`
   - use when the desired relation is known exactly, such as `above`, `below`,
-    `intersects_bbox`, `touches_surface`, `space_bounded_by`, or
-    `path_connected_to`
+    `aligned_with`, `intersects_bbox`, `touches_surface`,
+    `shares_boundary_with`, `space_bounded_by`, or `path_connected_to`
   - `overlaps_xy` may be absent on dense-model graph builds even when
     `above`/`below` remain available; prefer the vertical helper tools for
     above/below questions
@@ -373,6 +387,8 @@ Examples: "What is adjacent to the kitchen?", "What doors are in the entry hall?
 1. Use `get_elements_in_storey` when the anchor is a storey.
 2. If you already have an element and need its floor, use
    `traverse(..., relation="contained_in")` upward.
+3. For "same storey/floor as this object" questions, prefer
+   `find_same_storey_elements` before broader spatial search.
 
 ### B2. Generic building/site/container questions
 
@@ -437,6 +453,16 @@ Examples: "What equipment serves Room 101?", "Which unit supplies the kitchen?"
 3. Keep `intersects_bbox` and `intersects_3d` distinct in your explanation.
 4. Treat `intersects_bbox` as a noisy fallback, not a first-choice relation
    for containment-style questions about being inside or outside a building.
+
+### G2. Footprint/alignment/boundary questions
+
+1. For "inside footprint", "within plan area", or "inside this outline"
+   questions, prefer `find_elements_inside_footprint`.
+2. For "aligned with", "parallel to", or plan-axis alignment questions, use
+   `get_topology_neighbors(..., relation="aligned_with")`.
+3. For room-neighbour questions that imply a shared wall/boundary, prefer
+   `get_topology_neighbors(..., relation="shares_boundary_with")` before
+   heuristic adjacency.
 
 ### H. Exact property questions
 
