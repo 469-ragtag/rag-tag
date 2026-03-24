@@ -6,6 +6,17 @@ from .dataset import (
     BenchmarkRoute,
     load_benchmark_dataset,
 )
+from .evaluators import (
+    DEFAULT_ANSWER_JUDGE_RUBRIC,
+    NoExecutionError,
+    RouteMatchesExpected,
+    build_default_answer_judge,
+)
+from .runner import (
+    BenchmarkExperimentConfig,
+    build_eval_dataset,
+    evaluate_benchmark_dataset,
+)
 from .runtime import temporary_runtime_overrides
 from .task_runner import (
     BenchmarkTaskBundle,
@@ -17,10 +28,17 @@ from .task_runner import (
 __all__ = [
     "BenchmarkCase",
     "BenchmarkDataset",
+    "BenchmarkExperimentConfig",
     "BenchmarkRoute",
     "BenchmarkTaskBundle",
     "BenchmarkTaskResult",
     "BenchmarkUsage",
+    "DEFAULT_ANSWER_JUDGE_RUBRIC",
+    "NoExecutionError",
+    "RouteMatchesExpected",
+    "build_default_answer_judge",
+    "build_eval_dataset",
+    "evaluate_benchmark_dataset",
     "load_benchmark_dataset",
     "run_benchmark_case",
     "temporary_runtime_overrides",
