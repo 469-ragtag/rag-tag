@@ -9,7 +9,10 @@ import yaml
 
 from rag_tag.config import (
     CONFIG_PATH_ENV_VAR,
+    DEFAULT_DERIVED_EDGE_PRUNE_CLASSES,
     AppConfig,
+    DerivedEdgePruningConfig,
+    GraphBuildConfig,
     GraphOrchestrationConfig,
     discover_project_config,
     load_project_config,
@@ -95,6 +98,11 @@ def test_load_project_config_parses_yaml_structure(tmp_path: Path) -> None:
         "  reserved_orchestration_steps: 2\n"
         "  specialist_step_cap: 5\n"
         "  fallback_to_graph_agent: false\n"
+        "graph_build:\n"
+        "  derived_edge_pruning:\n"
+        "    enabled: false\n"
+        "    exclude_classes:\n"
+        "      - IfcFastener\n"
         "providers:\n"
         "  databricks:\n"
         "    type: databricks\n"
@@ -128,6 +136,12 @@ def test_load_project_config_parses_yaml_structure(tmp_path: Path) -> None:
         reserved_orchestration_steps=2,
         specialist_step_cap=5,
         fallback_to_graph_agent=False,
+    )
+    assert loaded.config.graph_build == GraphBuildConfig(
+        derived_edge_pruning=DerivedEdgePruningConfig(
+            enabled=False,
+            exclude_classes=["IfcFastener"],
+        )
     )
     assert loaded.config.defaults.graph_max_steps == 12
     assert loaded.config.defaults.graph_output_retries == 4
@@ -223,6 +237,7 @@ def test_app_config_defaults_graph_orchestration_when_omitted() -> None:
 
     assert config.defaults.graph_orchestrator is None
     assert config.graph_orchestration == GraphOrchestrationConfig()
+    assert config.graph_build == GraphBuildConfig()
 
 
 def test_app_config_accepts_custom_graph_orchestration_values() -> None:
@@ -246,6 +261,37 @@ def test_app_config_accepts_custom_graph_orchestration_values() -> None:
         reserved_orchestration_steps=4,
         specialist_step_cap=7,
         fallback_to_graph_agent=False,
+    )
+
+
+def test_app_config_defaults_graph_build_pruning() -> None:
+    config = AppConfig.model_validate({})
+
+    assert config.graph_build == GraphBuildConfig(
+        derived_edge_pruning=DerivedEdgePruningConfig(
+            enabled=True,
+            exclude_classes=list(DEFAULT_DERIVED_EDGE_PRUNE_CLASSES),
+        )
+    )
+
+
+def test_app_config_accepts_custom_graph_build_pruning() -> None:
+    config = AppConfig.model_validate(
+        {
+            "graph_build": {
+                "derived_edge_pruning": {
+                    "enabled": False,
+                    "exclude_classes": ["IfcFastener", "IfcReinforcingBar"],
+                }
+            }
+        }
+    )
+
+    assert config.graph_build == GraphBuildConfig(
+        derived_edge_pruning=DerivedEdgePruningConfig(
+            enabled=False,
+            exclude_classes=["IfcFastener", "IfcReinforcingBar"],
+        )
     )
 
 

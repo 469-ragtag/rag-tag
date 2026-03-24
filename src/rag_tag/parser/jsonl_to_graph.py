@@ -39,9 +39,11 @@ import numpy as np
 import plotly.graph_objects as go
 import plotly.io as pio
 
+from rag_tag.config import load_project_config
 from rag_tag.paths import find_project_root
 
 LOG = logging.getLogger(__name__)
+_MODULE_DIR = Path(__file__).resolve().parent
 
 try:
     import ifcopenshell
@@ -926,6 +928,93 @@ def _add_containment_edge(
     G.add_edge(child_id, parent_id, relation="contained_in")
 
 
+@dataclass(frozen=True)
+class DerivedEdgePruningPolicy:
+    """Resolved policy for pruning selected classes from derived edge phases."""
+
+    enabled: bool
+    exclude_classes: frozenset[str]
+
+
+def _normalize_ifc_class_name(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if not text.lower().startswith("ifc"):
+        text = f"Ifc{text}"
+    return text
+
+
+def _normalize_excluded_classes(values: object) -> frozenset[str]:
+    if values is None:
+        return frozenset()
+    if isinstance(values, str):
+        values = [values]
+    normalized = {
+        class_name
+        for value in values
+        if (class_name := _normalize_ifc_class_name(value)) is not None
+    }
+    return frozenset(sorted(normalized))
+
+
+def _resolve_derived_edge_pruning_policy(
+    *,
+    enabled: bool | None = None,
+    exclude_classes: object = None,
+) -> DerivedEdgePruningPolicy:
+    configured = load_project_config(
+        _MODULE_DIR
+    ).config.graph_build.derived_edge_pruning
+    resolved_enabled = configured.enabled if enabled is None else enabled
+    configured_classes = (
+        configured.exclude_classes if exclude_classes is None else exclude_classes
+    )
+    resolved_classes = _normalize_excluded_classes(configured_classes)
+    if not resolved_enabled:
+        resolved_classes = frozenset()
+    return DerivedEdgePruningPolicy(
+        enabled=resolved_enabled,
+        exclude_classes=resolved_classes,
+    )
+
+
+def _record_derived_edge_phase_stats(
+    G: nx.DiGraph | nx.MultiDiGraph,
+    phase: str,
+    *,
+    excluded_classes: frozenset[str],
+    eligible_nodes: int,
+    skipped_by_class: dict[str, int],
+    edges_added: int,
+    threshold: float | None = None,
+) -> None:
+    graph_build = G.graph.setdefault("graph_build", {})
+    pruning = graph_build.setdefault("derived_edge_pruning", {})
+    phases = pruning.setdefault("phases", {})
+    stats: dict[str, object] = {
+        "excluded_classes": sorted(excluded_classes),
+        "eligible_nodes": eligible_nodes,
+        "skipped_nodes": sum(skipped_by_class.values()),
+        "skipped_by_class": dict(sorted(skipped_by_class.items())),
+        "edges_added": edges_added,
+    }
+    if threshold is not None:
+        stats["threshold"] = threshold
+    phases[phase] = stats
+
+    LOG.info(
+        "%s: eligible=%d skipped=%d edges_added=%d excluded=%s",
+        phase,
+        eligible_nodes,
+        sum(skipped_by_class.values()),
+        edges_added,
+        ", ".join(sorted(excluded_classes)) if excluded_classes else "<none>",
+    )
+
+
 def build_graph_from_jsonl(
     jsonl_paths: list[Path], payload_mode: str = "full"
 ) -> nx.MultiDiGraph:
@@ -1148,7 +1237,10 @@ def build_graph_from_jsonl(
 
 
 def add_spatial_adjacency(
-    G: nx.DiGraph | nx.MultiDiGraph, threshold: float | None = None
+    G: nx.DiGraph | nx.MultiDiGraph,
+    threshold: float | None = None,
+    *,
+    exclude_classes: object = None,
 ) -> float:
     element_nodes: list[str] = []
     positions: list[tuple] = []
@@ -1157,11 +1249,18 @@ def add_spatial_adjacency(
         tuple[list[tuple[float, float, float]], list[tuple[int, int, int]]] | None
     ] = []
     element_refs: list[tuple[str, str, str] | None] = []
+    excluded_classes = _normalize_excluded_classes(exclude_classes)
+    skipped_by_class: defaultdict[str, int] = defaultdict(int)
+    edges_before = G.number_of_edges()
 
     for n, d in G.nodes(data=True):
         if d.get("class_") in {"IfcBuilding", "IfcProject", "IfcBuildingStorey"}:
             continue
         if not n.startswith("Element::"):
+            continue
+        class_name = _normalize_ifc_class_name(d.get("class_"))
+        if class_name in excluded_classes:
+            skipped_by_class[class_name] += 1
             continue
         centroid = d.get("geometry")
         bbox = d.get("bbox")
@@ -1187,6 +1286,15 @@ def add_spatial_adjacency(
 
     pos = _normalize_positions(positions)
     if pos is None:
+        _record_derived_edge_phase_stats(
+            G,
+            "spatial_adjacency",
+            excluded_classes=excluded_classes,
+            eligible_nodes=len(element_nodes),
+            skipped_by_class=dict(skipped_by_class),
+            edges_added=G.number_of_edges() - edges_before,
+            threshold=threshold,
+        )
         return threshold
 
     candidate_pairs = _candidate_pairs_kdtree(pos, float(threshold))
@@ -1299,10 +1407,21 @@ def add_spatial_adjacency(
                 **edge_attrs,
             )
 
+    _record_derived_edge_phase_stats(
+        G,
+        "spatial_adjacency",
+        excluded_classes=excluded_classes,
+        eligible_nodes=len(element_nodes),
+        skipped_by_class=dict(skipped_by_class),
+        edges_added=G.number_of_edges() - edges_before,
+        threshold=threshold,
+    )
     return threshold
 
 
-def add_topology_facts(G: nx.DiGraph | nx.MultiDiGraph) -> None:
+def add_topology_facts(
+    G: nx.DiGraph | nx.MultiDiGraph, *, exclude_classes: object = None
+) -> None:
     def _add_topology_edge(u: str, v: str, **attrs: object) -> None:
         """Add topology edge with explicit topology source semantics."""
         G.add_edge(u, v, source="topology", **attrs)
@@ -1311,9 +1430,16 @@ def add_topology_facts(G: nx.DiGraph | nx.MultiDiGraph) -> None:
     element_bboxes: list[tuple] = []
     element_refs: list[tuple[str, str, str]] = []
     element_footprints: list[list[tuple[float, float]] | None] = []
+    excluded_classes = _normalize_excluded_classes(exclude_classes)
+    skipped_by_class: defaultdict[str, int] = defaultdict(int)
+    edges_before = G.number_of_edges()
 
     for n, d in G.nodes(data=True):
         if not str(n).startswith("Element::"):
+            continue
+        class_name = _normalize_ifc_class_name(d.get("class_"))
+        if class_name in excluded_classes:
+            skipped_by_class[class_name] += 1
             continue
         bbox = d.get("bbox")
         if bbox is None:
@@ -1425,6 +1551,15 @@ def add_topology_facts(G: nx.DiGraph | nx.MultiDiGraph) -> None:
                 gap = b_min_z - a_max_z
                 _add_topology_edge(b, a, relation="above", vertical_gap=gap)
                 _add_topology_edge(a, b, relation="below", vertical_gap=gap)
+
+    _record_derived_edge_phase_stats(
+        G,
+        "topology",
+        excluded_classes=excluded_classes,
+        eligible_nodes=len(element_nodes),
+        skipped_by_class=dict(skipped_by_class),
+        edges_added=G.number_of_edges() - edges_before,
+    )
 
 
 def plot_interactive_graph(G: nx.DiGraph | nx.MultiDiGraph, out_html: Path) -> None:
@@ -2224,6 +2359,9 @@ def build_graph(
     jsonl_paths: list[Path] | None = None,
     dataset: str | None = None,
     payload_mode: str | None = None,
+    *,
+    derived_edge_pruning_enabled: bool | None = None,
+    derived_edge_prune_classes: object = None,
 ) -> nx.MultiDiGraph:
     # auto-detect jsonl files if no paths given
     # called with no args from query_service
@@ -2253,10 +2391,18 @@ def build_graph(
         if payload_mode is not None
         else os.environ.get("GRAPH_PAYLOAD_MODE", "full")
     )
+    pruning_policy = _resolve_derived_edge_pruning_policy(
+        enabled=derived_edge_pruning_enabled,
+        exclude_classes=derived_edge_prune_classes,
+    )
 
     G = build_graph_from_jsonl(jsonl_paths, payload_mode=_mode)
-    add_spatial_adjacency(G)
-    add_topology_facts(G)
+    G.graph.setdefault("graph_build", {})["derived_edge_pruning"] = {
+        "enabled": pruning_policy.enabled,
+        "exclude_classes": sorted(pruning_policy.exclude_classes),
+    }
+    add_spatial_adjacency(G, exclude_classes=pruning_policy.exclude_classes)
+    add_topology_facts(G, exclude_classes=pruning_policy.exclude_classes)
     return G
 
 

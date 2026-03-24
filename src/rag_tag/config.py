@@ -28,6 +28,7 @@ ROUTER_PROFILE_ENV_VAR = "ROUTER_PROFILE"
 AGENT_PROFILE_ENV_VAR = "AGENT_PROFILE"
 DEFAULT_GRAPH_MAX_STEPS = 20
 DEFAULT_GRAPH_OUTPUT_RETRIES = 5
+DEFAULT_DERIVED_EDGE_PRUNE_CLASSES = ("IfcMember", "IfcPlate")
 
 
 class ProviderConfig(BaseModel):
@@ -91,6 +92,27 @@ class GraphOrchestrationConfig(BaseModel):
     fallback_to_graph_agent: bool = True
 
 
+class DerivedEdgePruningConfig(BaseModel):
+    """Controls pruning of high-fanout derived graph edges during graph build."""
+
+    model_config = ConfigDict(extra="allow")
+
+    enabled: bool = True
+    exclude_classes: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_DERIVED_EDGE_PRUNE_CLASSES)
+    )
+
+
+class GraphBuildConfig(BaseModel):
+    """Graph build defaults for parser-time edge generation."""
+
+    model_config = ConfigDict(extra="allow")
+
+    derived_edge_pruning: DerivedEdgePruningConfig = Field(
+        default_factory=DerivedEdgePruningConfig
+    )
+
+
 class AppConfig(BaseModel):
     """Top-level checked-in application configuration."""
 
@@ -100,6 +122,7 @@ class AppConfig(BaseModel):
     graph_orchestration: GraphOrchestrationConfig = Field(
         default_factory=GraphOrchestrationConfig
     )
+    graph_build: GraphBuildConfig = Field(default_factory=GraphBuildConfig)
     providers: dict[str, ProviderConfig] = Field(default_factory=dict)
     profiles: dict[str, ProfileConfig] = Field(default_factory=dict)
     experiments: dict[str, ExperimentConfig] = Field(default_factory=dict)
