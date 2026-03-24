@@ -44,6 +44,11 @@ class BenchmarkExperimentConfig:
     debug_llm_io: bool = False
 
 
+def _supports_state_reuse(experiment: BenchmarkExperimentConfig) -> bool:
+    max_concurrency = experiment.max_concurrency
+    return max_concurrency in (None, 1)
+
+
 def build_eval_dataset(
     benchmark_dataset: BenchmarkDataset,
     *,
@@ -84,7 +89,8 @@ def evaluate_benchmark_dataset(
         include_answer_judge=experiment.include_answer_judge,
     )
 
-    state: dict[str, object | None] = {"runtime": None, "agent": None}
+    state: dict[str, object | None] | None
+    state = {"runtime": None, "agent": None} if _supports_state_reuse(experiment) else None
     try:
         report = dataset.evaluate_sync(
             lambda case: _run_case_with_state(case, experiment=experiment, state=state),
@@ -96,7 +102,8 @@ def evaluate_benchmark_dataset(
             repeat=experiment.repeat,
         )
     finally:
-        close_runtime(state["runtime"])
+        if state is not None:
+            close_runtime(state["runtime"])
 
     return report
 
@@ -105,13 +112,13 @@ def _run_case_with_state(
     case: BenchmarkCase,
     *,
     experiment: BenchmarkExperimentConfig,
-    state: dict[str, object | None],
+    state: dict[str, object | None] | None,
 ) -> BenchmarkTaskResult:
     bundle = run_benchmark_case(
         case,
         db_paths=experiment.db_paths,
-        runtime=state["runtime"],
-        agent=state["agent"],
+        runtime=state["runtime"] if state is not None else None,
+        agent=state["agent"] if state is not None else None,
         config_path=experiment.config_path,
         router_profile=experiment.router_profile,
         agent_profile=experiment.agent_profile,
@@ -123,8 +130,11 @@ def _run_case_with_state(
         graph_max_steps=experiment.graph_max_steps,
         debug_llm_io=experiment.debug_llm_io,
     )
-    state["runtime"] = bundle.runtime
-    state["agent"] = bundle.agent
+    if state is not None:
+        state["runtime"] = bundle.runtime
+        state["agent"] = bundle.agent
+    else:
+        close_runtime(bundle.runtime)
     return bundle.result
 
 
@@ -168,4 +178,6 @@ def _build_experiment_metadata(
         else None,
         "db_paths": [str(path) for path in experiment.db_paths],
         "repeat": experiment.repeat,
+        "max_concurrency": experiment.max_concurrency,
+        "state_reuse_enabled": _supports_state_reuse(experiment),
     }

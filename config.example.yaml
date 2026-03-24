@@ -135,3 +135,22 @@ experiments:
     router_profile: router-gemini-flash
     agent_profile: cohere-command-a
     questions_file: evals/benchmark_cases_v1.yaml
+    router_profiles:
+      - router-gemini-flash
+      - dbx-gpt-oss-20b
+      - dbx-gemma-3-12b
+    agent_profiles:
+      - cohere-command-a
+      - dbx-claude-sonnet-4-6
+      - dbx-gpt-oss-20b
+      - dbx-llama-4-maverick
+      - dbx-gemma-3-12b
+    prompt_strategies:
+      - baseline
+      - strict-grounded
+      - decompose
+    repeat: 1
+    max_concurrency: 1
+    tags:
+      - sql
+      - graph

@@ -20,6 +20,17 @@ Additional rules:
   in the tool evidence.
 """.strip()
 
+_DECOMPOSE_APPENDIX = """
+Benchmark strategy: decompose
+
+Additional rules:
+- Break multi-hop questions into smaller grounded subproblems when useful.
+- Verify each intermediate step with tool evidence before combining results.
+- Prefer an explicit step-by-step evidence chain over a single broad inference.
+- If decomposition does not improve confidence, answer from the strongest
+  grounded evidence available and state any uncertainty plainly.
+""".strip()
+
 
 @dataclass(frozen=True)
 class BenchmarkStrategySettings:
@@ -47,6 +58,7 @@ def resolve_benchmark_strategy(
         return BenchmarkStrategySettings(
             name="decompose",
             graph_orchestrator_override="langgraph",
+            graph_prompt_append=_DECOMPOSE_APPENDIX,
         )
 
     raise ValueError(

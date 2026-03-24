@@ -24,6 +24,7 @@ def test_resolve_benchmark_strategy_returns_expected_settings() -> None:
     assert baseline.graph_prompt_append is None
     assert strict_grounded.graph_prompt_append is not None
     assert decompose.graph_orchestrator_override == "langgraph"
+    assert decompose.graph_prompt_append is not None
 
 
 def test_resolve_benchmark_strategy_rejects_unknown_values() -> None:

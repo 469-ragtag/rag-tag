@@ -263,3 +263,143 @@ def test_run_benchmark_case_handles_missing_usage_and_unexpected_payload(
     assert bundle.result.had_error is True
     assert bundle.result.error is not None
     assert bundle.result.usage == BenchmarkUsage()
+
+
+def test_run_benchmark_case_normalizes_blank_warning_and_invalid_data(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = BenchmarkCase(
+        id="q004",
+        question="Is the answer grounded?",
+        expected_route="graph",
+    )
+
+    def fake_execute_query(
+        question: str,
+        db_paths: list[Path],
+        runtime: object | None,
+        agent: object | None,
+        *,
+        debug_llm_io: bool,
+        graph_dataset: str | None,
+        context_db: Path | None,
+        payload_mode: str | None,
+        strict_sql: bool,
+        graph_max_steps: int | None,
+    ) -> dict[str, object]:
+        del (
+            question,
+            db_paths,
+            runtime,
+            agent,
+            debug_llm_io,
+            graph_dataset,
+            context_db,
+            payload_mode,
+            strict_sql,
+            graph_max_steps,
+        )
+        return {
+            "result": {
+                "route": "graph",
+                "decision": "grounded lookup",
+                "answer": "Partial evidence only.",
+                "warning": "   ",
+                "error": None,
+                "data": "not-structured",
+            }
+        }
+
+    monkeypatch.setattr("rag_tag.evals.task_runner.execute_query", fake_execute_query)
+
+    bundle = run_benchmark_case(
+        case,
+        db_paths=[Path("/tmp/model.db")],
+        runtime=None,
+        agent=None,
+    )
+
+    assert bundle.result.warning is None
+    assert bundle.result.had_warning is False
+    assert bundle.result.data is None
+    assert bundle.result.has_data is False
+
+
+def test_run_benchmark_case_records_resolved_profile_names_from_config_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = BenchmarkCase(
+        id="q005",
+        question="How many doors are there?",
+        expected_route="sql",
+    )
+
+    class LoadedConfig:
+        def __init__(self) -> None:
+            self.config = type(
+                "Config",
+                (),
+                {
+                    "defaults": type(
+                        "Defaults",
+                        (),
+                        {
+                            "router_profile": "router-from-config",
+                            "agent_profile": "agent-from-config",
+                        },
+                    )(),
+                    "profiles": {},
+                },
+            )()
+
+    def fake_execute_query(
+        question: str,
+        db_paths: list[Path],
+        runtime: object | None,
+        agent: object | None,
+        *,
+        debug_llm_io: bool,
+        graph_dataset: str | None,
+        context_db: Path | None,
+        payload_mode: str | None,
+        strict_sql: bool,
+        graph_max_steps: int | None,
+    ) -> dict[str, object]:
+        del (
+            question,
+            db_paths,
+            runtime,
+            agent,
+            debug_llm_io,
+            graph_dataset,
+            context_db,
+            payload_mode,
+            strict_sql,
+            graph_max_steps,
+        )
+        return {
+            "result": {
+                "route": "sql",
+                "decision": "count query",
+                "answer": "Found 5 doors.",
+                "error": None,
+            }
+        }
+
+    monkeypatch.delenv(ROUTER_PROFILE_ENV_VAR, raising=False)
+    monkeypatch.delenv(AGENT_PROFILE_ENV_VAR, raising=False)
+    monkeypatch.setattr(
+        "rag_tag.evals.task_runner.load_project_config",
+        lambda start_dir: LoadedConfig(),
+    )
+    monkeypatch.setattr("rag_tag.evals.task_runner.execute_query", fake_execute_query)
+
+    bundle = run_benchmark_case(
+        case,
+        db_paths=[Path("/tmp/model.db")],
+        runtime=None,
+        agent=None,
+    )
+
+    assert bundle.result.router_profile == "router-from-config"
+    assert bundle.result.agent_profile == "agent-from-config"

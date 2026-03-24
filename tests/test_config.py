@@ -280,10 +280,33 @@ def test_checked_in_config_example_matches_app_config_schema() -> None:
 
     benchmark_experiment = config.experiments["benchmark-e2e-v1"]
     assert benchmark_experiment.questions_file == "evals/benchmark_cases_v1.yaml"
+    assert benchmark_experiment.router_profiles == [
+        "router-gemini-flash",
+        "dbx-gpt-oss-20b",
+        "dbx-gemma-3-12b",
+    ]
+    assert benchmark_experiment.agent_profiles == [
+        "cohere-command-a",
+        "dbx-claude-sonnet-4-6",
+        "dbx-gpt-oss-20b",
+        "dbx-llama-4-maverick",
+        "dbx-gemma-3-12b",
+    ]
+    assert benchmark_experiment.prompt_strategies == [
+        "baseline",
+        "strict-grounded",
+        "decompose",
+    ]
+    assert benchmark_experiment.repeat == 1
+    assert benchmark_experiment.max_concurrency == 1
+    assert benchmark_experiment.tags == ["sql", "graph"]
 
 
 def test_repo_does_not_require_checked_in_runtime_config_yaml() -> None:
     config_path = Path(__file__).resolve().parents[1] / "config.yaml"
+
+    if config_path.exists():
+        pytest.skip("local runtime config.yaml is present in this workspace")
 
     assert not config_path.exists()
 

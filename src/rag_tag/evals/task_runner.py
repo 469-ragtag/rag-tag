@@ -2,16 +2,28 @@
 
 from __future__ import annotations
 
+import os
+import threading
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from rag_tag.config import (
+    AGENT_PROFILE_ENV_VAR,
+    CONFIG_PATH_ENV_VAR,
+    ROUTER_PROFILE_ENV_VAR,
+    AppConfig,
+    load_project_config,
+)
 from rag_tag.evals.dataset import BenchmarkCase
 from rag_tag.query_service import GraphExecutor, execute_query
 
 from .runtime import temporary_runtime_overrides
 from .strategies import resolve_benchmark_strategy
+
+_MODULE_DIR = Path(__file__).resolve().parent
+_BENCHMARK_RUNTIME_LOCK = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -37,6 +49,7 @@ class BenchmarkTaskResult:
     router_profile: str | None
     agent_profile: str | None
     prompt_strategy: str
+    graph_orchestrator: str | None
     config_path: str | None
     graph_dataset: str | None
     context_db: str | None
@@ -90,36 +103,51 @@ def run_benchmark_case(
 
     started_at = time.perf_counter()
     strategy_settings = resolve_benchmark_strategy(prompt_strategy)
+    resolved_router_profile: str | None = router_profile
+    resolved_agent_profile: str | None = agent_profile
+    resolved_config_path: str | None = config_path
 
-    with temporary_runtime_overrides(
-        config_path=config_path,
-        router_profile=router_profile,
-        agent_profile=agent_profile,
-        graph_orchestrator_override=strategy_settings.graph_orchestrator_override,
-        graph_prompt_append=strategy_settings.graph_prompt_append,
-    ):
-        bundle = execute_query(
-            case.question,
-            db_paths,
-            runtime,
-            agent,
-            debug_llm_io=debug_llm_io,
-            graph_dataset=graph_dataset,
-            context_db=context_db,
-            payload_mode=payload_mode,
-            strict_sql=strict_sql,
-            graph_max_steps=graph_max_steps,
-        )
+    # Benchmark overrides currently flow through process env vars, so serialize
+    # task execution to avoid cross-run contamination when evaluations repeat or
+    # request concurrency.
+    with _BENCHMARK_RUNTIME_LOCK:
+        with temporary_runtime_overrides(
+            config_path=config_path,
+            router_profile=router_profile,
+            agent_profile=agent_profile,
+            graph_orchestrator_override=strategy_settings.graph_orchestrator_override,
+            graph_prompt_append=strategy_settings.graph_prompt_append,
+        ):
+            resolved_router_profile, resolved_agent_profile = (
+                _resolve_effective_profile_names(
+                    fallback_router_profile=router_profile,
+                    fallback_agent_profile=agent_profile,
+                )
+            )
+            resolved_config_path = os.getenv(CONFIG_PATH_ENV_VAR)
+            bundle = execute_query(
+                case.question,
+                db_paths,
+                runtime,
+                agent,
+                debug_llm_io=debug_llm_io,
+                graph_dataset=graph_dataset,
+                context_db=context_db,
+                payload_mode=payload_mode,
+                strict_sql=strict_sql,
+                graph_max_steps=graph_max_steps,
+            )
 
     duration_ms = round((time.perf_counter() - started_at) * 1000, 3)
     result = _build_task_result(
         case=case,
         bundle=bundle,
         duration_ms=duration_ms,
-        config_path=config_path,
-        router_profile=router_profile,
-        agent_profile=agent_profile,
+        config_path=resolved_config_path,
+        router_profile=resolved_router_profile,
+        agent_profile=resolved_agent_profile,
         prompt_strategy=prompt_strategy,
+        graph_orchestrator=strategy_settings.graph_orchestrator_override,
         graph_dataset=graph_dataset,
         context_db=context_db,
         db_paths=db_paths,
@@ -140,6 +168,7 @@ def _build_task_result(
     router_profile: str | None,
     agent_profile: str | None,
     prompt_strategy: str,
+    graph_orchestrator: str | None,
     graph_dataset: str | None,
     context_db: Path | None,
     db_paths: list[Path],
@@ -156,6 +185,8 @@ def _build_task_result(
     error = _coerce_error_text(result.get("error"))
     data = result.get("data")
     usage = _extract_usage_metrics(bundle=bundle, result=result)
+    normalized_warning = _coerce_warning_payload(warning)
+    normalized_data = data if isinstance(data, (dict, list)) else None
 
     sql_payload = result.get("sql")
     sql_text = sql_payload if isinstance(sql_payload, str) else None
@@ -169,21 +200,54 @@ def _build_task_result(
         router_profile=router_profile,
         agent_profile=agent_profile,
         prompt_strategy=prompt_strategy,
+        graph_orchestrator=graph_orchestrator,
         config_path=config_path,
         graph_dataset=graph_dataset,
         context_db=str(context_db) if context_db is not None else None,
         db_paths=[str(path) for path in db_paths],
         answer=_coerce_answer_text(result.get("answer")),
-        warning=_coerce_warning_payload(warning),
+        warning=normalized_warning,
         error=error,
-        data=data if isinstance(data, (dict, list)) else None,
+        data=normalized_data,
         sql=sql_text,
         duration_ms=duration_ms,
         had_error=error is not None,
-        had_warning=warning is not None,
-        has_data=data is not None,
+        had_warning=normalized_warning is not None,
+        has_data=normalized_data is not None,
         usage=usage,
     )
+
+
+def _resolve_effective_profile_names(
+    *,
+    fallback_router_profile: str | None = None,
+    fallback_agent_profile: str | None = None,
+) -> tuple[str | None, str | None]:
+    try:
+        loaded = load_project_config(_MODULE_DIR)
+    except FileNotFoundError:
+        return fallback_router_profile, fallback_agent_profile
+    return (
+        _selected_profile_name(loaded.config, role="router"),
+        _selected_profile_name(loaded.config, role="agent"),
+    )
+
+
+def _selected_profile_name(config: AppConfig, *, role: str) -> str | None:
+    env_var = ROUTER_PROFILE_ENV_VAR if role == "router" else AGENT_PROFILE_ENV_VAR
+    configured = os.getenv(env_var)
+    if configured is not None and configured.strip():
+        return configured.strip()
+
+    if role == "router":
+        default_profile = config.defaults.router_profile
+    else:
+        default_profile = config.defaults.agent_profile
+    if default_profile is not None and default_profile.strip():
+        return default_profile.strip()
+
+    fallback = role if role in config.profiles else None
+    return fallback
 
 
 def _coerce_answer_text(value: object) -> str | None:
