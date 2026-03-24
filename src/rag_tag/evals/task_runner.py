@@ -18,6 +18,7 @@ from rag_tag.config import (
 )
 from rag_tag.evals.dataset import BenchmarkCase
 from rag_tag.query_service import GraphExecutor, execute_query
+from rag_tag.usage import normalize_usage_metrics
 
 from .runtime import temporary_runtime_overrides
 from .strategies import resolve_benchmark_strategy
@@ -291,69 +292,17 @@ def _extract_usage_metrics(
     """
 
     for candidate in (
-        result.get("usage"),
         bundle.get("usage"),
+        result.get("usage"),
         result.get("data"),
     ):
-        if not isinstance(candidate, dict):
-            continue
-        normalized = _normalize_usage_dict(candidate)
+        normalized = normalize_usage_metrics(candidate)
         if normalized.usage_available:
-            return normalized
+            return BenchmarkUsage(
+                input_tokens=normalized.input_tokens,
+                output_tokens=normalized.output_tokens,
+                total_tokens=normalized.total_tokens,
+                reasoning_tokens=normalized.reasoning_tokens,
+                usage_available=True,
+            )
     return BenchmarkUsage()
-
-
-def _normalize_usage_dict(payload: dict[str, Any]) -> BenchmarkUsage:
-    input_tokens = _first_int(
-        payload,
-        "input_tokens",
-        "request_tokens",
-        "prompt_tokens",
-    )
-    output_tokens = _first_int(
-        payload,
-        "output_tokens",
-        "response_tokens",
-        "completion_tokens",
-    )
-    total_tokens = _first_int(
-        payload,
-        "total_tokens",
-        "tokens",
-    )
-    reasoning_tokens = _first_int(payload, "reasoning_tokens")
-
-    if total_tokens is None and input_tokens is not None and output_tokens is not None:
-        total_tokens = input_tokens + output_tokens
-
-    usage_available = any(
-        value is not None
-        for value in (input_tokens, output_tokens, total_tokens, reasoning_tokens)
-    )
-    return BenchmarkUsage(
-        input_tokens=input_tokens,
-        output_tokens=output_tokens,
-        total_tokens=total_tokens,
-        reasoning_tokens=reasoning_tokens,
-        usage_available=usage_available,
-    )
-
-
-def _first_int(payload: dict[str, Any], *keys: str) -> int | None:
-    for key in keys:
-        value = payload.get(key)
-        if value is None or isinstance(value, bool):
-            continue
-        if isinstance(value, int):
-            return value
-        if isinstance(value, float):
-            return int(value)
-        if isinstance(value, str):
-            text = value.strip()
-            if not text:
-                continue
-            try:
-                return int(float(text))
-            except ValueError:
-                continue
-    return None

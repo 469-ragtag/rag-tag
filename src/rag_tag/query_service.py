@@ -19,6 +19,7 @@ from rag_tag.graph_contract import merge_evidence_items
 from rag_tag.ifc_sql_tool import SqlQueryError, query_ifc_sql
 from rag_tag.paths import find_project_root
 from rag_tag.router import RouteDecision, SqlRequest, route_question
+from rag_tag.usage import sum_usage_metrics
 
 _MODULE_DIR = Path(__file__).resolve().parent
 
@@ -578,11 +579,15 @@ def execute_query(
 
         if decision.route == "sql":
             result = execute_sql_query(decision, db_paths, strict_sql=strict_sql)
+            bundle_usage = _usage_payload(decision.usage)
+            if bundle_usage is not None:
+                result["usage"] = bundle_usage
             return {
                 "result": result,
                 "runtime": runtime,
                 "graph": runtime,
                 "agent": agent,
+                "usage": bundle_usage,
             }
 
         _require_explicit_graph_dataset(runtime, graph_dataset)
@@ -607,11 +612,16 @@ def execute_query(
             decision,
             max_steps=graph_max_steps,
         )
+        combined_usage = sum_usage_metrics(decision.usage, result.get("usage"))
+        bundle_usage = _usage_payload(combined_usage)
+        if bundle_usage is not None:
+            result["usage"] = bundle_usage
         return {
             "result": result,
             "runtime": runtime,
             "graph": runtime,
             "agent": agent,
+            "usage": bundle_usage,
         }
 
     except Exception as exc:
@@ -622,6 +632,13 @@ def execute_query(
             "graph": runtime,
             "agent": agent,
         }
+
+
+def _usage_payload(usage: object) -> dict[str, int | bool | None] | None:
+    normalized = sum_usage_metrics(usage)
+    if not normalized.usage_available:
+        return None
+    return normalized.as_dict()
 
 
 def _ensure_graph_context(

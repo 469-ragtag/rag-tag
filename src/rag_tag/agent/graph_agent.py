@@ -24,6 +24,11 @@ from pydantic_ai.usage import UsageLimits
 from rag_tag.config import get_default_graph_output_retries
 from rag_tag.graph import GraphRuntime
 from rag_tag.llm.pydantic_ai import get_agent_model, get_agent_model_settings
+from rag_tag.usage import (
+    normalize_usage_metrics,
+    sum_usage_metrics,
+    usage_metrics_from_messages,
+)
 
 from .graph_tools import register_graph_tools
 from .models import (
@@ -696,7 +701,10 @@ class GraphAgent:
                         usage_limits=usage_limits,
                     )
                 output = result.output
-                return _graph_answer_to_response(output)
+                return _attach_usage(
+                    _graph_answer_to_response(output),
+                    normalize_usage_metrics(result),
+                )
 
             except ModelHTTPError as exc:
                 if _is_invalid_tool_generation(exc):
@@ -728,7 +736,13 @@ class GraphAgent:
                         message_history=captured_messages,
                     )
                     if repaired_response is not None:
-                        return repaired_response
+                        return _attach_usage(
+                            repaired_response,
+                            sum_usage_metrics(
+                                usage_metrics_from_messages(captured_messages),
+                                repaired_response.get("usage"),
+                            ),
+                        )
 
                 # The model failed to produce a valid structured output even
                 # after all output_retries (including internal shape-correction
@@ -758,7 +772,10 @@ class GraphAgent:
                     _logger.warning(
                         "Recovered answer from malformed output after retries: %s", exc
                     )
-                    return response
+                    return _attach_usage(
+                        response,
+                        usage_metrics_from_messages(captured_messages),
+                    )
 
                 raw_snippet = str(raw)[:400] if raw else ""
                 _logger.error(
@@ -838,7 +855,10 @@ class GraphAgent:
             return None
 
         _logger.warning("Recovered answer via targeted output-tool repair pass.")
-        return _graph_answer_to_response(repair_result.output)
+        return _attach_usage(
+            _graph_answer_to_response(repair_result.output),
+            normalize_usage_metrics(repair_result),
+        )
 
 
 def _graph_answer_to_response(output: GraphAnswer) -> dict[str, object]:
@@ -856,6 +876,18 @@ def _graph_answer_to_response(output: GraphAnswer) -> dict[str, object]:
         response.get("data"),
     )
     return response
+
+
+def _attach_usage(
+    response: dict[str, object],
+    usage: object,
+) -> dict[str, object]:
+    normalized = normalize_usage_metrics(usage)
+    if not normalized.usage_available:
+        return response
+    enriched = dict(response)
+    enriched["usage"] = normalized.as_dict()
+    return enriched
 
 
 def _should_attempt_output_tool_repair(exc: UnexpectedModelBehavior) -> bool:

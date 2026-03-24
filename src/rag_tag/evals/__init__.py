@@ -12,6 +12,7 @@ from .evaluators import (
     RouteMatchesExpected,
     build_default_answer_judge,
 )
+from .metrics import BenchmarkUsageAggregate, aggregate_benchmark_usage
 from .runner import (
     BenchmarkExperimentConfig,
     build_eval_dataset,
@@ -40,9 +41,11 @@ __all__ = [
     "BenchmarkTaskBundle",
     "BenchmarkTaskResult",
     "BenchmarkUsage",
+    "BenchmarkUsageAggregate",
     "DEFAULT_ANSWER_JUDGE_RUBRIC",
     "NoExecutionError",
     "RouteMatchesExpected",
+    "aggregate_benchmark_usage",
     "build_default_answer_judge",
     "build_eval_dataset",
     "evaluate_benchmark_dataset",
