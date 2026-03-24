@@ -10,6 +10,7 @@ without changing public action names or response contracts.
 
 from __future__ import annotations
 
+import re
 from collections import deque
 from typing import Any
 
@@ -30,6 +31,7 @@ _CLASS_FUZZY_THRESHOLD = 72
 _TYPE_INTENT_TERMS = ("type", "family", "template", "style", "kind")
 _LEGACY_SCAN_MAX_RESULTS = 50
 _LEGACY_NEIGHBOR_MAX_RESULTS = 25
+_QUERY_TERM_PATTERN = re.compile(r"[a-z0-9]+")
 _CONTAINER_CLASSES = {
     "IfcProject",
     "IfcSite",
@@ -42,6 +44,42 @@ _CONTAINER_CLASSES = {
 }
 _ZONE_CONTAINER_CLASSES = {"IfcZone", "IfcSpatialZone"}
 _CONTAINER_EDGE_RELATIONS = {"contains", "aggregates"}
+_GENERIC_CONTAINER_STOPWORDS = {
+    "a",
+    "an",
+    "any",
+    "at",
+    "by",
+    "for",
+    "in",
+    "inside",
+    "is",
+    "near",
+    "of",
+    "on",
+    "outside",
+    "that",
+    "the",
+    "this",
+    "to",
+}
+_GENERIC_CONTAINER_INTENTS = {
+    "IfcBuilding": {"building"},
+    "IfcSite": {"site"},
+    "IfcBuildingStorey": {"floor", "level", "storey"},
+    "IfcSpace": {"room", "space"},
+    "IfcProject": {"project"},
+}
+_SECONDARY_CONTAINER_CLASSES = {
+    "IfcProject",
+    "IfcSite",
+    "IfcBuilding",
+    "IfcBuildingStorey",
+    "IfcSpace",
+}
+_GENERIC_CONTAINER_CANONICAL_BOOST = 60.0
+_GENERIC_CONTAINER_SECONDARY_BOOST = 4.0
+_GENERIC_CONTAINER_PROXY_PENALTY = 18.0
 
 
 # ---------------------------------------------------------------------------
@@ -94,6 +132,34 @@ def _query_has_type_intent(query: str) -> bool:
     return any(term in query_terms for term in _TYPE_INTENT_TERMS)
 
 
+def _query_terms(query: str) -> list[str]:
+    """Return normalized alphanumeric query terms."""
+    return _QUERY_TERM_PATTERN.findall(query.lower())
+
+
+def _generic_container_target_class(query: str) -> str | None:
+    """Return the canonical IFC container class for generic container queries.
+
+    The bias is intentionally narrow: only apply when the query is essentially
+    a generic container noun phrase like "building" or "the floor", not when it
+    is a specific named phrase such as "server room" or "main building".
+    """
+    content_terms = {
+        term for term in _query_terms(query) if term not in _GENERIC_CONTAINER_STOPWORDS
+    }
+    if not content_terms:
+        return None
+
+    matched_targets = [
+        class_name
+        for class_name, aliases in _GENERIC_CONTAINER_INTENTS.items()
+        if content_terms.issubset(aliases)
+    ]
+    if len(matched_targets) != 1:
+        return None
+    return matched_targets[0]
+
+
 def _fuzzy_find_nodes_impl(
     runtime: GraphRuntime,
     query: str,
@@ -108,6 +174,9 @@ def _fuzzy_find_nodes_impl(
     G = get_networkx_graph(runtime)
     results: list[dict[str, Any]] = []
     query_has_type_intent = _query_has_type_intent(query)
+    generic_container_target = (
+        _generic_container_target_class(query) if class_filter is None else None
+    )
 
     for node_id, data in G.nodes(data=True):
         if class_filter is not None:
@@ -144,6 +213,15 @@ def _fuzzy_find_nodes_impl(
             else:
                 adjusted_score -= 8.0
 
+        if generic_container_target is not None:
+            if class_name == generic_container_target:
+                adjusted_score += _GENERIC_CONTAINER_CANONICAL_BOOST
+            elif class_name in _SECONDARY_CONTAINER_CLASSES:
+                adjusted_score += _GENERIC_CONTAINER_SECONDARY_BOOST
+
+            if class_name == "IfcBuildingElementProxy":
+                adjusted_score -= _GENERIC_CONTAINER_PROXY_PENALTY
+
         if adjusted_score >= min_score:
             results.append(
                 {
@@ -156,7 +234,13 @@ def _fuzzy_find_nodes_impl(
                 }
             )
 
-    results.sort(key=lambda x: x["score"], reverse=True)
+    results.sort(
+        key=lambda item: (
+            -float(item["score"]),
+            str(item.get("label") or ""),
+            str(item["id"]),
+        )
+    )
     visible_results = results[:top_k]
     evidence = collect_evidence(
         visible_results,

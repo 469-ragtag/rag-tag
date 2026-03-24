@@ -171,6 +171,9 @@ Tool node payloads use:
     IFC class
   - when the query does not explicitly ask for a type/family, occurrence
     elements are usually the better primary anchor than `...Type` nodes
+  - for generic container nouns like `building`, `site`, `storey`, `floor`,
+    `level`, `room`, or `space`, inspect the single best canonical container
+    anchor first; do not fan out across several fuzzy matches in parallel
 
 - `find_nodes(class_?, property_filters?, max_results?)`
   - exact class/property lookup
@@ -198,6 +201,9 @@ Tool node payloads use:
   - use this as a fallback when no more specific macro tool fits
   - use `contains` to go from container to contents
   - use `contained_in` to move from element to enclosing structure
+  - for containment/location questions, prefer `contains`, `contained_in`,
+    `get_elements_in_storey`, or `find_container_elements_excluding` before
+    broad topology traversal
   - use explicit relations such as `hosts`, `typed_by`, `belongs_to_system`,
     `in_zone`, `classified_as`, `ifc_connected_to` when appropriate
   - bounded; if `data.truncated=true`, narrow the anchor, relation, or depth
@@ -331,6 +337,8 @@ specific tool fits or the macro tool returns weak evidence.
    - relation(s) to test
    - required output shape (count, list, comparison, explanation)
 2. Find or verify the anchor node(s).
+   - if the query uses a generic container noun, inspect one best canonical
+     anchor first instead of branching across several fuzzy candidates
 3. Pull nearby/related candidates with the most specific tool available.
 4. If a tool says `truncated=true`, refine immediately before concluding.
 5. If needed, inspect candidate properties with `get_element_properties`.
@@ -362,6 +370,21 @@ Examples: "What is adjacent to the kitchen?", "What doors are in the entry hall?
 1. Use `get_elements_in_storey` when the anchor is a storey.
 2. If you already have an element and need its floor, use
    `traverse(..., relation="contained_in")` upward.
+
+### B2. Generic building/site/container questions
+
+Examples: "Is there a tree outside the building?", "What is in the building?",
+"Which elements are not on the ground floor?"
+
+1. Resolve one best canonical container anchor first with `fuzzy_find_nodes`.
+2. If the first result is a plausible `IfcProject`, `IfcSite`, `IfcBuilding`,
+   `IfcBuildingStorey`, or `IfcSpace`, inspect that anchor before trying other
+   fuzzy matches.
+3. Prefer containment helpers and relations like `contains`, `contained_in`,
+   `get_elements_in_storey`, or `find_container_elements_excluding` before
+   broad topology fan-out.
+4. Use `intersects_bbox` only as a noisy last resort for inside/outside
+   building questions when stronger containment or adjacency evidence is absent.
 
 ### C. Type/family questions
 
@@ -409,6 +432,8 @@ Examples: "What equipment serves Room 101?", "Which unit supplies the kitchen?"
    `get_topology_neighbors`, or `get_intersections_3d`.
 2. Use `spatial_query` only as fallback for looser proximity answers.
 3. Keep `intersects_bbox` and `intersects_3d` distinct in your explanation.
+4. Treat `intersects_bbox` as a noisy fallback, not a first-choice relation
+   for containment-style questions about being inside or outside a building.
 
 ### H. Exact property questions
 
@@ -459,6 +484,9 @@ Avoid unconstrained `traverse(..., depth>3)` unless you still lack the basic
 container anchors. Broad traversal is a last resort because it wastes tool
 budget and floods the context window. If a broad tool comes back truncated,
 refine instead of treating that partial set as the full answer.
+When a canonical container anchor looks plausible, continue with a focused
+follow-up from that one anchor instead of launching parallel traversals over several
+generic fuzzy matches.
 
 ---
 

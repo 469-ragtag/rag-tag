@@ -57,6 +57,28 @@ def test_system_prompt_makes_macro_first_preferences_explicit_and_ordered() -> N
     )
 
 
+def test_system_prompt_guides_generic_container_anchor_discipline() -> None:
+    assert "single best canonical container" in SYSTEM_PROMPT
+    assert "do not fan out across several fuzzy matches in parallel" in SYSTEM_PROMPT
+    assert "inspect one best canonical\n     anchor first" in SYSTEM_PROMPT
+    assert "focused" in SYSTEM_PROMPT
+    assert "from that one anchor instead of launching parallel traversals" in (
+        SYSTEM_PROMPT
+    )
+
+
+def test_system_prompt_prefers_containment_helpers_before_broad_topology() -> None:
+    assert "`contains`, `contained_in`" in SYSTEM_PROMPT
+    assert "`get_elements_in_storey`" in SYSTEM_PROMPT
+    assert "`find_container_elements_excluding`" in SYSTEM_PROMPT
+    assert "before\n    broad topology traversal" in SYSTEM_PROMPT
+
+
+def test_system_prompt_treats_intersects_bbox_as_noisy_last_resort() -> None:
+    assert "Use `intersects_bbox` only as a noisy last resort" in SYSTEM_PROMPT
+    assert "Treat `intersects_bbox` as a noisy fallback" in SYSTEM_PROMPT
+
+
 def test_schema_correction_hint_is_explicit_about_real_tool_calls() -> None:
     assert "real final_result tool call only" in _SCHEMA_CORRECTION_HINT
     assert "Do NOT print plain text, Markdown, fenced JSON" in _SCHEMA_CORRECTION_HINT
