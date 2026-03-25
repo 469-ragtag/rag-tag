@@ -93,6 +93,9 @@ def test_run_benchmark_suite_skips_logfire_setup_when_trace_is_disabled(
     assert result.logfire_status.enabled is False
     assert result.report_path.is_file()
     assert result.manifest_path.is_file()
+    assert (result.output_dir / "runs.csv").is_file()
+    assert (result.output_dir / "case_groups.csv").is_file()
+    assert (result.output_dir / "leaderboard.csv").is_file()
 
 
 def test_run_benchmark_suite_preserves_trace_metadata_when_enabled(
@@ -164,8 +167,14 @@ def test_run_benchmark_suite_preserves_trace_metadata_when_enabled(
     assert payload["logfire"]["enabled"] is True
     assert payload["entries"][0]["report"]["trace_id"] == "trace-123"
     assert payload["entries"][0]["report"]["span_id"] == "span-456"
+    assert isinstance(payload["leaderboard"], list)
+    assert isinstance(payload["case_groups"], list)
+    assert isinstance(payload["runs"], list)
     assert manifest["reports"][0]["trace_id"] == "trace-123"
     assert manifest["reports"][0]["span_id"] == "span-456"
+    assert manifest["leaderboard_path"].endswith("leaderboard.csv")
+    assert manifest["case_groups_path"].endswith("case_groups.csv")
+    assert manifest["runs_path"].endswith("runs.csv")
 
 
 def test_build_benchmark_cli_config_uses_experiment_defaults_and_tag_filter(
@@ -279,22 +288,7 @@ def test_eval_benchmarks_script_main_runs_and_prints_summary(
     monkeypatch.setattr(
         module,
         "run_benchmark_suite",
-        lambda config: type(
-            "Result",
-            (),
-            {
-                "experiment_name": config.experiment_name,
-                "dataset_name": "benchmark_cases_v1",
-                "entries": [object()],
-                "trace_requested": config.trace,
-                "logfire_status": LogfireStatus(
-                    enabled=True,
-                    cloud_sync=False,
-                    url="",
-                ),
-                "output_dir": config.output_dir,
-            },
-        )(),
+        lambda config: _mock_suite_result(tmp_path, config),
     )
 
     exit_code = module.main(
@@ -311,3 +305,44 @@ def test_eval_benchmarks_script_main_runs_and_prints_summary(
     stdout = capsys.readouterr().out
     assert "Benchmark run: benchmark-e2e-v1" in stdout
     assert "Trace requested: yes" in stdout
+    assert "1. router-a / agent-a / baseline" in stdout
+
+
+def _mock_suite_result(tmp_path: Path, config: BenchmarkCliConfig):
+    report_path = tmp_path / "artifacts" / "report.json"
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(
+        json.dumps(
+            {
+                "leaderboard": [
+                    {
+                        "router_profile": "router-a",
+                        "agent_profile": "agent-a",
+                        "prompt_strategy": "baseline",
+                        "route_accuracy": 1.0,
+                        "answer_score_avg": 0.9,
+                        "avg_duration_ms": 120.0,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    return type(
+        "Result",
+        (),
+        {
+            "experiment_name": config.experiment_name,
+            "dataset_name": "benchmark_cases_v1",
+            "entries": [object()],
+            "trace_requested": config.trace,
+            "logfire_status": LogfireStatus(
+                enabled=True,
+                cloud_sync=False,
+                url="",
+            ),
+            "output_dir": config.output_dir,
+            "report_path": report_path,
+        },
+    )()

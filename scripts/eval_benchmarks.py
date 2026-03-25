@@ -6,6 +6,7 @@ from pathlib import Path
 
 from rag_tag.config import AppConfig, load_project_config
 from rag_tag.evals.benchmark import build_benchmark_cli_config, run_benchmark_suite
+from rag_tag.evals.reporting import top_leaderboard_rows
 from rag_tag.query_service import find_sqlite_dbs
 
 
@@ -174,6 +175,34 @@ def main(argv: list[str] | None = None) -> int:
         )
     )
     print(f"Artifacts: {result.output_dir}")
+    leaderboard_rows = []
+    report_path = getattr(result, "report_path", None)
+    if isinstance(report_path, Path) and report_path.is_file():
+        try:
+            import json
+
+            payload = json.loads(report_path.read_text(encoding="utf-8"))
+            raw_rows = payload.get("leaderboard")
+            if isinstance(raw_rows, list):
+                leaderboard_rows = [row for row in raw_rows if isinstance(row, dict)]
+        except (OSError, ValueError):
+            leaderboard_rows = []
+
+    for index, row in enumerate(top_leaderboard_rows(leaderboard_rows), start=1):
+        combo = (
+            f"{row.get('router_profile') or 'default-router'} / "
+            f"{row.get('agent_profile') or 'default-agent'} / "
+            f"{row.get('prompt_strategy') or 'baseline'}"
+        )
+        route_accuracy = row.get("route_accuracy")
+        answer_score = row.get("answer_score_avg")
+        avg_duration = row.get("avg_duration_ms")
+        print(
+            f"{index}. {combo} | "
+            f"route={route_accuracy if route_accuracy is not None else 'n/a'} | "
+            f"answer={answer_score if answer_score is not None else 'n/a'} | "
+            f"avg_ms={avg_duration if avg_duration is not None else 'n/a'}"
+        )
     return 0
 
 

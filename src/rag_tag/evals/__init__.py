@@ -23,6 +23,13 @@ from .evaluators import (
     build_default_answer_judge,
 )
 from .metrics import BenchmarkUsageAggregate, aggregate_benchmark_usage
+from .reporting import (
+    build_case_groups_rows,
+    build_leaderboard_rows,
+    build_runs_rows,
+    top_leaderboard_rows,
+    write_csv_rows,
+)
 from .runner import (
     BenchmarkExperimentConfig,
     build_eval_dataset,
@@ -61,8 +68,11 @@ __all__ = [
     "RouteMatchesExpected",
     "aggregate_benchmark_usage",
     "build_benchmark_cli_config",
+    "build_case_groups_rows",
     "build_default_answer_judge",
     "build_eval_dataset",
+    "build_leaderboard_rows",
+    "build_runs_rows",
     "evaluate_benchmark_dataset",
     "expand_benchmark_matrix",
     "load_benchmark_dataset_with_tags",
@@ -70,5 +80,7 @@ __all__ = [
     "resolve_benchmark_strategy",
     "run_benchmark_suite",
     "run_benchmark_case",
+    "top_leaderboard_rows",
     "temporary_runtime_overrides",
+    "write_csv_rows",
 ]

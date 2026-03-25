@@ -14,6 +14,12 @@ from rag_tag.config import AppConfig, ExperimentConfig
 from rag_tag.observability import LogfireStatus, setup_logfire
 
 from .dataset import BenchmarkCase, BenchmarkDataset, load_benchmark_dataset
+from .reporting import (
+    build_case_groups_rows,
+    build_leaderboard_rows,
+    build_runs_rows,
+    write_csv_rows,
+)
 from .runner import BenchmarkExperimentConfig, evaluate_benchmark_dataset
 
 
@@ -284,11 +290,29 @@ def run_benchmark_suite(config: BenchmarkCliConfig) -> BenchmarkSuiteResult:
         )
         entries.append(BenchmarkSuiteEntry(combination=combination, report=report))
 
+    runs_rows = build_runs_rows(entries)
+    case_group_rows = build_case_groups_rows(entries)
+    leaderboard_rows = build_leaderboard_rows(entries, repeat=config.repeat)
     report_path = output_dir / "report.json"
     manifest_path = output_dir / "run_manifest.json"
+    runs_path = output_dir / "runs.csv"
+    case_groups_path = output_dir / "case_groups.csv"
+    leaderboard_path = output_dir / "leaderboard.csv"
+    write_csv_rows(runs_path, runs_rows, kind="runs")
+    write_csv_rows(case_groups_path, case_group_rows, kind="case_groups")
+    write_csv_rows(leaderboard_path, leaderboard_rows, kind="leaderboard")
     _write_json(
         report_path,
-        _serialize_suite_report(config, dataset, run_id, logfire_status, entries),
+        _serialize_suite_report(
+            config,
+            dataset,
+            run_id,
+            logfire_status,
+            entries,
+            runs_rows=runs_rows,
+            case_group_rows=case_group_rows,
+            leaderboard_rows=leaderboard_rows,
+        ),
     )
     _write_json(
         manifest_path,
@@ -299,6 +323,9 @@ def run_benchmark_suite(config: BenchmarkCliConfig) -> BenchmarkSuiteResult:
             logfire_status=logfire_status,
             entries=entries,
             report_path=report_path,
+            runs_path=runs_path,
+            case_groups_path=case_groups_path,
+            leaderboard_path=leaderboard_path,
         ),
     )
 
@@ -368,6 +395,9 @@ def _serialize_suite_report(
     run_id: str,
     logfire_status: LogfireStatus,
     entries: list[BenchmarkSuiteEntry],
+    runs_rows: list[dict[str, Any]],
+    case_group_rows: list[dict[str, Any]],
+    leaderboard_rows: list[dict[str, Any]],
 ) -> dict[str, Any]:
     return {
         "run_id": run_id,
@@ -380,6 +410,9 @@ def _serialize_suite_report(
             "cloud_sync": logfire_status.cloud_sync,
             "url": logfire_status.url or None,
         },
+        "runs": runs_rows,
+        "case_groups": case_group_rows,
+        "leaderboard": leaderboard_rows,
         "entries": [
             {
                 "combination": asdict(entry.combination),
@@ -398,6 +431,9 @@ def _build_run_manifest(
     logfire_status: LogfireStatus,
     entries: list[BenchmarkSuiteEntry],
     report_path: Path,
+    runs_path: Path,
+    case_groups_path: Path,
+    leaderboard_path: Path,
 ) -> dict[str, Any]:
     return {
         "run_id": run_id,
@@ -415,6 +451,9 @@ def _build_run_manifest(
         "repeat": config.repeat,
         "max_concurrency": config.max_concurrency,
         "report_path": str(report_path),
+        "runs_path": str(runs_path),
+        "case_groups_path": str(case_groups_path),
+        "leaderboard_path": str(leaderboard_path),
         "reports": [
             {
                 "router_profile": entry.combination.router_profile,
