@@ -16,6 +16,7 @@ from .dataset import BenchmarkCase
 from .task_runner import BenchmarkTaskResult
 
 BenchmarkCaseMetadata = dict[str, Any]
+DEFAULT_ANSWER_JUDGE_MODEL = "google-gla:gemini-2.5-flash"
 
 DEFAULT_ANSWER_JUDGE_RUBRIC = """
 You are evaluating the quality of an IFC/BIM benchmark answer.
@@ -29,6 +30,31 @@ Pass only when:
 - the answer does not fabricate entities, relationships, properties, or counts
 - the answer aligns with the case reference points when they are present
 """.strip()
+
+
+def _clear_pydantic_ai_async_http_client_cache() -> None:
+    """Clear PydanticAI's shared async HTTP client cache.
+
+    The benchmark task path still uses sync `run_sync(...)` calls for router and
+    graph execution, while `LLMJudge` runs asynchronously. PydanticAI's Google
+    provider reuses a process-wide cached async HTTP client, which can become
+    bound to the event loop created by the sync path. Clearing the cache before
+    judge requests forces a fresh async client on the current eval loop.
+    """
+
+    try:
+        from pydantic_ai._ssrf import cached_async_http_client
+    except Exception:
+        return
+
+    cached_factory = getattr(
+        cached_async_http_client,
+        "__globals__",
+        {},
+    ).get("_cached_async_http_client")
+    cache_clear = getattr(cached_factory, "cache_clear", None)
+    if callable(cache_clear):
+        cache_clear()
 
 
 @dataclass
@@ -71,13 +97,26 @@ class NoExecutionError(
         return EvaluationReason(False, f"Task returned error: {error}")
 
 
+class LoopSafeLLMJudge(LLMJudge):
+    """LLM judge that avoids reusing async clients bound to another loop."""
+
+    async def evaluate(
+        self,
+        ctx: EvaluatorContext[
+            BenchmarkCase, BenchmarkTaskResult, BenchmarkCaseMetadata
+        ],
+    ) -> Any:
+        _clear_pydantic_ai_async_http_client_cache()
+        return await super().evaluate(ctx)
+
+
 def build_default_answer_judge(model: str | None = None) -> LLMJudge:
     """Build the default answer-quality evaluator for benchmark experiments."""
 
-    return LLMJudge(
+    return LoopSafeLLMJudge(
         rubric=DEFAULT_ANSWER_JUDGE_RUBRIC,
-        model=model,
+        model=model or DEFAULT_ANSWER_JUDGE_MODEL,
         include_input=True,
-        assertion=True,
-        score=True,
+        assertion={"include_reason": True},
+        score={"include_reason": True},
     )

@@ -9,6 +9,7 @@ from rag_tag.evals import (
     BenchmarkDataset,
     BenchmarkExperimentConfig,
     BenchmarkTaskResult,
+    DEFAULT_ANSWER_JUDGE_MODEL,
     build_eval_dataset,
     evaluate_benchmark_dataset,
 )
@@ -57,6 +58,60 @@ def test_build_eval_dataset_adds_case_and_dataset_evaluators() -> None:
         for evaluator in eval_dataset.evaluators
     )
     assert any(isinstance(evaluator, LLMJudge) for evaluator in eval_dataset.evaluators)
+    judge = next(
+        evaluator
+        for evaluator in eval_dataset.evaluators
+        if isinstance(evaluator, LLMJudge)
+    )
+    assert judge.model == "openai:gpt-5.2"
+    assert judge.assertion == {"include_reason": True}
+    assert judge.score == {"include_reason": True}
+
+
+def test_build_eval_dataset_defaults_answer_judge_to_repo_model() -> None:
+    dataset = BenchmarkDataset(
+        dataset_name="benchmark_cases_v1",
+        cases=[
+            BenchmarkCase(
+                id="q001",
+                question="How many walls are in the model?",
+                expected_route="sql",
+            )
+        ],
+    )
+
+    eval_dataset = build_eval_dataset(dataset, include_answer_judge=True)
+
+    judge = next(
+        evaluator
+        for evaluator in eval_dataset.evaluators
+        if isinstance(evaluator, LLMJudge)
+    )
+    assert judge.model == DEFAULT_ANSWER_JUDGE_MODEL
+    assert judge.assertion == {"include_reason": True}
+    assert judge.score == {"include_reason": True}
+
+
+def test_build_eval_dataset_uses_loop_safe_answer_judge() -> None:
+    dataset = BenchmarkDataset(
+        dataset_name="benchmark_cases_v1",
+        cases=[
+            BenchmarkCase(
+                id="q001",
+                question="How many walls are in the model?",
+                expected_route="sql",
+            )
+        ],
+    )
+
+    eval_dataset = build_eval_dataset(dataset, include_answer_judge=True)
+
+    judge = next(
+        evaluator
+        for evaluator in eval_dataset.evaluators
+        if isinstance(evaluator, LLMJudge)
+    )
+    assert type(judge).__name__ == "LoopSafeLLMJudge"
 
 
 def test_evaluate_benchmark_dataset_runs_cases_and_repeats(

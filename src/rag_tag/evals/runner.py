@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -97,6 +98,23 @@ def evaluate_benchmark_dataset(
 ) -> EvaluationReport[BenchmarkCase, BenchmarkTaskResult, BenchmarkCaseMetadata]:
     """Run a benchmark experiment against the shared query pipeline."""
 
+    return asyncio.run(
+        evaluate_benchmark_dataset_async(
+            benchmark_dataset,
+            experiment=experiment,
+            experiment_name=experiment_name,
+        )
+    )
+
+
+async def evaluate_benchmark_dataset_async(
+    benchmark_dataset: BenchmarkDataset,
+    *,
+    experiment: BenchmarkExperimentConfig,
+    experiment_name: str | None = None,
+) -> EvaluationReport[BenchmarkCase, BenchmarkTaskResult, BenchmarkCaseMetadata]:
+    """Run a benchmark experiment against the shared query pipeline."""
+
     dataset = build_eval_dataset(
         benchmark_dataset,
         answer_judge_model=experiment.answer_judge_model,
@@ -112,7 +130,7 @@ def evaluate_benchmark_dataset(
         effective_max_concurrency = _effective_max_concurrency(
             experiment.max_concurrency
         )
-        report = dataset.evaluate_sync(
+        report = await dataset.evaluate(
             lambda case: _run_case_with_state(case, experiment=experiment, state=state),
             name=experiment_name or benchmark_dataset.dataset_name,
             task_name=experiment_name or benchmark_dataset.dataset_name,

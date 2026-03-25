@@ -11,6 +11,7 @@ from rag_tag.evals.benchmark import (
     expand_benchmark_matrix,
     run_benchmark_suite,
 )
+from rag_tag.evals.evaluators import DEFAULT_ANSWER_JUDGE_MODEL
 from rag_tag.observability import LogfireStatus
 
 
@@ -54,9 +55,10 @@ def test_run_benchmark_suite_skips_logfire_setup_when_trace_is_disabled(
         return LogfireStatus(enabled=False, cloud_sync=False, url="")
 
     monkeypatch.setattr("rag_tag.evals.benchmark.setup_logfire", fake_setup_logfire)
-    monkeypatch.setattr(
-        "rag_tag.evals.benchmark.evaluate_benchmark_dataset",
-        lambda dataset, *, experiment, experiment_name: type(
+    async def fake_evaluate_benchmark_dataset_async(
+        dataset, *, experiment, experiment_name
+    ):
+        return type(
             "Report",
             (),
             {
@@ -69,7 +71,11 @@ def test_run_benchmark_suite_skips_logfire_setup_when_trace_is_disabled(
                 "trace_id": None,
                 "span_id": None,
             },
-        )(),
+        )()
+
+    monkeypatch.setattr(
+        "rag_tag.evals.benchmark.evaluate_benchmark_dataset_async",
+        fake_evaluate_benchmark_dataset_async,
     )
 
     result = run_benchmark_suite(
@@ -120,9 +126,10 @@ def test_run_benchmark_suite_preserves_trace_metadata_when_enabled(
             url="https://logfire.pydantic.dev",
         ),
     )
-    monkeypatch.setattr(
-        "rag_tag.evals.benchmark.evaluate_benchmark_dataset",
-        lambda dataset, *, experiment, experiment_name: type(
+    async def fake_evaluate_benchmark_dataset_async(
+        dataset, *, experiment, experiment_name
+    ):
+        return type(
             "Report",
             (),
             {
@@ -140,7 +147,11 @@ def test_run_benchmark_suite_preserves_trace_metadata_when_enabled(
                 "trace_id": "trace-123",
                 "span_id": "span-456",
             },
-        )(),
+        )()
+
+    monkeypatch.setattr(
+        "rag_tag.evals.benchmark.evaluate_benchmark_dataset_async",
+        fake_evaluate_benchmark_dataset_async,
     )
 
     result = run_benchmark_suite(
@@ -207,6 +218,7 @@ def test_build_benchmark_cli_config_uses_experiment_defaults_and_tag_filter(
                     "prompt_strategies": ["baseline"],
                     "repeat": 2,
                     "max_concurrency": 1,
+                    "answer_judge_model": "google-gla:gemini-2.5-flash",
                     "tags": ["sql"],
                 }
             },
@@ -232,6 +244,7 @@ def test_build_benchmark_cli_config_uses_experiment_defaults_and_tag_filter(
 
     assert cli_config.repeat == 2
     assert cli_config.max_concurrency == 1
+    assert cli_config.answer_judge_model == "google-gla:gemini-2.5-flash"
     assert cli_config.tags == ["sql"]
     assert cli_config.trace is True
     assert cli_config.combinations == [
@@ -295,6 +308,73 @@ def test_build_benchmark_cli_config_resolves_relative_dataset_from_config_path(
     )
 
     assert cli_config.dataset_path == dataset_path.resolve()
+    assert cli_config.answer_judge_model == DEFAULT_ANSWER_JUDGE_MODEL
+
+
+def test_eval_benchmarks_script_passes_answer_judge_model_override(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    script_path = Path(__file__).resolve().parents[1] / "scripts" / "eval_benchmarks.py"
+    spec = importlib.util.spec_from_file_location("eval_benchmarks_script", script_path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    db_path = tmp_path / "model.db"
+    db_path.write_text("", encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        module,
+        "_load_app_config",
+        lambda config_override_path: (
+            __import__("rag_tag.config", fromlist=["AppConfig"]).AppConfig(),
+            config_override_path,
+        ),
+    )
+
+    def fake_build_benchmark_cli_config(**kwargs):
+        captured.update(kwargs)
+        return BenchmarkCliConfig(
+            experiment_name="benchmark-e2e-v1",
+            dataset_path=tmp_path / "benchmark.yaml",
+            db_paths=[db_path],
+            graph_dataset="model",
+            context_db=db_path,
+            answer_judge_model=kwargs["answer_judge_model"],
+            output_dir=tmp_path / "artifacts",
+            combinations=[
+                BenchmarkCombination(
+                    router_profile="router-a",
+                    agent_profile="agent-a",
+                    prompt_strategy="baseline",
+                )
+            ],
+        )
+
+    monkeypatch.setattr(module, "build_benchmark_cli_config", fake_build_benchmark_cli_config)
+    monkeypatch.setattr(
+        module,
+        "run_benchmark_suite",
+        lambda config: _mock_suite_result(tmp_path, config),
+    )
+
+    exit_code = module.main(
+        [
+            "--questions-file",
+            str(tmp_path / "benchmark.yaml"),
+            "--db",
+            str(db_path),
+            "--answer-judge-model",
+            "google-gla:gemini-2.5-flash",
+        ]
+    )
+
+    assert exit_code == 0
+    assert captured["answer_judge_model"] == "google-gla:gemini-2.5-flash"
+    capsys.readouterr()
 
 
 def test_eval_benchmarks_script_main_runs_and_prints_summary(

@@ -31,6 +31,13 @@ def _parse_tag(value: str) -> str:
     return cleaned
 
 
+def _parse_model_name(value: str) -> str:
+    cleaned = value.strip()
+    if not cleaned:
+        raise argparse.ArgumentTypeError("Model name cannot be empty.")
+    return cleaned
+
+
 def _parse_positive_int(value: str) -> int:
     try:
         parsed = int(value)
@@ -118,6 +125,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--db", type=Path, default=None)
     parser.add_argument("--graph-dataset", type=str, default=None)
     parser.add_argument("--trace", action="store_true", default=False)
+    parser.add_argument("--answer-judge-model", type=_parse_model_name, default=None)
     parser.add_argument("--output-dir", type=Path, default=None)
     parser.add_argument("--tags", nargs="*", type=_parse_tag, default=None)
     return parser
@@ -158,6 +166,7 @@ def main(argv: list[str] | None = None) -> int:
             context_db=context_db,
             config_path=loaded_config_path,
             trace=args.trace,
+            answer_judge_model=args.answer_judge_model,
             output_dir=args.output_dir,
         )
         result = run_benchmark_suite(cli_config)

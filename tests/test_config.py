@@ -299,6 +299,7 @@ def test_checked_in_config_example_matches_app_config_schema() -> None:
     ]
     assert benchmark_experiment.repeat == 1
     assert benchmark_experiment.max_concurrency == 1
+    assert benchmark_experiment.answer_judge_model == "google-gla:gemini-2.5-flash"
     assert benchmark_experiment.tags == ["sql", "graph"]
 
 

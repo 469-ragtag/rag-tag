@@ -69,6 +69,7 @@ class ExperimentConfig(BaseModel):
     questions_file: str | None = None
     repeat: int | None = Field(default=None, ge=1)
     max_concurrency: int | None = Field(default=None, ge=1)
+    answer_judge_model: str | None = None
     tags: list[str] | None = None
     profiles: list[str] = Field(default_factory=list)
 

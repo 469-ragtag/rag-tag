@@ -17,6 +17,7 @@ from .dataset import (
     load_benchmark_dataset,
 )
 from .evaluators import (
+    DEFAULT_ANSWER_JUDGE_MODEL,
     DEFAULT_ANSWER_JUDGE_RUBRIC,
     NoExecutionError,
     RouteMatchesExpected,
@@ -63,6 +64,7 @@ __all__ = [
     "BenchmarkTaskResult",
     "BenchmarkUsage",
     "BenchmarkUsageAggregate",
+    "DEFAULT_ANSWER_JUDGE_MODEL",
     "DEFAULT_ANSWER_JUDGE_RUBRIC",
     "NoExecutionError",
     "RouteMatchesExpected",

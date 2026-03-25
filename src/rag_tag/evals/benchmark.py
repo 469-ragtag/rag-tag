@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import asdict, dataclass, field, fields, is_dataclass
 from datetime import UTC, datetime
@@ -14,13 +15,14 @@ from rag_tag.config import AppConfig, ExperimentConfig
 from rag_tag.observability import LogfireStatus, setup_logfire
 
 from .dataset import BenchmarkCase, BenchmarkDataset, load_benchmark_dataset
+from .evaluators import DEFAULT_ANSWER_JUDGE_MODEL
 from .reporting import (
     build_case_groups_rows,
     build_leaderboard_rows,
     build_runs_rows,
     write_csv_rows,
 )
-from .runner import BenchmarkExperimentConfig, evaluate_benchmark_dataset
+from .runner import BenchmarkExperimentConfig, evaluate_benchmark_dataset_async
 
 
 @dataclass(frozen=True)
@@ -79,7 +81,7 @@ class BenchmarkCliConfig:
     repeat: int = 1
     progress: bool = True
     include_answer_judge: bool = True
-    answer_judge_model: str | None = None
+    answer_judge_model: str | None = DEFAULT_ANSWER_JUDGE_MODEL
     debug_llm_io: bool = False
     trace: bool = False
     tags: list[str] = field(default_factory=list)
@@ -154,6 +156,13 @@ def build_benchmark_cli_config(
         if experiment is not None
         else None
     )
+    resolved_answer_judge_model = (
+        answer_judge_model
+        if answer_judge_model is not None
+        else experiment.answer_judge_model
+        if experiment is not None and experiment.answer_judge_model
+        else DEFAULT_ANSWER_JUDGE_MODEL
+    )
 
     return BenchmarkCliConfig(
         experiment_name=resolved_experiment_name,
@@ -169,7 +178,7 @@ def build_benchmark_cli_config(
         repeat=resolved_repeat,
         progress=progress,
         include_answer_judge=include_answer_judge,
-        answer_judge_model=answer_judge_model,
+        answer_judge_model=resolved_answer_judge_model,
         debug_llm_io=debug_llm_io,
         trace=trace,
         tags=resolved_tags,
@@ -253,6 +262,14 @@ def load_benchmark_dataset_with_tags(
 def run_benchmark_suite(config: BenchmarkCliConfig) -> BenchmarkSuiteResult:
     """Run the benchmark matrix, optionally with Logfire tracing."""
 
+    return asyncio.run(run_benchmark_suite_async(config))
+
+
+async def run_benchmark_suite_async(
+    config: BenchmarkCliConfig,
+) -> BenchmarkSuiteResult:
+    """Run the benchmark matrix, optionally with Logfire tracing."""
+
     logfire_status = setup_logfire(enabled=config.trace, console=True)
     dataset = load_benchmark_dataset_with_tags(config.dataset_path, tags=config.tags)
     run_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
@@ -287,7 +304,7 @@ def run_benchmark_suite(config: BenchmarkCliConfig) -> BenchmarkSuiteResult:
                 "logfire_url": logfire_status.url or None,
             },
         )
-        report = evaluate_benchmark_dataset(
+        report = await evaluate_benchmark_dataset_async(
             dataset,
             experiment=experiment_config,
             experiment_name=f"{config.experiment_name}__{combination.display_name()}",

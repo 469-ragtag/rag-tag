@@ -320,6 +320,7 @@ or local YAML case set. The benchmark runner:
 - expands the router x agent x prompt-strategy matrix
 - runs the full routed query flow end to end
 - writes Excel-friendly CSV artifacts plus a full JSON report
+- uses an explicit answer judge model instead of Pydantic Evals' hidden default
 - optionally enables Logfire tracing with `--trace`
 
 ### YAML case format
@@ -372,6 +373,7 @@ uv run python scripts/eval_benchmarks.py \
   --experiment benchmark-e2e-v1 \
   --db ./output/Building-Architecture.db \
   --graph-dataset Building-Architecture \
+  --answer-judge-model google-gla:gemini-2.5-flash \
   --trace
 ```
 
@@ -385,6 +387,7 @@ uv run python scripts/eval_benchmarks.py \
   --router-profiles router-gemini-flash dbx-gpt-oss-20b dbx-gemma-3-12b \
   --agent-profiles cohere-command-a dbx-claude-sonnet-4-6 dbx-gpt-oss-20b dbx-llama-4-maverick dbx-gemma-3-12b \
   --prompt-strategies baseline strict-grounded decompose \
+  --answer-judge-model google-gla:gemini-2.5-flash \
   --repeat 1 \
   --max-concurrency 1 \
   --db ./output/Building-Architecture.db \
