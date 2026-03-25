@@ -211,11 +211,13 @@ ACTION_DATA_DEFAULTS: dict[str, dict[str, Any]] = {
         "max_depth": None,
         "results": [],
         "evidence": [],
+        **_BOUNDED_LIST_METADATA_DEFAULTS,
     },
     "find_equipment_serving_space": {
         "space": None,
         "equipment": [],
         "evidence": [],
+        **_BOUNDED_LIST_METADATA_DEFAULTS,
     },
     "find_shortest_path": {
         "start": None,
@@ -228,6 +230,7 @@ ACTION_DATA_DEFAULTS: dict[str, dict[str, Any]] = {
         "classification": None,
         "elements": [],
         "evidence": [],
+        **_BOUNDED_LIST_METADATA_DEFAULTS,
     },
     "aggregate_elements": {
         "metric": None,

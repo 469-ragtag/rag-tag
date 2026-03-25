@@ -2571,12 +2571,6 @@ class NetworkXGraphBackend:
                 ),
             )
 
-            warnings: list[str] = []
-            if len(ordered_paths) > max_results:
-                warnings.append(
-                    f"Trace truncated to {max_results} result(s) to stay bounded."
-                )
-
             results: list[dict[str, Any]] = []
             for path in ordered_paths[:max_results]:
                 grounded_path, steps = build_grounded_path(
@@ -2618,15 +2612,21 @@ class NetworkXGraphBackend:
                 "start": resolved_start,
                 "relation": single_relation,
                 "max_depth": max_depth,
-                "results": results,
                 "visited_count": max(len(paths) - 1, 0),
                 "evidence": evidence,
             }
             if len(ordered_relations) > 1:
                 data["relations"] = ordered_relations
-            if warnings:
-                data["warnings"] = warnings
-            return _ok_action(action, data)
+            return _ok_action(
+                action,
+                finalize_bounded_list_data(
+                    data,
+                    items_key="results",
+                    items=results,
+                    total_found=len(ordered_paths),
+                    max_results=max_results,
+                ),
+            )
 
         if action == "find_shortest_path":
             start = params.get("start")
@@ -2844,12 +2844,6 @@ class NetworkXGraphBackend:
                 ),
             )
 
-            warnings: list[str] = []
-            if len(ordered_elements) > max_results:
-                warnings.append(
-                    f"Classification results truncated to {max_results} element(s)."
-                )
-
             selected_elements = ordered_elements[:max_results]
             classification_evidence: list[dict[str, Any]] = []
             for item in matched_classifications[:2]:
@@ -2876,14 +2870,20 @@ class NetworkXGraphBackend:
 
             data = {
                 "classification": classification,
-                "elements": selected_elements,
                 "matched_classifications": matched_classifications,
                 "total": len(ordered_elements),
                 "evidence": evidence,
             }
-            if warnings:
-                data["warnings"] = warnings
-            return _ok_action(action, data)
+            return _ok_action(
+                action,
+                finalize_bounded_list_data(
+                    data,
+                    items_key="elements",
+                    items=selected_elements,
+                    total_found=len(ordered_elements),
+                    max_results=max_results,
+                ),
+            )
 
         if action == "find_equipment_serving_space":
             space = params.get("space")
@@ -3135,12 +3135,6 @@ class NetworkXGraphBackend:
                     "No upstream equipment was found; returning terminal-level "
                     "serving candidates instead."
                 )
-            if len(ordered_candidates) > max_results:
-                warnings.append(
-                    "Serving-equipment results truncated to "
-                    f"{max_results} candidate(s)."
-                )
-
             equipment = []
             for item in ordered_candidates[:max_results]:
                 candidate = dict(item)
@@ -3175,13 +3169,21 @@ class NetworkXGraphBackend:
 
             data = {
                 "space": resolved_space,
-                "equipment": equipment,
                 "seed_count": len(seed_map),
                 "evidence": evidence,
             }
             if warnings:
                 data["warnings"] = warnings
-            return _ok_action(action, data)
+            return _ok_action(
+                action,
+                finalize_bounded_list_data(
+                    data,
+                    items_key="equipment",
+                    items=equipment,
+                    total_found=len(ordered_candidates),
+                    max_results=max_results,
+                ),
+            )
 
         if action in ROADMAP_ACTION_SET:
             return _err(
