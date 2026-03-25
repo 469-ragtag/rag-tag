@@ -35,11 +35,11 @@ def test_system_prompt_makes_macro_first_preferences_explicit_and_ordered() -> N
     assert "Prefer macro/helper tools first" in SYSTEM_PROMPT
 
     ordered_preferences = [
-        "1. `trace_distribution_network`",
-        "2. `find_shortest_path`",
-        "3. `find_by_classification`",
-        "4. `find_equipment_serving_space`",
-        "5. `aggregate_elements` / `group_elements_by_property`",
+        "trace_distribution_network(start, max_depth?, relations?, max_results?)",
+        "find_shortest_path(start, end, max_path_length?, relations?)",
+        "find_by_classification(classification, max_results?)",
+        "find_equipment_serving_space(space, max_depth?, max_results?)",
+        "aggregate_elements(element_ids, metric, field?)",
     ]
     positions = [SYSTEM_PROMPT.index(item) for item in ordered_preferences]
 
@@ -52,18 +52,19 @@ def test_system_prompt_makes_macro_first_preferences_explicit_and_ordered() -> N
     assert "aggregate_elements" in SYSTEM_PROMPT
     assert "group_elements_by_property" in SYSTEM_PROMPT
     assert "do not count or sum mentally" in SYSTEM_PROMPT
-    assert (
-        "do not count, sum,\n   average, min/max, or group in-context" in SYSTEM_PROMPT
-    )
+    assert "do not count, sum, average, min/max, or group in-context" in SYSTEM_PROMPT
 
 
 def test_system_prompt_guides_generic_container_anchor_discipline() -> None:
     assert "single best canonical container" in SYSTEM_PROMPT
     assert "do not fan out across several fuzzy matches in parallel" in SYSTEM_PROMPT
-    assert "inspect one best canonical\n     anchor first" in SYSTEM_PROMPT
+    assert (
+        "inspect the single\n   best canonical container anchor first" in SYSTEM_PROMPT
+    )
     assert "focused" in SYSTEM_PROMPT
-    assert "from that one anchor instead of launching parallel traversals" in (
-        SYSTEM_PROMPT
+    assert (
+        "instead of launching\n"
+        "   parallel traversals over several generic fuzzy matches" in SYSTEM_PROMPT
     )
 
 
@@ -85,4 +86,30 @@ def test_schema_correction_hint_is_explicit_about_real_tool_calls() -> None:
     assert (
         "Do NOT include tool_call_id, tool_name, or parameters"
         in _SCHEMA_CORRECTION_HINT
+    )
+
+
+def test_system_prompt_treats_truncated_results_as_partial_for_exact_questions() -> (
+    None
+):
+    assert "`data.truncated=true` means the result is partial, not exhaustive" in (
+        SYSTEM_PROMPT
+    )
+    assert "do not present a truncated list as a\n   complete answer" in SYSTEM_PROMPT
+    assert "only observed a bounded partial sample" in SYSTEM_PROMPT
+
+
+def test_system_prompt_uses_warnings_and_ambiguous_candidates_as_guidance() -> None:
+    assert "If a tool returns `data.warnings`, treat them as evidence" in SYSTEM_PROMPT
+    assert 'If `status="error"` includes ambiguous candidates' in SYSTEM_PROMPT
+    assert "retry with exact returned IDs before broader search" in SYSTEM_PROMPT
+
+
+def test_system_prompt_tightens_shortest_path_usage_on_dense_graphs() -> None:
+    assert "constrain `relations` unless the user truly wants any graph path" in (
+        SYSTEM_PROMPT
+    )
+    assert "for system/network connectivity, prefer explicit filters" in SYSTEM_PROMPT
+    assert "for topology-path questions, consider `path_connected_to`" in (
+        SYSTEM_PROMPT
     )
