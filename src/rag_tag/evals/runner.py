@@ -206,9 +206,7 @@ def _build_case_metadata(case: BenchmarkCase) -> BenchmarkCaseMetadata:
 def _build_experiment_metadata(
     experiment: BenchmarkExperimentConfig,
 ) -> dict[str, Any]:
-    effective_max_concurrency = _effective_max_concurrency(
-        experiment.max_concurrency
-    )
+    effective_max_concurrency = _effective_max_concurrency(experiment.max_concurrency)
     metadata = {
         "router_profile": experiment.router_profile,
         "agent_profile": experiment.agent_profile,

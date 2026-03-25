@@ -55,6 +55,7 @@ def test_run_benchmark_suite_skips_logfire_setup_when_trace_is_disabled(
         return LogfireStatus(enabled=False, cloud_sync=False, url="")
 
     monkeypatch.setattr("rag_tag.evals.benchmark.setup_logfire", fake_setup_logfire)
+
     async def fake_evaluate_benchmark_dataset_async(
         dataset, *, experiment, experiment_name
     ):
@@ -126,6 +127,7 @@ def test_run_benchmark_suite_preserves_trace_metadata_when_enabled(
             url="https://logfire.pydantic.dev",
         ),
     )
+
     async def fake_evaluate_benchmark_dataset_async(
         dataset, *, experiment, experiment_name
     ):
@@ -354,7 +356,9 @@ def test_eval_benchmarks_script_passes_answer_judge_model_override(
             ],
         )
 
-    monkeypatch.setattr(module, "build_benchmark_cli_config", fake_build_benchmark_cli_config)
+    monkeypatch.setattr(
+        module, "build_benchmark_cli_config", fake_build_benchmark_cli_config
+    )
     monkeypatch.setattr(
         module,
         "run_benchmark_suite",
