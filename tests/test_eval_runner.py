@@ -5,11 +5,11 @@ from pathlib import Path
 from pydantic_evals.evaluators import LLMJudge, MaxDuration
 
 from rag_tag.evals import (
+    DEFAULT_ANSWER_JUDGE_MODEL,
     BenchmarkCase,
     BenchmarkDataset,
     BenchmarkExperimentConfig,
     BenchmarkTaskResult,
-    DEFAULT_ANSWER_JUDGE_MODEL,
     build_eval_dataset,
     evaluate_benchmark_dataset,
 )
