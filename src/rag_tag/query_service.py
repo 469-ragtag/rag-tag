@@ -480,6 +480,8 @@ def _sql_error(
 
 
 def _sql_result_label(req: SqlRequest) -> str:
+    if req.ifc_class and req.text_match:
+        return f"{req.ifc_class} matching '{req.text_match}'"
     if req.ifc_class:
         return req.ifc_class
     if req.text_match:

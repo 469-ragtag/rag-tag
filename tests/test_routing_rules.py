@@ -215,6 +215,16 @@ def test_parking_spaces_route_to_text_match_not_ifc_space() -> None:
     assert decision.sql_request.text_match == "parking space"
 
 
+def test_descriptive_column_subtype_preserves_text_match_constraint() -> None:
+    decision = route_question_rule("How many round concrete columns are there?")
+
+    assert decision.route == "sql"
+    assert decision.sql_request is not None
+    assert decision.sql_request.intent == "count"
+    assert decision.sql_request.ifc_class == "IfcColumn"
+    assert decision.sql_request.text_match == "round concrete"
+
+
 def test_type_presence_question_routes_to_group_by_type_name() -> None:
     decision = route_question_rule("What curtain wall types are present?")
 

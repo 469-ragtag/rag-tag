@@ -51,6 +51,8 @@ def test_system_prompt_makes_macro_first_preferences_explicit_and_ordered() -> N
     assert "find_equipment_serving_space" in SYSTEM_PROMPT
     assert "aggregate_elements" in SYSTEM_PROMPT
     assert "group_elements_by_property" in SYSTEM_PROMPT
+    assert "resolve_element_set" in SYSTEM_PROMPT
+    assert "relate_element_set" in SYSTEM_PROMPT
     assert "do not count or sum mentally" in SYSTEM_PROMPT
     assert "do not count, sum, average, min/max, or group in-context" in SYSTEM_PROMPT
 
@@ -103,6 +105,18 @@ def test_system_prompt_uses_warnings_and_ambiguous_candidates_as_guidance() -> N
     assert "If a tool returns `data.warnings`, treat them as evidence" in SYSTEM_PROMPT
     assert 'If `status="error"` includes ambiguous candidates' in SYSTEM_PROMPT
     assert "retry with exact returned IDs before broader search" in SYSTEM_PROMPT
+
+
+def test_system_prompt_guides_constrained_set_resolution_and_set_level_relations() -> (
+    None
+):
+    assert "descriptive constrained set" in SYSTEM_PROMPT
+    assert "multiple occurrence candidates" in SYSTEM_PROMPT
+    assert "set-level relation helpers" in SYSTEM_PROMPT
+    assert "Use `resolve_element_set`" in SYSTEM_PROMPT
+    assert "For relation questions over that set, use `relate_element_set`" in (
+        SYSTEM_PROMPT
+    )
 
 
 def test_system_prompt_tightens_shortest_path_usage_on_dense_graphs() -> None:

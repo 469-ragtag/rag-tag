@@ -377,3 +377,142 @@ def test_text_match_counts_descriptive_compound_occurrences_not_type_rows(
     assert result["data"]["count"] == 2
     assert "e.type_name" in result["data"]["sql"]["query"]
     assert "IfcBuildingElementProxyType" not in result["data"]["summary"]
+
+
+def test_class_plus_text_match_preserves_descriptive_subtype_constraint(
+    tmp_path: Path,
+) -> None:
+    jsonl_path = tmp_path / "round_columns.jsonl"
+    db_path = tmp_path / "round_columns.db"
+    _write_jsonl(
+        jsonl_path,
+        [
+            {
+                "ExpressId": 1,
+                "GlobalId": "column-round-1",
+                "IfcType": "IfcColumn",
+                "Name": "Round Column 1",
+                "TypeName": "M_Concrete-Round-Column:300mm",
+                "ObjectType": "Concrete Round Column",
+            },
+            {
+                "ExpressId": 2,
+                "GlobalId": "column-round-2",
+                "IfcType": "IfcColumn",
+                "Name": "Round Column 2",
+                "TypeName": "M_Concrete-Round-Column:300mm",
+                "ObjectType": "Concrete Round Column",
+            },
+            {
+                "ExpressId": 3,
+                "GlobalId": "column-square",
+                "IfcType": "IfcColumn",
+                "Name": "Square Column 1",
+                "TypeName": "M_Concrete-Square-Column:300mm",
+                "ObjectType": "Concrete Square Column",
+            },
+            {
+                "ExpressId": 4,
+                "GlobalId": "column-steel-round",
+                "IfcType": "IfcColumn",
+                "Name": "Steel Round Column 1",
+                "TypeName": "M_Steel-Round-Column:300mm",
+                "ObjectType": "Steel Round Column",
+            },
+        ],
+    )
+    jsonl_to_sql(jsonl_path, db_path)
+
+    result = query_ifc_sql(
+        db_path,
+        SqlRequest(
+            intent="count",
+            ifc_class="IfcColumn",
+            level_like=None,
+            text_match="round concrete",
+        ),
+    )
+
+    assert result["data"]["count"] == 2
+    assert "e.object_type" in result["data"]["sql"]["query"]
+    assert result["data"]["summary"] == "Found 2 IfcColumn matching 'round concrete'."
+
+
+def test_text_match_is_token_aware_for_ground_round_false_positive(
+    tmp_path: Path,
+) -> None:
+    jsonl_path = tmp_path / "ground_round.jsonl"
+    db_path = tmp_path / "ground_round.db"
+    _write_jsonl(
+        jsonl_path,
+        [
+            {
+                "ExpressId": 1,
+                "GlobalId": "wall-ground",
+                "IfcType": "IfcWall",
+                "Name": "Ground Wall 1",
+                "ObjectType": "Ground Floor Wall",
+            },
+            {
+                "ExpressId": 2,
+                "GlobalId": "column-round",
+                "IfcType": "IfcColumn",
+                "Name": "Round Column 1",
+                "ObjectType": "Round Concrete Column",
+            },
+        ],
+    )
+    jsonl_to_sql(jsonl_path, db_path)
+
+    result = query_ifc_sql(
+        db_path,
+        SqlRequest(
+            intent="count",
+            ifc_class=None,
+            level_like=None,
+            text_match="round",
+        ),
+    )
+
+    assert result["data"]["count"] == 1
+    assert result["data"]["evidence"][0]["global_id"] == "column-round"
+
+
+def test_text_match_is_token_aware_for_street_tree_false_positive(
+    tmp_path: Path,
+) -> None:
+    jsonl_path = tmp_path / "street_tree.jsonl"
+    db_path = tmp_path / "street_tree.db"
+    _write_jsonl(
+        jsonl_path,
+        [
+            {
+                "ExpressId": 1,
+                "GlobalId": "street-light",
+                "IfcType": "IfcLightFixture",
+                "Name": "Street Light 1",
+                "Description": "Street lighting pole",
+            },
+            {
+                "ExpressId": 2,
+                "GlobalId": "tree-proxy",
+                "IfcType": "IfcBuildingElementProxy",
+                "Name": "Tree 1",
+                "Description": "Deciduous tree",
+            },
+        ],
+    )
+    jsonl_to_sql(jsonl_path, db_path)
+
+    result = query_ifc_sql(
+        db_path,
+        SqlRequest(
+            intent="count",
+            ifc_class=None,
+            level_like=None,
+            text_match="tree",
+        ),
+    )
+
+    assert result["data"]["count"] == 1
+    assert result["data"]["evidence"][0]["global_id"] == "tree-proxy"

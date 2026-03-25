@@ -41,6 +41,11 @@ from rag_tag.graph_contract import (
     normalize_relation_source,
     relation_bucket,
 )
+from rag_tag.text_matching import (
+    combined_text_match_terms,
+    normalize_text_match_text,
+    text_match_terms,
+)
 
 _logger = logging.getLogger(__name__)
 
@@ -117,6 +122,8 @@ _EQUIPMENT_CLASS_NAMES = {
 }
 _LEGACY_BOUNDED_ACTION_DEFAULTS = {
     "find_nodes": 50,
+    "resolve_element_set": 25,
+    "relate_element_set": 25,
     "traverse": 25,
     "spatial_query": 50,
     "get_elements_in_storey": 50,
@@ -727,6 +734,185 @@ class NetworkXGraphBackend:
                 metric_order = 4
                 metric_key = (1, 0.0)
             return (metric_order, metric_key, *item_label_id_sort_key(item))
+
+        def constrained_search_texts(node_data: dict[str, Any]) -> list[str]:
+            properties = node_data.get("properties") or {}
+            if not isinstance(properties, dict):
+                properties = {}
+
+            payload = node_data.get("payload") or {}
+            if not isinstance(payload, dict):
+                payload = {}
+
+            raw_values = [
+                node_data.get("label"),
+                properties.get("Name"),
+                properties.get("TypeName"),
+                properties.get("ObjectType"),
+                properties.get("Description"),
+                payload.get("Name"),
+                payload.get("TypeName"),
+                payload.get("ObjectType"),
+                payload.get("Description"),
+            ]
+
+            materials = properties.get("Materials") or payload.get("Materials") or []
+            if isinstance(materials, list):
+                raw_values.extend(materials)
+
+            values: list[str] = []
+            for raw_value in raw_values:
+                if raw_value in {None, "", "None"}:
+                    continue
+                values.append(str(raw_value))
+            return values
+
+        def resolve_element_set_candidate(
+            node_id: str,
+            node_data: dict[str, Any],
+            *,
+            query: str,
+            terms: tuple[str, ...],
+            class_filter: str | None,
+        ) -> dict[str, Any] | None:
+            if not str(node_id).startswith("Element::"):
+                return None
+            if class_filter is not None and (
+                str(node_data.get("class_", "")).lower() != class_filter.lower()
+            ):
+                return None
+
+            search_texts = constrained_search_texts(node_data)
+            if not search_texts:
+                return None
+
+            query_term_set = set(terms)
+            combined_terms = combined_text_match_terms(search_texts)
+            combined_term_set = set(combined_terms)
+            if not query_term_set.issubset(combined_term_set):
+                return None
+
+            normalized_query = normalize_text_match_text(query)
+            field_terms = [text_match_terms(text) for text in search_texts]
+            matched_field_count = sum(
+                1
+                for current_terms in field_terms
+                if query_term_set.intersection(current_terms)
+            )
+            exact_field_matches = sum(
+                normalize_text_match_text(" ".join(current_terms)) == normalized_query
+                for current_terms in field_terms
+                if current_terms
+            )
+            full_field_extra_terms = [
+                len(set(current_terms) - query_term_set)
+                for current_terms in field_terms
+                if query_term_set.issubset(current_terms)
+            ]
+            best_extra_terms = (
+                min(full_field_extra_terms)
+                if full_field_extra_terms
+                else len(combined_term_set - query_term_set)
+            )
+
+            return {
+                **build_node_payload(
+                    node_id, node_data, payload_mode=resolved_payload_mode
+                ),
+                "match_reason": f"all_terms={','.join(terms)}",
+                "matched_field_count": matched_field_count,
+                "exact_field_matches": exact_field_matches,
+                "best_extra_terms": best_extra_terms,
+            }
+
+        def resolve_element_set_sort_key(item: dict[str, Any]) -> tuple[Any, ...]:
+            return (
+                -int(item.get("exact_field_matches") or 0),
+                -int(item.get("matched_field_count") or 0),
+                int(item.get("best_extra_terms") or 0),
+                *item_label_id_sort_key(item),
+            )
+
+        def relation_result_sort_key(
+            relation_value: str,
+            item: dict[str, Any],
+        ) -> tuple[Any, ...]:
+            if relation_value in SPATIAL_RELATIONS:
+                return spatial_item_sort_key(item)
+            return topology_item_sort_key(item)
+
+        def merge_relation_set_item(
+            existing: dict[str, Any],
+            candidate: dict[str, Any],
+            *,
+            relation_value: str,
+            anchor_id: str,
+        ) -> dict[str, Any]:
+            merged = dict(existing)
+            matched_anchor_ids = list(merged.get("matched_anchor_ids") or [])
+            if anchor_id not in matched_anchor_ids:
+                matched_anchor_ids.append(anchor_id)
+                matched_anchor_ids.sort(key=stable_sort_text)
+            merged["matched_anchor_ids"] = matched_anchor_ids
+            merged["matched_anchor_count"] = len(matched_anchor_ids)
+
+            if relation_result_sort_key(
+                relation_value, candidate
+            ) < relation_result_sort_key(relation_value, merged):
+                for key in (
+                    "distance",
+                    "vertical_gap",
+                    "overlap_area_xy",
+                    "intersection_volume",
+                    "contact_area",
+                    "source",
+                ):
+                    if key in candidate:
+                        merged[key] = candidate.get(key)
+            return merged
+
+        def iter_relation_set_candidates(
+            anchor_id: str,
+            *,
+            relation_value: str,
+        ) -> Iterable[dict[str, Any]]:
+            if relation_value in SPATIAL_RELATIONS:
+                for nbr, edge in spatial_neighbors(anchor_id):
+                    current_relation = edge_relation(edge)
+                    if current_relation != relation_value:
+                        continue
+                    yield {
+                        "id": nbr,
+                        "global_id": node_global_id(nbr),
+                        "label": G.nodes[nbr].get("label"),
+                        "class_": G.nodes[nbr].get("class_"),
+                        "relation": current_relation,
+                        "distance": edge.get("distance"),
+                        "source": edge_source(edge, current_relation),
+                    }
+                return
+
+            allowed_relation = relation_value
+            output_relation = relation_value
+            if relation_value == "above":
+                allowed_relation = "below"
+            elif relation_value == "below":
+                allowed_relation = "above"
+
+            for nbr, edge in topology_neighbors(anchor_id, {allowed_relation}):
+                current_relation = edge_relation(edge)
+                yield {
+                    "id": nbr,
+                    "global_id": node_global_id(nbr),
+                    "label": G.nodes[nbr].get("label"),
+                    "class_": G.nodes[nbr].get("class_"),
+                    "relation": output_relation,
+                    "vertical_gap": edge.get("vertical_gap"),
+                    "overlap_area_xy": edge.get("overlap_area_xy"),
+                    "intersection_volume": edge.get("intersection_volume"),
+                    "contact_area": edge.get("contact_area"),
+                    "source": edge_source(edge, current_relation),
+                }
 
         def resolve_graph_node(
             node_ref: str,
@@ -1404,6 +1590,231 @@ class NetworkXGraphBackend:
                     max_results=max_results,
                 ),
             )
+
+        if action == "resolve_element_set":
+            query = params.get("query")
+            cls = params.get("class")
+            match_mode = params.get("match_mode", "set")
+            if not isinstance(query, str) or not query.strip():
+                return _err("Missing param: query", "missing_param")
+            if cls is not None and not isinstance(cls, str):
+                return _err("Invalid param: class must be a string", "invalid")
+            if not isinstance(match_mode, str):
+                return _err("Invalid param: match_mode must be a string", "invalid")
+            match_mode_value = match_mode.strip().lower()
+            if match_mode_value not in {"set", "singular"}:
+                return _err(
+                    "Unsupported match_mode for resolve_element_set",
+                    "invalid",
+                    {"allowed_match_modes": ["set", "singular"]},
+                )
+
+            max_results_value = parse_legacy_max_results(action)
+            if isinstance(max_results_value, dict):
+                return _err(
+                    str(max_results_value["error"]),
+                    str(max_results_value["code"]),
+                )
+            max_results = max_results_value
+            class_filter = normalize_class(cls) if cls else None
+            match_terms = text_match_terms(query)
+            if not match_terms:
+                return _err(
+                    "Query must contain at least one alphanumeric search term.",
+                    "invalid",
+                )
+
+            matches: list[dict[str, Any]] = []
+            for node_id, node_data in G.nodes(data=True):
+                candidate = resolve_element_set_candidate(
+                    node_id,
+                    node_data,
+                    query=query,
+                    terms=match_terms,
+                    class_filter=class_filter,
+                )
+                if candidate is None:
+                    continue
+                matches.append(candidate)
+
+            matches.sort(key=resolve_element_set_sort_key)
+
+            if match_mode_value == "singular":
+                if len(matches) == 1:
+                    return _ok_action(
+                        action,
+                        finalize_bounded_list_data(
+                            {
+                                "query": query,
+                                "class_filter": class_filter,
+                                "match_mode": match_mode_value,
+                                "matches": [],
+                            },
+                            items_key="matches",
+                            items=matches,
+                            total_found=1,
+                            max_results=max_results,
+                        ),
+                    )
+                if not matches:
+                    return _err(
+                        f"No constrained element matches were found for '{query}'.",
+                        "not_found",
+                        {
+                            "query": query,
+                            "class_filter": class_filter,
+                            "match_terms": list(match_terms),
+                        },
+                    )
+                return _err(
+                    (
+                        "Ambiguous constrained element anchor: multiple occurrence "
+                        "matches satisfy this singular description."
+                    ),
+                    "ambiguous",
+                    {
+                        "query": query,
+                        "class_filter": class_filter,
+                        "match_terms": list(match_terms),
+                        "total_found": len(matches),
+                        "candidates": matches[: min(len(matches), max_results)],
+                    },
+                )
+
+            resolved_matches = matches[:max_results]
+            return _ok_action(
+                action,
+                finalize_bounded_list_data(
+                    {
+                        "query": query,
+                        "class_filter": class_filter,
+                        "match_mode": match_mode_value,
+                        "matches": [],
+                    },
+                    items_key="matches",
+                    items=resolved_matches,
+                    total_found=len(matches),
+                    max_results=max_results,
+                ),
+            )
+
+        if action == "relate_element_set":
+            relation = params.get("relation")
+            if not isinstance(relation, str) or not relation.strip():
+                return _err("Missing param: relation", "missing_param")
+
+            relation_value = normalize_relation_name(relation)
+            supported_relations = set(SPATIAL_RELATIONS) | set(TOPOLOGY_RELATIONS)
+            if relation_value not in supported_relations:
+                return _err(
+                    "Unsupported relation for relate_element_set",
+                    "invalid",
+                    {"allowed_relations": sorted(supported_relations)},
+                )
+
+            max_results_value = parse_legacy_max_results(action)
+            if isinstance(max_results_value, dict):
+                return _err(
+                    str(max_results_value["error"]),
+                    str(max_results_value["code"]),
+                )
+            max_results = max_results_value
+
+            element_refs, unresolved_ids, ref_err = resolve_requested_element_refs(
+                params.get("anchor_ids")
+            )
+            if ref_err is not None:
+                return _err(str(ref_err["error"]), str(ref_err["code"]))
+            if not element_refs:
+                return _err(
+                    "None of the provided anchor_ids could be resolved.",
+                    "not_found",
+                    {"unmatched_anchor_ids": unresolved_ids[:10]},
+                )
+
+            results_by_id: dict[str, dict[str, Any]] = {}
+            resolved_anchor_ids = [str(ref["node_id"]) for ref in element_refs]
+            anchors_with_matches: set[str] = set()
+            for ref in element_refs:
+                anchor_id = str(ref["node_id"])
+                anchor_had_match = False
+                for candidate in iter_relation_set_candidates(
+                    anchor_id,
+                    relation_value=relation_value,
+                ):
+                    anchor_had_match = True
+                    candidate["matched_anchor_ids"] = [anchor_id]
+                    candidate["matched_anchor_count"] = 1
+
+                    existing = results_by_id.get(str(candidate["id"]))
+                    if existing is None:
+                        results_by_id[str(candidate["id"])] = candidate
+                        continue
+                    results_by_id[str(candidate["id"])] = merge_relation_set_item(
+                        existing,
+                        candidate,
+                        relation_value=relation_value,
+                        anchor_id=anchor_id,
+                    )
+
+                if anchor_had_match:
+                    anchors_with_matches.add(anchor_id)
+
+            no_relation_match_anchor_ids = sorted(
+                set(resolved_anchor_ids) - anchors_with_matches,
+                key=stable_sort_text,
+            )
+            unresolved_anchor_ids = merge_requested_ids(unresolved_ids)
+            unmatched_anchor_ids = merge_requested_ids(
+                unresolved_anchor_ids,
+                no_relation_match_anchor_ids,
+            )
+
+            results = sorted(
+                results_by_id.values(),
+                key=lambda item: relation_result_sort_key(relation_value, item),
+            )
+            data = finalize_bounded_list_data(
+                {
+                    "anchor_ids": resolved_anchor_ids,
+                    "relation": relation_value,
+                    "anchor_count": len(resolved_anchor_ids)
+                    + len(unresolved_anchor_ids),
+                    "resolved_anchor_count": len(resolved_anchor_ids),
+                    "matched_anchor_count": len(anchors_with_matches),
+                    "unmatched_anchor_count": len(unmatched_anchor_ids),
+                    "unresolved_anchor_count": len(unresolved_anchor_ids),
+                    "no_relation_match_anchor_count": len(no_relation_match_anchor_ids),
+                    "results": [],
+                },
+                items_key="results",
+                items=results[:max_results],
+                total_found=len(results),
+                max_results=max_results,
+            )
+            if unmatched_anchor_ids:
+                data["unmatched_anchor_ids"] = unmatched_anchor_ids[:10]
+            if unresolved_anchor_ids:
+                data["unresolved_anchor_ids"] = unresolved_anchor_ids[:10]
+                warnings = list(data.get("warnings") or [])
+                warnings.append(
+                    (
+                        f"{len(unresolved_anchor_ids)} requested anchor ID(s) were not "
+                        "matched in the graph."
+                    )
+                )
+                data["warnings"] = warnings
+            if no_relation_match_anchor_ids:
+                warnings = list(data.get("warnings") or [])
+                warnings.append(
+                    (
+                        f"{len(no_relation_match_anchor_ids)} resolved anchor(s) "
+                        f"produced no '{relation_value}' relation matches."
+                    )
+                )
+                data["warnings"] = warnings
+                data["no_relation_match_anchor_ids"] = no_relation_match_anchor_ids[:10]
+            return _ok_action(action, data)
 
         if action == "get_adjacent_elements":
             element_id = params.get("element_id")

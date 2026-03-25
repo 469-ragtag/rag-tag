@@ -10,6 +10,7 @@ from rag_tag.ifc_class_taxonomy import expand_ifc_class_filter
 from rag_tag.level_normalization import canonicalize_level
 from rag_tag.router import SqlFieldRef, SqlRequest, SqlValueFilter
 from rag_tag.sql_element_lookup import decode_db_value
+from rag_tag.text_matching import text_match_terms, text_matches_query
 
 _ELEMENT_GROUP_FIELDS: dict[str, str] = {
     "ifc_class": "e.ifc_class",
@@ -54,6 +55,7 @@ def query_ifc_sql(db_path: Path, request: SqlRequest) -> dict[str, Any]:
 
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
+    conn.create_function("token_match", 2, _sqlite_token_match, deterministic=True)
 
     try:
         scope = _compile_element_scope(conn, request)
@@ -444,12 +446,9 @@ def _compile_element_scope(
         where_clauses.append("COALESCE(e.type_name, '') = ? COLLATE NOCASE")
         where_params.append(request.type_name)
     if request.text_match:
-        where_clauses.append(
-            "(COALESCE(e.name, '') LIKE ? COLLATE NOCASE OR "
-            "COALESCE(e.type_name, '') LIKE ? COLLATE NOCASE)"
-        )
-        match_value = f"%{request.text_match}%"
-        where_params.extend((match_value, match_value))
+        text_clauses, text_params = _compile_text_match_clauses(request.text_match)
+        where_clauses.extend(text_clauses)
+        where_params.extend(text_params)
 
     for filter_item in request.element_filters:
         clause, params = _compile_element_filter(filter_item)
@@ -497,6 +496,26 @@ def _compile_element_filter(filter_item: SqlValueFilter) -> tuple[str, list[obje
 
 def _is_numeric_element_field(field: str) -> bool:
     return field == "express_id"
+
+
+def _compile_text_match_clauses(text_match: str) -> tuple[list[str], list[object]]:
+    terms = _text_match_terms(text_match)
+    if not terms:
+        return [], []
+
+    searchable_expr = (
+        "LOWER(COALESCE(e.name, '') || ' ' || COALESCE(e.type_name, '') || ' ' || "
+        "COALESCE(e.object_type, '') || ' ' || COALESCE(e.description, ''))"
+    )
+    return [f"token_match({searchable_expr}, ?) = 1"], [text_match]
+
+
+def _text_match_terms(text: str) -> tuple[str, ...]:
+    return text_match_terms(text)
+
+
+def _sqlite_token_match(searchable_text: str | None, query: str | None) -> int:
+    return int(text_matches_query(searchable_text or "", query or ""))
 
 
 def _should_exclude_type_rows_for_occurrence_search(request: SqlRequest) -> bool:
@@ -798,6 +817,8 @@ def _group_summary(
 
 
 def _result_label(request: SqlRequest) -> str:
+    if request.ifc_class and request.text_match:
+        return f"{request.ifc_class} matching '{request.text_match}'"
     if request.ifc_class:
         return request.ifc_class
     if request.text_match:

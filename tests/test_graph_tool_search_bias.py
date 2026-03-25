@@ -4,6 +4,7 @@ import networkx as nx
 
 from rag_tag.agent.graph_tools import _fuzzy_find_nodes_impl
 from rag_tag.graph import wrap_networkx_graph
+from rag_tag.ifc_graph_tool import query_ifc_graph
 
 
 def _add_node(
@@ -243,3 +244,157 @@ def test_fuzzy_find_nodes_reuses_duplicate_generic_container_search_with_warning
         "Reused the prior canonical container anchor search. Prefer the existing "
         "exact container ID instead of repeating broad fuzzy resolution."
     ]
+
+
+def test_resolve_element_set_singular_mode_returns_ambiguity() -> None:
+    graph = nx.MultiDiGraph()
+    _add_node(
+        graph,
+        "Element::cw-1",
+        label="Curtain Wall A",
+        class_name="IfcCurtainWall",
+    )
+    graph.nodes["Element::cw-1"]["properties"]["ObjectType"] = "Exterior Curtain Wall"
+    _add_node(
+        graph,
+        "Element::cw-2",
+        label="Curtain Wall B",
+        class_name="IfcCurtainWall",
+    )
+    graph.nodes["Element::cw-2"]["properties"]["ObjectType"] = "Exterior Curtain Wall"
+
+    result = query_ifc_graph(
+        graph,
+        "resolve_element_set",
+        {
+            "query": "exterior curtain wall",
+            "class": "IfcCurtainWall",
+            "match_mode": "singular",
+            "max_results": 10,
+        },
+    )
+
+    assert result["status"] == "error"
+    assert result["error"]["code"] == "ambiguous"
+    candidates = result["error"]["details"]["candidates"]
+    assert [item["id"] for item in candidates] == ["Element::cw-1", "Element::cw-2"]
+
+
+def test_resolve_element_set_set_mode_returns_constrained_matches() -> None:
+    graph = nx.MultiDiGraph()
+    _add_node(
+        graph,
+        "Element::column-round",
+        label="Round Column",
+        class_name="IfcColumn",
+    )
+    graph.nodes["Element::column-round"]["properties"]["ObjectType"] = (
+        "Concrete Round Column"
+    )
+    _add_node(
+        graph,
+        "Element::column-square",
+        label="Square Column",
+        class_name="IfcColumn",
+    )
+    graph.nodes["Element::column-square"]["properties"]["ObjectType"] = (
+        "Concrete Square Column"
+    )
+
+    result = query_ifc_graph(
+        graph,
+        "resolve_element_set",
+        {
+            "query": "round concrete column",
+            "class": "IfcColumn",
+            "match_mode": "set",
+            "max_results": 10,
+        },
+    )
+
+    assert result["status"] == "ok"
+    assert [item["id"] for item in result["data"]["matches"]] == [
+        "Element::column-round"
+    ]
+    assert result["data"]["total_found"] == 1
+    assert result["data"]["returned_count"] == 1
+
+
+def test_resolve_element_set_matches_terms_across_union_of_fields() -> None:
+    graph = nx.MultiDiGraph()
+    _add_node(
+        graph,
+        "Element::cw-split",
+        label="Curtain Wall A",
+        class_name="IfcCurtainWall",
+    )
+    graph.nodes["Element::cw-split"]["properties"]["ObjectType"] = "Exterior"
+
+    result = query_ifc_graph(
+        graph,
+        "resolve_element_set",
+        {
+            "query": "exterior curtain wall",
+            "class": "IfcCurtainWall",
+            "match_mode": "set",
+            "max_results": 10,
+        },
+    )
+
+    assert result["status"] == "ok"
+    assert [item["id"] for item in result["data"]["matches"]] == ["Element::cw-split"]
+
+
+def test_resolve_element_set_avoids_ground_round_false_positive() -> None:
+    graph = nx.MultiDiGraph()
+    _add_node(
+        graph,
+        "Element::wall-ground",
+        label="Ground Wall",
+        class_name="IfcWall",
+    )
+    graph.nodes["Element::wall-ground"]["properties"]["ObjectType"] = (
+        "Ground Floor Wall"
+    )
+
+    result = query_ifc_graph(
+        graph,
+        "resolve_element_set",
+        {
+            "query": "round",
+            "class": "IfcWall",
+            "match_mode": "set",
+            "max_results": 10,
+        },
+    )
+
+    assert result["status"] == "ok"
+    assert result["data"]["matches"] == []
+    assert result["data"]["total_found"] == 0
+
+
+def test_resolve_element_set_avoids_street_tree_false_positive() -> None:
+    graph = nx.MultiDiGraph()
+    _add_node(
+        graph,
+        "Element::light-street",
+        label="Street Light",
+        class_name="IfcLightFixture",
+    )
+    graph.nodes["Element::light-street"]["properties"]["Description"] = (
+        "Street lighting pole"
+    )
+
+    result = query_ifc_graph(
+        graph,
+        "resolve_element_set",
+        {
+            "query": "tree",
+            "match_mode": "set",
+            "max_results": 10,
+        },
+    )
+
+    assert result["status"] == "ok"
+    assert result["data"]["matches"] == []
+    assert result["data"]["total_found"] == 0

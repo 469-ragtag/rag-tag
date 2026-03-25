@@ -73,6 +73,8 @@ def _build_execution_brief(question: str) -> str | None:
     return (
         "Execution discipline for this run:\n"
         "- Resolve one plausible canonical container once and reuse its exact ID.\n"
+        "- If a descriptive subtype anchor can be resolved deterministically, "
+        "resolve that constrained set once and reuse the exact IDs.\n"
         "- Do not repeat near-duplicate generic anchor searches or broad class "
         "scans unless new narrowing evidence appears.\n"
         "- Prefer containment helpers before broad traversal for inside/outside "
@@ -155,17 +157,25 @@ These rules are especially important on dense IFC files.
    matches in parallel.
    Continue with a focused follow-up from that one anchor instead of launching
    parallel traversals over several generic fuzzy matches.
-2. Prefer macro/helper tools before generic `traverse`.
-3. Prefer containment helpers before broad topology for inside/outside or
+2. When the anchor is really a descriptive constrained set such as `exterior
+   curtain wall`, `round concrete column`, or `tree`, resolve that set once
+   deterministically and reuse the exact IDs.
+3. If a singular anchor resolution returns multiple occurrence candidates,
+   treat it as ambiguity to narrow, not as permission to fan out across all of
+   them.
+4. Prefer set-level relation helpers over repeating the same per-anchor relation
+   tool call many times.
+5. Prefer macro/helper tools before generic `traverse`.
+6. Prefer containment helpers before broad topology for inside/outside or
    in/not-in questions.
-4. Avoid unconstrained `traverse(..., depth>3)` unless you still lack the basic
+7. Avoid unconstrained `traverse(..., depth>3)` unless you still lack the basic
    anchors.
-5. `data.truncated=true` means the result is partial, not exhaustive.
-6. For exact questions such as `all`, `list every`, `which`, `how many`,
+8. `data.truncated=true` means the result is partial, not exhaustive.
+9. For exact questions such as `all`, `list every`, `which`, `how many`,
    `count`, or `which level has the most`, do not present a truncated list as a
    complete answer. Refine first; if you still cannot get an untruncated set,
    say clearly that you only observed a bounded partial sample.
-7. If `status="error"` includes ambiguous candidates, candidate IDs, or details,
+10. If `status="error"` includes ambiguous candidates, candidate IDs, or details,
    inspect those and retry with an exact returned ID before launching broader
    search again.
 
@@ -258,6 +268,17 @@ Tool node payloads use:
     filter and verify afterward
   - broad and bounded; treat results as partial when `data.truncated=true`
 
+- `resolve_element_set(query, class_filter?, match_mode?, max_results?)`
+  - deterministic constrained-set discovery over element label/name/type/object
+    text
+  - use this for descriptive subtype/family anchors like `exterior curtain
+    wall`, `round concrete column`, or `tree` when the overall question is
+    graph-shaped but the anchor set itself can still be resolved deterministically
+  - use `match_mode='singular'` when the wording truly targets one occurrence;
+    if it returns ambiguity, narrow instead of expanding
+  - use `match_mode='set'` when the phrase behaves like a constrained family/set
+    and downstream reasoning should operate on all matched occurrences
+
 ### Inspection and schema discovery
 
 - `get_element_properties(element_id)`
@@ -295,6 +316,13 @@ Tool node payloads use:
 
 - `get_adjacent_elements(element_id, max_results?)`
   - first choice for near/adjacent/neighbour questions
+
+- `relate_element_set(anchor_ids, relation, max_results?)`
+  - compute one bounded deduplicated relation union over an already resolved
+    anchor set
+  - prefer this over repeating `get_adjacent_elements`,
+    `get_topology_neighbors`, `get_intersections_3d`, or vertical helpers once
+    you already have the anchor set
 
 - `spatial_query(near, max_distance, class_?, max_results?)`
   - distance-based fallback when adjacency/topology is too strict or absent
@@ -391,17 +419,19 @@ specific tool fits or the helper returns weak evidence.
    - relation(s) to test
    - required output shape: exact count, exhaustive list, sample list,
      comparison, path, or explanation
-2. Resolve one best anchor first.
+2. Resolve one best anchor or one deterministic constrained set first.
 3. Pull related candidates with the most specific tool available.
-4. If results are ambiguous, use the returned candidates/details and retry with
+4. When you already have several exact anchor IDs for one constrained set, use a
+   set-level relation helper instead of per-anchor fan-out.
+5. If results are ambiguous, use the returned candidates/details and retry with
    exact IDs.
-5. If results are truncated and the question is exact/exhaustive, refine
+6. If results are truncated and the question is exact/exhaustive, refine
    immediately before concluding.
-6. If needed, inspect properties with `get_element_properties`.
-7. If the question asks for exact set math or grouped breakdowns, call
+7. If needed, inspect properties with `get_element_properties`.
+8. If the question asks for exact set math or grouped breakdowns, call
    `aggregate_elements` or `group_elements_by_property`.
-8. Repeat until the answer is supported.
-9. Summarize only what the tool evidence supports.
+9. Repeat until the answer is supported.
+10. Summarize only what the tool evidence supports.
 
 Do not stop after one tool call if the question clearly requires composition.
 
@@ -418,6 +448,21 @@ Examples: `What is adjacent to the kitchen?`, `What doors are in the entry hall?
 3. For room contents, use `traverse(..., relation="contains")`.
 4. For nearby elements, use `get_adjacent_elements` or `spatial_query`.
 5. Verify candidates with `get_element_properties` if needed.
+
+### Descriptive constrained-set anchors
+
+Examples: `Which elements are adjacent to the exterior curtain wall?`,
+`How many round concrete columns are there?`
+
+1. Use `resolve_element_set` to resolve the constrained occurrence set once.
+2. Use `match_mode='singular'` only when the user clearly means one specific
+   occurrence. If that comes back ambiguous, narrow instead of fanning out.
+3. Use `match_mode='set'` when the phrase is acting like a constrained family or
+   subtype set.
+4. For relation questions over that set, use `relate_element_set`.
+5. For exact counts or grouped breakdowns over that resolved set, call
+   `aggregate_elements` or `group_elements_by_property` and stop unless
+   truncation or ambiguity still matters.
 
 ### Storey and floor questions
 

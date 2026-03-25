@@ -20,6 +20,8 @@ from typing import Any
 CANONICAL_ACTIONS: tuple[str, ...] = (
     "get_elements_in_storey",
     "find_elements_by_class",
+    "resolve_element_set",
+    "relate_element_set",
     "get_adjacent_elements",
     "get_topology_neighbors",
     "get_intersections_3d",
@@ -142,6 +144,24 @@ ACTION_DATA_DEFAULTS: dict[str, dict[str, Any]] = {
         "evidence": [],
         **_BOUNDED_LIST_METADATA_DEFAULTS,
     },
+    "resolve_element_set": {
+        "query": None,
+        "class_filter": None,
+        "match_mode": None,
+        "matches": [],
+        "evidence": [],
+        **_BOUNDED_LIST_METADATA_DEFAULTS,
+    },
+    "relate_element_set": {
+        "anchor_ids": [],
+        "relation": None,
+        "anchor_count": 0,
+        "matched_anchor_count": 0,
+        "unmatched_anchor_count": 0,
+        "results": [],
+        "evidence": [],
+        **_BOUNDED_LIST_METADATA_DEFAULTS,
+    },
     "get_adjacent_elements": {
         "element_id": None,
         "adjacent": [],
@@ -261,6 +281,8 @@ ACTION_REQUIRED_DATA_FIELDS: dict[str, tuple[str, ...]] = {
 ACTION_EVIDENCE_FIELDS: dict[str, tuple[str, ...]] = {
     "get_elements_in_storey": ("elements",),
     "find_elements_by_class": ("elements",),
+    "resolve_element_set": ("matches",),
+    "relate_element_set": ("results",),
     "get_adjacent_elements": ("adjacent",),
     "get_topology_neighbors": ("neighbors",),
     "get_intersections_3d": ("intersections_3d",),

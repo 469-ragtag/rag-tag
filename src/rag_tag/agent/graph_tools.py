@@ -86,8 +86,9 @@ _GENERIC_CONTAINER_SECONDARY_BOOST = 4.0
 _GENERIC_CONTAINER_PROXY_PENALTY = 18.0
 _RUN_GUARD_CACHE_KEY = "_graph_agent_guard"
 _STABLE_SET_STOP_WARNING = (
-    "A stable discovered set was already aggregated/grouped in this run; stop "
-    "unless ambiguity or truncation still blocks the answer."
+    "A stable constrained set was already resolved in this run; reuse it instead "
+    "of reopening broad search unless ambiguity or truncation still blocks the "
+    "answer."
 )
 
 
@@ -313,6 +314,23 @@ def _mark_stable_set_tool(
     stable_tools = guard.setdefault("stable_set_tools_used", [])
     if tool_name not in stable_tools:
         stable_tools.append(tool_name)
+
+
+def _has_complete_non_empty_items(
+    envelope: dict[str, Any],
+    *,
+    items_key: str,
+) -> bool:
+    """Return True when a successful bounded result contains a full non-empty set."""
+    if envelope.get("status") != "ok":
+        return False
+    data = envelope.get("data")
+    if not isinstance(data, dict):
+        return False
+    if bool(data.get("truncated")):
+        return False
+    items = data.get(items_key)
+    return isinstance(items, list) and len(items) > 0
 
 
 def _reuse_unconditionally(_cached: dict[str, Any], _requested: dict[str, Any]) -> bool:
@@ -919,6 +937,75 @@ def register_graph_tools(agent: Any) -> None:
                 "truncated": bool((result.get("data") or {}).get("truncated")),
             },
         )
+        return result
+
+    @agent.tool
+    def resolve_element_set(
+        ctx: RunContext[GraphRuntime],
+        query: str,
+        class_filter: str | None = None,
+        match_mode: str = "set",
+        max_results: int = _LEGACY_NEIGHBOR_MAX_RESULTS,
+    ) -> dict[str, Any]:
+        """Resolve one deterministic constrained occurrence set for later graph steps.
+
+        Use this for descriptive subtype/family anchors like `exterior curtain wall`,
+        `round concrete column`, or `tree` when the overall question is graph-shaped
+        but the anchor set itself can still be found deterministically.
+
+        Prefer `match_mode='singular'` when the wording truly targets one specific
+        occurrence. If that returns ambiguity, narrow instead of silently fanning
+        out. Prefer `match_mode='set'` when the wording is really asking about a
+        constrained family/set of occurrences.
+        """
+        normalized_class_filter = class_filter
+        if class_filter:
+            best, _score = _normalize_class_fuzzy(class_filter, ctx.deps)
+            if best is not None:
+                normalized_class_filter = best
+
+        result = query_ifc_graph(
+            ctx.deps,
+            "resolve_element_set",
+            {
+                "query": query,
+                "class": normalized_class_filter,
+                "match_mode": match_mode,
+                "max_results": max_results,
+            },
+        )
+        if match_mode == "set" and _has_complete_non_empty_items(
+            result,
+            items_key="matches",
+        ):
+            _mark_stable_set_tool(ctx.deps, tool_name="resolve_element_set")
+        return result
+
+    @agent.tool
+    def relate_element_set(
+        ctx: RunContext[GraphRuntime],
+        anchor_ids: list[str],
+        relation: str,
+        max_results: int = _LEGACY_NEIGHBOR_MAX_RESULTS,
+    ) -> dict[str, Any]:
+        """Compute one bounded relation-union over an already resolved anchor set.
+
+        Prefer this over repeating `get_adjacent_elements`,
+        `get_topology_neighbors`, `get_intersections_3d`, or vertical helpers for
+        each anchor separately when the question is about a constrained set such as
+        `adjacent to these exterior curtain walls`.
+        """
+        result = query_ifc_graph(
+            ctx.deps,
+            "relate_element_set",
+            {
+                "anchor_ids": anchor_ids,
+                "relation": relation,
+                "max_results": max_results,
+            },
+        )
+        if _has_complete_non_empty_items(result, items_key="results"):
+            _mark_stable_set_tool(ctx.deps, tool_name="relate_element_set")
         return result
 
     @agent.tool

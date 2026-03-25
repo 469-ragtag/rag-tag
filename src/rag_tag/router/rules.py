@@ -115,6 +115,69 @@ _NAME_CONTAINS_RE = re.compile(
 _SPACE_WORD_RE = re.compile(r"\bspaces?\b", re.IGNORECASE)
 _WORD_TOKEN_RE = re.compile(r"[A-Za-z0-9_/-]+")
 
+_DESCRIPTIVE_CLASS_LEADING_IGNORES = frozenset(
+    {
+        "a",
+        "an",
+        "all",
+        "any",
+        "existing",
+        "our",
+        "some",
+        "the",
+        "these",
+        "those",
+    }
+)
+_DESCRIPTIVE_CLASS_BOUNDARY_TOKENS = frozenset(
+    {
+        "above",
+        "adjacent",
+        "and",
+        "are",
+        "as",
+        "at",
+        "be",
+        "below",
+        "by",
+        "count",
+        "does",
+        "do",
+        "exists",
+        "exist",
+        "find",
+        "for",
+        "from",
+        "get",
+        "has",
+        "have",
+        "how",
+        "identify",
+        "in",
+        "inside",
+        "intersects",
+        "is",
+        "list",
+        "many",
+        "near",
+        "number",
+        "of",
+        "on",
+        "or",
+        "outside",
+        "present",
+        "retrieve",
+        "show",
+        "there",
+        "to",
+        "used",
+        "what",
+        "which",
+        "with",
+        "within",
+    }
+)
+
 _NON_COMPOUND_SPACE_MODIFIERS = frozenset(
     {
         "a",
@@ -240,6 +303,18 @@ def route_question_rule(question: str) -> RouteDecision:
         return RouteDecision("graph", "Multiple IFC classes mentioned", None)
 
     ifc_class = ifc_classes[0] if ifc_classes else None
+    descriptive_text_match = None
+    if (
+        ifc_class is not None
+        and text_match is None
+        and predefined_type is None
+        and type_name is None
+    ):
+        descriptive_text_match = _detect_descriptive_class_text_match(
+            q,
+            ifc_class,
+            ignored_spans=suppressed_spans,
+        )
     if (
         ifc_class is None
         and text_match is None
@@ -275,7 +350,7 @@ def route_question_rule(question: str) -> RouteDecision:
         level_like=level_like,
         predefined_type=predefined_type,
         type_name=type_name,
-        text_match=text_match,
+        text_match=text_match or descriptive_text_match,
         element_filters=element_filters,
         property_filters=property_filters,
         quantity_filters=quantity_filters,
@@ -502,6 +577,51 @@ def _normalize_compound_space_phrase(tokens: list[str]) -> str | None:
         return None
     normalized_tokens[-1] = "space"
     return " ".join(normalized_tokens)
+
+
+def _detect_descriptive_class_text_match(
+    question: str,
+    ifc_class: str,
+    *,
+    ignored_spans: list[tuple[int, int]] | None = None,
+) -> str | None:
+    question_lower = question.lower()
+    alias_matches = [
+        (start, end)
+        for start, end, matched_class in find_class_alias_matches(
+            question_lower,
+            ignored_spans=ignored_spans,
+        )
+        if matched_class == ifc_class
+    ]
+    if not alias_matches:
+        return None
+
+    first_alias_start = alias_matches[0][0]
+    preceding_tokens = [
+        token_match
+        for token_match in _WORD_TOKEN_RE.finditer(question)
+        if token_match.end() <= first_alias_start
+    ]
+    if not preceding_tokens:
+        return None
+
+    collected: list[str] = []
+    for token_match in reversed(preceding_tokens[-6:]):
+        token = token_match.group(0).lower().strip(".,;:?!")
+        if not token:
+            continue
+        if not collected and token in _DESCRIPTIVE_CLASS_LEADING_IGNORES:
+            continue
+        if token in _DESCRIPTIVE_CLASS_BOUNDARY_TOKENS:
+            break
+        collected.insert(0, token)
+        if len(collected) >= 3:
+            break
+
+    if not collected:
+        return None
+    return " ".join(collected)
 
 
 def _detect_explicit_field(question: str) -> SqlFieldRef | None:

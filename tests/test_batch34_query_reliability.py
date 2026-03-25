@@ -890,3 +890,56 @@ def test_traverse_reuses_duplicate_broad_containment_scan(
         "evidence, exact IDs, or a narrower follow-up instead of repeating the "
         "same container traversal."
     ]
+
+
+def test_resolve_element_set_does_not_mark_empty_set_as_stable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class DummyAgent:
+        def __init__(self) -> None:
+            self.tools: dict[str, object] = {}
+
+        def tool(self, func: object) -> object:
+            self.tools[getattr(func, "__name__", "tool")] = func
+            return func
+
+    runtime = wrap_networkx_graph(nx.MultiDiGraph())
+    agent = DummyAgent()
+    register_graph_tools(agent)
+
+    def fake_query_ifc_graph(
+        runtime_arg: GraphRuntime,
+        action: str,
+        params: dict[str, object],
+    ) -> dict[str, object]:
+        del runtime_arg, params
+        assert action == "resolve_element_set"
+        return {
+            "status": "ok",
+            "data": {
+                "query": "tree",
+                "class_filter": None,
+                "match_mode": "set",
+                "matches": [],
+                "total_found": 0,
+                "returned_count": 0,
+                "truncated": False,
+                "truncation_reason": None,
+            },
+            "error": None,
+        }
+
+    monkeypatch.setattr(
+        "rag_tag.agent.graph_tools.query_ifc_graph", fake_query_ifc_graph
+    )
+
+    result = agent.tools["resolve_element_set"](
+        SimpleNamespace(deps=runtime),
+        query="tree",
+        match_mode="set",
+        max_results=25,
+    )
+
+    assert result["status"] == "ok"
+    guard = runtime.caches.get(_RUN_GUARD_CACHE_KEY)
+    assert guard is None or guard.get("stable_set_tools_used") == []
