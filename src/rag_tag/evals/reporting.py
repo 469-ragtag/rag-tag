@@ -249,7 +249,7 @@ def build_leaderboard_rows(
                 "agent_profile": first.agent_profile,
                 "prompt_strategy": first.prompt_strategy,
                 "repeat": repeat,
-                "case_count": len(records),
+                "case_count": len({record.source_case_name for record in records}),
                 "failure_count": sum(
                     1 for record in records if record.failed_before_output
                 ),

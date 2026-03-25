@@ -260,7 +260,7 @@ def test_build_case_groups_and_leaderboard_rows_aggregate_metrics() -> None:
     assert case_group_rows[0]["token_coverage_rate"] == 0.5
 
     assert len(leaderboard_rows) == 1
-    assert leaderboard_rows[0]["case_count"] == 2
+    assert leaderboard_rows[0]["case_count"] == 1
     assert leaderboard_rows[0]["route_accuracy"] == 0.5
     assert leaderboard_rows[0]["answer_score_avg"] == 0.6
     assert leaderboard_rows[0]["sum_total_tokens"] == 15

@@ -243,6 +243,60 @@ def test_build_benchmark_cli_config_uses_experiment_defaults_and_tag_filter(
     ]
 
 
+def test_build_benchmark_cli_config_resolves_relative_dataset_from_config_path(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    dataset_path = project_root / "evals" / "benchmark_cases_v1.yaml"
+    dataset_path.parent.mkdir()
+    dataset_path.write_text(
+        "dataset_name: benchmark_cases_v1\n"
+        "cases:\n"
+        "  - id: q001\n"
+        "    question: How many doors?\n"
+        "    expected_route: sql\n",
+        encoding="utf-8",
+    )
+    config_path = project_root / "config.yaml"
+    config_path.write_text("experiments: {}\n", encoding="utf-8")
+    outside_dir = tmp_path / "outside"
+    outside_dir.mkdir()
+    monkeypatch.chdir(outside_dir)
+
+    from rag_tag.config import AppConfig
+
+    config = AppConfig.model_validate(
+        {
+            "experiments": {
+                "benchmark-e2e-v1": {
+                    "questions_file": "evals/benchmark_cases_v1.yaml",
+                    "prompt_strategies": ["baseline"],
+                }
+            }
+        }
+    )
+
+    cli_config = build_benchmark_cli_config(
+        config=config,
+        experiment_name="benchmark-e2e-v1",
+        questions_file=None,
+        router_profiles=None,
+        agent_profiles=None,
+        prompt_strategies=None,
+        tags=None,
+        repeat=None,
+        max_concurrency=None,
+        db_paths=[tmp_path / "model.db"],
+        graph_dataset="model",
+        context_db=tmp_path / "model.db",
+        config_path=str(config_path),
+    )
+
+    assert cli_config.dataset_path == dataset_path.resolve()
+
+
 def test_eval_benchmarks_script_main_runs_and_prints_summary(
     tmp_path: Path,
     monkeypatch,

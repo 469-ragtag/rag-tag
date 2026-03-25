@@ -46,8 +46,21 @@ class BenchmarkExperimentConfig:
 
 
 def _supports_state_reuse(experiment: BenchmarkExperimentConfig) -> bool:
-    max_concurrency = experiment.max_concurrency
+    max_concurrency = _effective_max_concurrency(experiment.max_concurrency)
     return max_concurrency in (None, 1)
+
+
+def _effective_max_concurrency(requested_max_concurrency: int | None) -> int | None:
+    """Return the safe benchmark concurrency under env-based runtime overrides.
+
+    Benchmark profile/strategy overrides currently flow through process-global
+    environment variables, so execution must remain serialized until that
+    override path is refactored away from shared mutable process state.
+    """
+
+    if requested_max_concurrency is None:
+        return None
+    return min(requested_max_concurrency, 1)
 
 
 def build_eval_dataset(
@@ -96,11 +109,14 @@ def evaluate_benchmark_dataset(
     else:
         state = None
     try:
+        effective_max_concurrency = _effective_max_concurrency(
+            experiment.max_concurrency
+        )
         report = dataset.evaluate_sync(
             lambda case: _run_case_with_state(case, experiment=experiment, state=state),
             name=experiment_name or benchmark_dataset.dataset_name,
             task_name=experiment_name or benchmark_dataset.dataset_name,
-            max_concurrency=experiment.max_concurrency,
+            max_concurrency=effective_max_concurrency,
             progress=experiment.progress,
             metadata=_build_experiment_metadata(experiment),
             repeat=experiment.repeat,
@@ -172,6 +188,9 @@ def _build_case_metadata(case: BenchmarkCase) -> BenchmarkCaseMetadata:
 def _build_experiment_metadata(
     experiment: BenchmarkExperimentConfig,
 ) -> dict[str, Any]:
+    effective_max_concurrency = _effective_max_concurrency(
+        experiment.max_concurrency
+    )
     metadata = {
         "router_profile": experiment.router_profile,
         "agent_profile": experiment.agent_profile,
@@ -182,7 +201,9 @@ def _build_experiment_metadata(
         else None,
         "db_paths": [str(path) for path in experiment.db_paths],
         "repeat": experiment.repeat,
-        "max_concurrency": experiment.max_concurrency,
+        "max_concurrency": effective_max_concurrency,
+        "requested_max_concurrency": experiment.max_concurrency,
+        "effective_max_concurrency": effective_max_concurrency,
         "state_reuse_enabled": _supports_state_reuse(experiment),
     }
     if experiment.report_metadata:

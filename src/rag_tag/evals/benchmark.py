@@ -115,7 +115,11 @@ def build_benchmark_cli_config(
     """Resolve CLI/config inputs into one executable benchmark suite config."""
 
     experiment = _resolve_experiment_config(config, experiment_name)
-    dataset_path = _resolve_dataset_path(questions_file, experiment)
+    dataset_path = _resolve_dataset_path(
+        questions_file,
+        experiment,
+        config_path=config_path,
+    )
     if experiment_name is not None:
         resolved_experiment_name = experiment_name
     elif experiment is not None and experiment.description:
@@ -360,6 +364,8 @@ def _resolve_experiment_config(
 def _resolve_dataset_path(
     questions_file: Path | None,
     experiment: ExperimentConfig | None,
+    *,
+    config_path: str | None,
 ) -> Path:
     if questions_file is not None:
         candidate = questions_file.expanduser().resolve()
@@ -367,7 +373,14 @@ def _resolve_dataset_path(
             raise FileNotFoundError(f"Benchmark dataset file not found: {candidate}")
         return candidate
     if experiment is not None and experiment.questions_file:
-        candidate = Path(experiment.questions_file).expanduser().resolve()
+        candidate = Path(experiment.questions_file).expanduser()
+        if not candidate.is_absolute():
+            if config_path is not None:
+                candidate = Path(config_path).expanduser().resolve().parent / candidate
+            else:
+                candidate = candidate.resolve()
+        else:
+            candidate = candidate.resolve()
         if not candidate.is_file():
             raise FileNotFoundError(f"Benchmark dataset file not found: {candidate}")
         return candidate
