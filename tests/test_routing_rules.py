@@ -195,6 +195,71 @@ def test_ifc_space_with_level_routes_to_graph_for_correctness() -> None:
     assert "IfcSpace + level/storey questions" in decision.reason
 
 
+def test_bare_space_count_stays_ifc_space_sql() -> None:
+    decision = route_question_rule("How many spaces are there?")
+
+    assert decision.route == "sql"
+    assert decision.sql_request is not None
+    assert decision.sql_request.intent == "count"
+    assert decision.sql_request.ifc_class == "IfcSpace"
+    assert decision.sql_request.text_match is None
+
+
+def test_parking_spaces_route_to_text_match_not_ifc_space() -> None:
+    decision = route_question_rule("How many parking spaces are there?")
+
+    assert decision.route == "sql"
+    assert decision.sql_request is not None
+    assert decision.sql_request.intent == "count"
+    assert decision.sql_request.ifc_class is None
+    assert decision.sql_request.text_match == "parking space"
+
+
+def test_type_presence_question_routes_to_group_by_type_name() -> None:
+    decision = route_question_rule("What curtain wall types are present?")
+
+    assert decision.route == "sql"
+    assert decision.sql_request is not None
+    assert decision.sql_request.intent == "group"
+    assert decision.sql_request.ifc_class == "IfcCurtainWall"
+    assert decision.sql_request.group_by is not None
+    assert decision.sql_request.group_by.source == "element"
+    assert decision.sql_request.group_by.field == "type_name"
+
+
+def test_longer_multiword_alias_wins_over_shorter_overlap() -> None:
+    decision = route_question_rule("List curtain walls in the building.")
+
+    assert decision.route == "sql"
+    assert decision.sql_request is not None
+    assert decision.sql_request.intent == "list"
+    assert decision.sql_request.ifc_class == "IfcCurtainWall"
+
+
+def test_family_question_routes_to_group_by_type_name() -> None:
+    decision = route_question_rule("Which window families exist?")
+
+    assert decision.route == "sql"
+    assert decision.sql_request is not None
+    assert decision.sql_request.intent == "group"
+    assert decision.sql_request.ifc_class == "IfcWindow"
+    assert decision.sql_request.group_by is not None
+    assert decision.sql_request.group_by.source == "element"
+    assert decision.sql_request.group_by.field == "type_name"
+
+
+def test_kinds_question_routes_to_group_by_type_name() -> None:
+    decision = route_question_rule("What kinds of columns are there?")
+
+    assert decision.route == "sql"
+    assert decision.sql_request is not None
+    assert decision.sql_request.intent == "group"
+    assert decision.sql_request.ifc_class == "IfcColumn"
+    assert decision.sql_request.group_by is not None
+    assert decision.sql_request.group_by.source == "element"
+    assert decision.sql_request.group_by.field == "type_name"
+
+
 def test_name_word_filter_count_stays_sql() -> None:
     decision = route_question_rule(
         "How many elements have the word roof in their name?"
@@ -218,3 +283,5 @@ def test_llm_prompt_mentions_shared_capability_matrix() -> None:
     assert "room/space containment membership" in prompt
     assert "materials/color (unsupported by current SQLite schema)" in prompt
     assert "deterministic count/list/aggregate/group" in prompt
+    assert "text_match" in prompt
+    assert "types/families/kinds" in prompt

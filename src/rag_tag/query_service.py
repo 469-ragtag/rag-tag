@@ -257,7 +257,7 @@ def _merge_sql_payloads(
     req: SqlRequest,
     effective_limit: int,
 ) -> dict[str, Any]:
-    label = req.ifc_class or "elements"
+    label = _sql_result_label(req)
 
     if req.intent == "count":
         combined_count = sum(int(payload.get("count", 0)) for payload in payloads)
@@ -307,7 +307,7 @@ def _merge_aggregate_payloads(
     req: SqlRequest,
 ) -> dict[str, Any]:
     aggregate_op = req.aggregate_op
-    label = req.ifc_class or "elements"
+    label = _sql_result_label(req)
     field_label = req.aggregate_field.field if req.aggregate_field else label
     total_elements = sum(int(payload.get("total_elements", 0)) for payload in payloads)
     matched_value_count = sum(
@@ -436,7 +436,7 @@ def _merge_group_payloads(
         )
     ][:effective_limit]
 
-    label = req.ifc_class or "elements"
+    label = _sql_result_label(req)
     field_label = req.group_by.field if req.group_by is not None else "field"
     shown = len(groups)
     if req.level_like:
@@ -477,6 +477,14 @@ def _sql_error(
     if warning is not None:
         result["warning"] = warning
     return result
+
+
+def _sql_result_label(req: SqlRequest) -> str:
+    if req.ifc_class:
+        return req.ifc_class
+    if req.text_match:
+        return f"elements matching '{req.text_match}'"
+    return "elements"
 
 
 def execute_graph_query(

@@ -28,6 +28,7 @@ def _build_test_db(tmp_path: Path) -> Path:
                 "GlobalId": "wall-l2-a",
                 "IfcType": "IfcWall",
                 "Name": "Wall L2 A",
+                "TypeName": "Generic Wall A",
                 "Hierarchy": {"Level": "Level 2"},
                 "Quantities": {
                     "Qto_WallBaseQuantities": {"NetVolume": 10.0, "NetArea": 12.0}
@@ -38,6 +39,7 @@ def _build_test_db(tmp_path: Path) -> Path:
                 "GlobalId": "wall-l2-b",
                 "IfcType": "IfcWall",
                 "Name": "Wall L2 B",
+                "TypeName": "Generic Wall B",
                 "Hierarchy": {"Level": "Level 2"},
                 "Quantities": {
                     "Qto_WallBaseQuantities": {"NetVolume": 15.5, "NetArea": 14.0}
@@ -48,6 +50,7 @@ def _build_test_db(tmp_path: Path) -> Path:
                 "GlobalId": "wall-ground-a",
                 "IfcType": "IfcWall",
                 "Name": "Wall Ground A",
+                "TypeName": "Curtain Wall:Exterior Curtain Wall",
                 "Hierarchy": {"Level": "Ground Floor"},
                 "Quantities": {
                     "Qto_WallBaseQuantities": {"NetVolume": 7.0, "NetArea": 9.0}
@@ -58,6 +61,7 @@ def _build_test_db(tmp_path: Path) -> Path:
                 "GlobalId": "door-l1-a",
                 "IfcType": "IfcDoor",
                 "Name": "Door L1 A",
+                "TypeName": "Single Flush 900 x 2100",
                 "Hierarchy": {"Level": "Level 1"},
                 "PropertySets": {
                     "Official": {"Pset_DoorCommon": {"FireRating": "EI30"}}
@@ -68,6 +72,7 @@ def _build_test_db(tmp_path: Path) -> Path:
                 "GlobalId": "door-l1-b",
                 "IfcType": "IfcDoor",
                 "Name": "Door L1 B",
+                "TypeName": "Double Glass 1800 x 2100",
                 "Hierarchy": {"Level": "Level 1"},
                 "PropertySets": {
                     "Official": {"Pset_DoorCommon": {"FireRating": "EI60"}}
@@ -78,6 +83,7 @@ def _build_test_db(tmp_path: Path) -> Path:
                 "GlobalId": "door-l1-c",
                 "IfcType": "IfcDoor",
                 "Name": "Door L1 C",
+                "TypeName": "Single Flush 900 x 2100",
                 "Hierarchy": {"Level": "Level 1"},
                 "PropertySets": {
                     "Official": {"Pset_DoorCommon": {"FireRating": "EI30"}}
@@ -88,6 +94,7 @@ def _build_test_db(tmp_path: Path) -> Path:
                 "GlobalId": "window-ground-a",
                 "IfcType": "IfcWindow",
                 "Name": "Window Ground A",
+                "TypeName": "Fixed 1200 x 1500",
                 "Hierarchy": {"Level": "Ground Floor"},
                 "PropertySets": {"Official": {"Pset_WindowCommon": {"UValue": 1.2}}},
             },
@@ -96,6 +103,7 @@ def _build_test_db(tmp_path: Path) -> Path:
                 "GlobalId": "window-ground-b",
                 "IfcType": "IfcWindow",
                 "Name": "Window Ground B",
+                "TypeName": "Sliding 1800 x 1500",
                 "Hierarchy": {"Level": "Ground Floor"},
                 "PropertySets": {"Official": {"Pset_WindowCommon": {"UValue": 0.8}}},
             },
@@ -104,8 +112,25 @@ def _build_test_db(tmp_path: Path) -> Path:
                 "GlobalId": "window-l2-a",
                 "IfcType": "IfcWindow",
                 "Name": "Window L2 A",
+                "TypeName": "Fixed 1200 x 1500",
                 "Hierarchy": {"Level": "Level 2"},
                 "PropertySets": {"Official": {"Pset_WindowCommon": {"UValue": 1.5}}},
+            },
+            {
+                "ExpressId": 10,
+                "GlobalId": "curtain-wall-ground-b",
+                "IfcType": "IfcWall",
+                "Name": "Curtain Wall Ground B",
+                "TypeName": "Curtain Wall:Exterior Curtain Wall",
+                "Hierarchy": {"Level": "Ground Floor"},
+            },
+            {
+                "ExpressId": 11,
+                "GlobalId": "curtain-wall-ground-c",
+                "IfcType": "IfcWall",
+                "Name": "Curtain Wall Ground C",
+                "TypeName": "Curtain Wall:Storefront",
+                "Hierarchy": {"Level": "Ground Floor"},
             },
         ],
     )
@@ -282,3 +307,73 @@ def test_element_name_filter_uses_elements_column_and_excludes_type_rows(
     assert result["data"]["count"] == 1
     assert "FROM properties" not in result["data"]["sql"]["query"]
     assert "e.name" in result["data"]["sql"]["query"]
+
+
+def test_group_by_type_name_is_deterministic(tmp_path: Path) -> None:
+    db_path = _build_test_db(tmp_path)
+
+    result = query_ifc_sql(
+        db_path,
+        SqlRequest(
+            intent="group",
+            ifc_class="IfcWall",
+            level_like="ground floor",
+            group_by=SqlFieldRef(source="element", field="type_name"),
+            limit=10,
+        ),
+    )
+
+    assert result["data"]["groups"] == [
+        {"group": "Curtain Wall:Exterior Curtain Wall", "count": 2},
+        {"group": "Curtain Wall:Storefront", "count": 1},
+    ]
+    assert result["data"]["matched_element_count"] == 3
+    assert result["data"]["missing_value_count"] == 0
+
+
+def test_text_match_counts_descriptive_compound_occurrences_not_type_rows(
+    tmp_path: Path,
+) -> None:
+    jsonl_path = tmp_path / "parking_spaces.jsonl"
+    db_path = tmp_path / "parking_spaces.db"
+    _write_jsonl(
+        jsonl_path,
+        [
+            {
+                "ExpressId": 1,
+                "GlobalId": "parking-1",
+                "IfcType": "IfcBuildingElementProxy",
+                "Name": "Parking Space 1",
+                "TypeName": "M_Parking Space:5480 x 2740mm - 90 deg",
+            },
+            {
+                "ExpressId": 2,
+                "GlobalId": "parking-2",
+                "IfcType": "IfcBuildingElementProxy",
+                "Name": "Parking Space 2",
+                "TypeName": "M_Parking Space:5480 x 2740mm - 90 deg",
+            },
+            {
+                "ExpressId": 3,
+                "GlobalId": "parking-type",
+                "IfcType": "IfcBuildingElementProxyType",
+                "Name": "Parking Space Type",
+                "TypeName": "M_Parking Space:5480 x 2740mm - 90 deg",
+            },
+        ],
+    )
+    jsonl_to_sql(jsonl_path, db_path)
+
+    result = query_ifc_sql(
+        db_path,
+        SqlRequest(
+            intent="count",
+            ifc_class=None,
+            level_like=None,
+            text_match="parking space",
+        ),
+    )
+
+    assert result["data"]["count"] == 2
+    assert "e.type_name" in result["data"]["sql"]["query"]
+    assert "IfcBuildingElementProxyType" not in result["data"]["summary"]

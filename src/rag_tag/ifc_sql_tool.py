@@ -443,13 +443,20 @@ def _compile_element_scope(
     if request.type_name:
         where_clauses.append("COALESCE(e.type_name, '') = ? COLLATE NOCASE")
         where_params.append(request.type_name)
+    if request.text_match:
+        where_clauses.append(
+            "(COALESCE(e.name, '') LIKE ? COLLATE NOCASE OR "
+            "COALESCE(e.type_name, '') LIKE ? COLLATE NOCASE)"
+        )
+        match_value = f"%{request.text_match}%"
+        where_params.extend((match_value, match_value))
 
     for filter_item in request.element_filters:
         clause, params = _compile_element_filter(filter_item)
         where_clauses.append(clause)
         where_params.extend(params)
 
-    if _should_exclude_type_rows_for_name_search(request):
+    if _should_exclude_type_rows_for_occurrence_search(request):
         where_clauses.append(
             "e.ifc_class != 'IfcTypeObject' AND e.ifc_class NOT LIKE '%Type'"
         )
@@ -492,9 +499,11 @@ def _is_numeric_element_field(field: str) -> bool:
     return field == "express_id"
 
 
-def _should_exclude_type_rows_for_name_search(request: SqlRequest) -> bool:
+def _should_exclude_type_rows_for_occurrence_search(request: SqlRequest) -> bool:
     if request.ifc_class is not None:
         return False
+    if request.text_match is not None:
+        return True
     return any(filter_item.field == "name" for filter_item in request.element_filters)
 
 
@@ -739,14 +748,14 @@ def _sql_item_payload(row: sqlite3.Row) -> dict[str, Any]:
 
 
 def _count_summary(request: SqlRequest, count: int) -> str:
-    label = request.ifc_class or "elements"
+    label = _result_label(request)
     if request.level_like:
         return f"Found {count} {label} matching level '{request.level_like}'."
     return f"Found {count} {label}."
 
 
 def _list_summary(request: SqlRequest, total: int, limit: int) -> str:
-    label = request.ifc_class or "elements"
+    label = _result_label(request)
     if request.level_like:
         return (
             f"Found {total} {label} matching level '{request.level_like}', "
@@ -760,7 +769,7 @@ def _aggregate_summary(
     aggregate_op: str,
     aggregate_value: Any,
 ) -> str:
-    label = request.ifc_class or "elements"
+    label = _result_label(request)
     field_label = request.aggregate_field.field if request.aggregate_field else label
     if aggregate_op == "count" and request.aggregate_field is None:
         return _count_summary(request, int(aggregate_value or 0))
@@ -777,7 +786,7 @@ def _group_summary(
     groups: list[dict[str, Any]],
     limit: int,
 ) -> str:
-    label = request.ifc_class or "elements"
+    label = _result_label(request)
     field_label = request.group_by.field if request.group_by else "field"
     shown = min(len(groups), limit)
     if request.level_like:
@@ -786,3 +795,11 @@ def _group_summary(
             f"showing {shown} groups."
         )
     return f"Grouped {label} by {field_label}, showing {shown} groups."
+
+
+def _result_label(request: SqlRequest) -> str:
+    if request.ifc_class:
+        return request.ifc_class
+    if request.text_match:
+        return f"elements matching '{request.text_match}'"
+    return "elements"
