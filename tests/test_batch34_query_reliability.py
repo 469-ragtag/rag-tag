@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import networkx as nx
 import pytest
@@ -9,6 +10,8 @@ from pydantic_ai.exceptions import UsageLimitExceeded
 from pydantic_ai.models.test import TestModel
 
 from rag_tag.agent.graph_agent import GraphAgent
+from rag_tag.agent.graph_tools import _RUN_GUARD_CACHE_KEY, register_graph_tools
+from rag_tag.agent.models import GraphAnswer
 from rag_tag.config import GraphOrchestrationConfig
 from rag_tag.graph import GraphRuntime, wrap_networkx_graph
 from rag_tag.parser.jsonl_to_sql import jsonl_to_sql
@@ -682,3 +685,208 @@ def test_sql_merge_group_applies_limit_after_full_histogram_merge(
 
     assert result["data"]["groups"] == [{"group": "EI30", "count": 8}]
     assert result["data"]["matched_element_count"] == 16
+
+
+def test_graph_agent_injects_execution_brief_for_broad_container_questions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("rag_tag.agent.graph_agent.get_agent_model", TestModel)
+    agent = GraphAgent()
+    runtime = wrap_networkx_graph(nx.MultiDiGraph())
+    captured: dict[str, object] = {}
+
+    def fake_run_sync(
+        question: str,
+        *,
+        deps: GraphRuntime,
+        usage_limits: object,
+    ) -> object:
+        del usage_limits
+        captured["question"] = question
+        captured["guard"] = deps.caches.get(_RUN_GUARD_CACHE_KEY)
+        return SimpleNamespace(output=GraphAnswer(answer="ok", data=None, warning=None))
+
+    monkeypatch.setattr(agent._agent, "run_sync", fake_run_sync)
+
+    result = agent.run("Is there a tree outside the building?", runtime)
+
+    assert result["answer"] == "ok"
+    assert "Execution discipline for this run:" in str(captured["question"])
+    assert str(captured["question"]).endswith(
+        "User question:\nIs there a tree outside the building?"
+    )
+    assert captured["guard"] == {
+        "question": "Is there a tree outside the building?",
+        "broad_container_question": True,
+        "broad_searches": {},
+        "stable_set_tools_used": [],
+    }
+    assert _RUN_GUARD_CACHE_KEY not in runtime.caches
+
+
+def test_graph_agent_leaves_narrow_questions_unmodified(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("rag_tag.agent.graph_agent.get_agent_model", TestModel)
+    agent = GraphAgent()
+    runtime = wrap_networkx_graph(nx.MultiDiGraph())
+    captured: dict[str, object] = {}
+
+    def fake_run_sync(
+        question: str,
+        *,
+        deps: GraphRuntime,
+        usage_limits: object,
+    ) -> object:
+        del deps, usage_limits
+        captured["question"] = question
+        return SimpleNamespace(output=GraphAnswer(answer="ok", data=None, warning=None))
+
+    monkeypatch.setattr(agent._agent, "run_sync", fake_run_sync)
+
+    result = agent.run("What is adjacent to the kitchen?", runtime)
+
+    assert result["answer"] == "ok"
+    assert captured["question"] == "What is adjacent to the kitchen?"
+    assert _RUN_GUARD_CACHE_KEY not in runtime.caches
+
+
+def test_find_elements_by_class_reuses_duplicate_broad_scan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class DummyAgent:
+        def __init__(self) -> None:
+            self.tools: dict[str, object] = {}
+
+        def tool(self, func: object) -> object:
+            self.tools[getattr(func, "__name__", "tool")] = func
+            return func
+
+    runtime = wrap_networkx_graph(nx.MultiDiGraph())
+    agent = DummyAgent()
+    register_graph_tools(agent)
+    calls = {"count": 0}
+
+    def fake_query_ifc_graph(
+        runtime_arg: GraphRuntime,
+        action: str,
+        params: dict[str, object],
+    ) -> dict[str, object]:
+        del runtime_arg
+        calls["count"] += 1
+        assert action == "find_elements_by_class"
+        return {
+            "status": "ok",
+            "data": {
+                "class": params["class"],
+                "elements": [
+                    {
+                        "id": "Element::tree-1",
+                        "label": "Tree 1",
+                        "class_": params["class"],
+                        "properties": {},
+                        "payload": None,
+                    }
+                ],
+                "evidence": [],
+                "total_found": 1,
+                "returned_count": 1,
+                "truncated": False,
+                "truncation_reason": None,
+            },
+            "error": None,
+        }
+
+    monkeypatch.setattr(
+        "rag_tag.agent.graph_tools.query_ifc_graph", fake_query_ifc_graph
+    )
+
+    first = agent.tools["find_elements_by_class"](
+        SimpleNamespace(deps=runtime),
+        class_="IfcBuildingElementProxy",
+        max_results=50,
+    )
+    second = agent.tools["find_elements_by_class"](
+        SimpleNamespace(deps=runtime),
+        class_="IfcBuildingElementProxy",
+        max_results=25,
+    )
+
+    assert first["status"] == "ok"
+    assert second["status"] == "ok"
+    assert calls["count"] == 1
+    assert second["data"]["warnings"] == [
+        "Reused the prior broad class scan. Prefer the existing candidate set or "
+        "add narrower evidence before repeating the same class-wide search."
+    ]
+
+
+def test_traverse_reuses_duplicate_broad_containment_scan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class DummyAgent:
+        def __init__(self) -> None:
+            self.tools: dict[str, object] = {}
+
+        def tool(self, func: object) -> object:
+            self.tools[getattr(func, "__name__", "tool")] = func
+            return func
+
+    graph = nx.MultiDiGraph()
+    graph.add_node("IfcBuilding", label="Main Building", class_="IfcBuilding")
+    runtime = wrap_networkx_graph(graph)
+    agent = DummyAgent()
+    register_graph_tools(agent)
+    calls = {"count": 0}
+
+    def fake_query_ifc_graph(
+        runtime_arg: GraphRuntime,
+        action: str,
+        params: dict[str, object],
+    ) -> dict[str, object]:
+        del runtime_arg
+        calls["count"] += 1
+        assert action == "traverse"
+        return {
+            "status": "ok",
+            "data": {
+                "start": params["start"],
+                "relation": params.get("relation"),
+                "depth": params["depth"],
+                "results": [],
+                "evidence": [],
+                "total_found": 0,
+                "returned_count": 0,
+                "truncated": False,
+                "truncation_reason": None,
+            },
+            "error": None,
+        }
+
+    monkeypatch.setattr(
+        "rag_tag.agent.graph_tools.query_ifc_graph", fake_query_ifc_graph
+    )
+
+    first = agent.tools["traverse"](
+        SimpleNamespace(deps=runtime),
+        start="IfcBuilding",
+        relation="contains",
+        depth=2,
+        max_results=25,
+    )
+    second = agent.tools["traverse"](
+        SimpleNamespace(deps=runtime),
+        start="IfcBuilding",
+        relation="contains",
+        depth=1,
+        max_results=25,
+    )
+
+    assert first["status"] == "ok"
+    assert second["status"] == "ok"
+    assert calls["count"] == 1
+    assert second["data"]["warnings"] == [
+        "Reused the prior broad containment traversal. Prefer the existing "
+        "evidence, exact IDs, or a narrower follow-up instead of repeating the "
+        "same container traversal."
+    ]

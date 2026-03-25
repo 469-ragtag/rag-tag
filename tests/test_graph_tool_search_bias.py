@@ -3,6 +3,7 @@ from __future__ import annotations
 import networkx as nx
 
 from rag_tag.agent.graph_tools import _fuzzy_find_nodes_impl
+from rag_tag.graph import wrap_networkx_graph
 
 
 def _add_node(
@@ -210,3 +211,35 @@ def test_fuzzy_find_nodes_does_not_over_penalize_specific_named_phrase_matches()
     assert result["status"] == "ok"
     assert result["data"]["matches"][0]["id"] == "Element::main-building-sign"
     assert result["data"]["matches"][0]["class_"] == "IfcBuildingElementProxy"
+
+
+def test_fuzzy_find_nodes_reuses_duplicate_generic_container_search_with_warning() -> (
+    None
+):
+    graph = nx.MultiDiGraph()
+    _add_node(
+        graph,
+        "IfcBuilding",
+        label="Main Building",
+        class_name="IfcBuilding",
+    )
+    _add_node(
+        graph,
+        "Element::building-proxy",
+        label="building",
+        class_name="IfcBuildingElementProxy",
+    )
+    runtime = wrap_networkx_graph(graph)
+
+    first = _fuzzy_find_nodes_impl(runtime, "building")
+    second = _fuzzy_find_nodes_impl(runtime, "the building", top_k=5)
+
+    assert first["status"] == "ok"
+    assert "warnings" not in first["data"]
+    assert second["status"] == "ok"
+    assert second["data"]["query"] == "the building"
+    assert second["data"]["matches"][0]["id"] == "IfcBuilding"
+    assert second["data"]["warnings"] == [
+        "Reused the prior canonical container anchor search. Prefer the existing "
+        "exact container ID instead of repeating broad fuzzy resolution."
+    ]

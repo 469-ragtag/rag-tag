@@ -12,7 +12,8 @@ from __future__ import annotations
 
 import re
 from collections import deque
-from typing import Any
+from copy import deepcopy
+from typing import Any, Callable
 
 from pydantic_ai import RunContext
 from rapidfuzz import fuzz, process
@@ -83,6 +84,11 @@ _SECONDARY_CONTAINER_CLASSES = {
 _GENERIC_CONTAINER_CANONICAL_BOOST = 60.0
 _GENERIC_CONTAINER_SECONDARY_BOOST = 4.0
 _GENERIC_CONTAINER_PROXY_PENALTY = 18.0
+_RUN_GUARD_CACHE_KEY = "_graph_agent_guard"
+_STABLE_SET_STOP_WARNING = (
+    "A stable discovered set was already aggregated/grouped in this run; stop "
+    "unless ambiguity or truncation still blocks the answer."
+)
 
 
 # ---------------------------------------------------------------------------
@@ -184,6 +190,154 @@ def _normalize_fuzzy_result_limit(
     return min(parsed_limit, _FUZZY_FIND_NODES_HARD_CAP), None
 
 
+def _guard_container(runtime: GraphRuntime | Any) -> dict[str, Any]:
+    """Return the mutable container that stores per-run guard state."""
+    if isinstance(runtime, GraphRuntime):
+        return runtime.caches
+    graph = get_networkx_graph(runtime)
+    return graph.graph
+
+
+def _get_run_guard(
+    runtime: GraphRuntime | Any,
+    *,
+    create: bool = False,
+) -> dict[str, Any] | None:
+    """Return the per-run guard state when available."""
+    container = _guard_container(runtime)
+    existing = container.get(_RUN_GUARD_CACHE_KEY)
+    if isinstance(existing, dict):
+        return existing
+    if not create:
+        return None
+
+    state = {
+        "broad_searches": {},
+        "stable_set_tools_used": [],
+    }
+    container[_RUN_GUARD_CACHE_KEY] = state
+    return state
+
+
+def _append_data_warnings(
+    envelope: dict[str, Any],
+    warnings: list[str],
+) -> dict[str, Any]:
+    """Append warning strings to a successful tool envelope."""
+    if envelope.get("status") != "ok":
+        return envelope
+    data = envelope.get("data")
+    if not isinstance(data, dict):
+        return envelope
+
+    existing = data.get("warnings")
+    merged: list[str] = []
+    if isinstance(existing, list):
+        merged.extend(str(item) for item in existing if str(item).strip())
+    elif isinstance(existing, str) and existing.strip():
+        merged.append(existing.strip())
+
+    for warning in warnings:
+        if warning not in merged:
+            merged.append(warning)
+
+    if merged:
+        data["warnings"] = merged
+    return envelope
+
+
+def _record_broad_search(
+    runtime: GraphRuntime | Any,
+    *,
+    key: tuple[object, ...],
+    response: dict[str, Any],
+    metadata: dict[str, Any],
+) -> None:
+    """Store the latest broad-search response for duplicate reuse."""
+    if response.get("status") != "ok":
+        return
+    guard = _get_run_guard(runtime, create=True)
+    if guard is None:
+        return
+    broad_searches = guard.setdefault("broad_searches", {})
+    broad_searches[key] = {
+        "response": deepcopy(response),
+        "metadata": dict(metadata),
+        "reuse_count": 0,
+    }
+
+
+def _reuse_broad_search(
+    runtime: GraphRuntime | Any,
+    *,
+    key: tuple[object, ...],
+    requested_metadata: dict[str, Any],
+    warning: str,
+    should_reuse: Callable[[dict[str, Any], dict[str, Any]], bool],
+) -> dict[str, Any] | None:
+    """Return a warned cached response when a duplicate broad search should reuse."""
+    guard = _get_run_guard(runtime)
+    if guard is None:
+        return None
+
+    broad_searches = guard.get("broad_searches")
+    if not isinstance(broad_searches, dict):
+        return None
+
+    cached = broad_searches.get(key)
+    if not isinstance(cached, dict):
+        return None
+
+    metadata = cached.get("metadata")
+    if not isinstance(metadata, dict) or not should_reuse(metadata, requested_metadata):
+        return None
+
+    cached["reuse_count"] = int(cached.get("reuse_count", 0)) + 1
+    reused = deepcopy(cached.get("response"))
+    warnings = [warning]
+    stable_tools = guard.get("stable_set_tools_used")
+    if isinstance(stable_tools, list) and stable_tools:
+        warnings.append(_STABLE_SET_STOP_WARNING)
+    return _append_data_warnings(reused, warnings)
+
+
+def _mark_stable_set_tool(
+    runtime: GraphRuntime | Any,
+    *,
+    tool_name: str,
+) -> None:
+    """Record deterministic set tools that often signal a stopping point."""
+    guard = _get_run_guard(runtime, create=True)
+    if guard is None:
+        return
+    stable_tools = guard.setdefault("stable_set_tools_used", [])
+    if tool_name not in stable_tools:
+        stable_tools.append(tool_name)
+
+
+def _reuse_unconditionally(_cached: dict[str, Any], _requested: dict[str, Any]) -> bool:
+    """Return True for duplicate searches that should always reuse prior results."""
+    return True
+
+
+def _reuse_when_not_expanding(
+    cached: dict[str, Any],
+    requested: dict[str, Any],
+) -> bool:
+    """Reuse when the new call does not widen a prior bounded search."""
+    cached_limit = int(cached.get("limit") or 0)
+    requested_limit = int(requested.get("limit") or 0)
+    cached_depth = int(cached.get("depth") or 0)
+    requested_depth = int(requested.get("depth") or 0)
+    cached_truncated = bool(cached.get("truncated"))
+
+    if requested_depth > cached_depth:
+        return False
+    if cached_truncated and requested_limit > cached_limit:
+        return False
+    return requested_limit <= cached_limit or not cached_truncated
+
+
 def _fuzzy_find_nodes_impl(
     runtime: GraphRuntime,
     query: str,
@@ -199,11 +353,32 @@ def _fuzzy_find_nodes_impl(
     if error is not None:
         return error
 
+    if generic_container_target := (
+        _generic_container_target_class(query) if class_filter is None else None
+    ):
+        reused = _reuse_broad_search(
+            runtime,
+            key=("fuzzy_find_nodes", "generic_container", generic_container_target),
+            requested_metadata={"limit": bounded_top_k},
+            warning=(
+                "Reused the prior canonical container anchor search. Prefer the "
+                "existing exact container ID instead of repeating broad fuzzy "
+                "resolution."
+            ),
+            should_reuse=_reuse_unconditionally,
+        )
+        if reused is not None:
+            reused_data = reused.get("data")
+            if isinstance(reused_data, dict):
+                reused_data["query"] = query
+                reused_data["class_filter"] = class_filter
+            return reused
+
     G = get_networkx_graph(runtime)
     results: list[dict[str, Any]] = []
     query_has_type_intent = _query_has_type_intent(query)
     generic_container_target = (
-        _generic_container_target_class(query) if class_filter is None else None
+        generic_container_target if class_filter is None else None
     )
 
     for node_id, data in G.nodes(data=True):
@@ -282,7 +457,7 @@ def _fuzzy_find_nodes_impl(
         source_tool="fuzzy_find_nodes",
         match_reason_builder=lambda item: f"fuzzy_score={item['score']}",
     )
-    return {
+    response = {
         "status": "ok",
         "data": {
             "query": query,
@@ -297,6 +472,14 @@ def _fuzzy_find_nodes_impl(
         },
         "error": None,
     }
+    if generic_container_target is not None:
+        _record_broad_search(
+            runtime,
+            key=("fuzzy_find_nodes", "generic_container", generic_container_target),
+            response=response,
+            metadata={"limit": bounded_top_k, "truncated": truncated},
+        )
+    return response
 
 
 def _find_container_elements_excluding_impl(
@@ -382,7 +565,7 @@ def _find_container_elements_excluding_impl(
             f"Results truncated to {bounded_max_results} item(s) to stay bounded."
         )
 
-    return {
+    response = {
         "status": "ok",
         "data": {
             "container_id": container_id,
@@ -400,6 +583,7 @@ def _find_container_elements_excluding_impl(
         },
         "error": None,
     }
+    return response
 
 
 def _collect_container_descendants(
@@ -573,7 +757,45 @@ def register_graph_tools(agent: Any) -> None:
         }
         if relation:
             params["relation"] = relation
-        return query_ifc_graph(ctx.deps, "traverse", params)
+
+        graph = get_networkx_graph(ctx.deps)
+        start_data = graph.nodes[start] if start in graph else {}
+        start_class = str(start_data.get("class_") or "")
+        relation_name = normalize_relation_name(relation) if relation else None
+        broad_container_relation = relation_name in {
+            None,
+            "contains",
+            "contained_in",
+            "aggregates",
+        }
+        if start_class in _SECONDARY_CONTAINER_CLASSES and broad_container_relation:
+            reused = _reuse_broad_search(
+                ctx.deps,
+                key=("traverse", start, relation_name or "*"),
+                requested_metadata={"depth": depth, "limit": max_results},
+                warning=(
+                    "Reused the prior broad containment traversal. Prefer the "
+                    "existing evidence, exact IDs, or a narrower follow-up instead "
+                    "of repeating the same container traversal."
+                ),
+                should_reuse=_reuse_when_not_expanding,
+            )
+            if reused is not None:
+                return reused
+
+        result = query_ifc_graph(ctx.deps, "traverse", params)
+        if start_class in _SECONDARY_CONTAINER_CLASSES and broad_container_relation:
+            _record_broad_search(
+                ctx.deps,
+                key=("traverse", start, relation_name or "*"),
+                response=result,
+                metadata={
+                    "depth": depth,
+                    "limit": max_results,
+                    "truncated": bool((result.get("data") or {}).get("truncated")),
+                },
+            )
+        return result
 
     @agent.tool
     def spatial_query(
@@ -620,13 +842,46 @@ def register_graph_tools(agent: Any) -> None:
         - elements in a building but not in a given storey
         - elements in a space/zone/building excluding another container subset
         """
-        return _find_container_elements_excluding_impl(
+        reused = _reuse_broad_search(
+            ctx.deps,
+            key=(
+                "find_container_elements_excluding",
+                container_id,
+                tuple(sorted(exclude_container_ids or [])),
+            ),
+            requested_metadata={"depth": depth, "limit": max_results},
+            warning=(
+                "Reused the prior broad container-difference result. Prefer the "
+                "existing candidate set or narrow the container scope before "
+                "repeating the same exclusion scan."
+            ),
+            should_reuse=_reuse_when_not_expanding,
+        )
+        if reused is not None:
+            return reused
+
+        result = _find_container_elements_excluding_impl(
             ctx.deps,
             container_id,
             exclude_container_ids=exclude_container_ids,
             depth=depth,
             max_results=max_results,
         )
+        _record_broad_search(
+            ctx.deps,
+            key=(
+                "find_container_elements_excluding",
+                container_id,
+                tuple(sorted(exclude_container_ids or [])),
+            ),
+            response=result,
+            metadata={
+                "depth": depth,
+                "limit": max_results,
+                "truncated": bool((result.get("data") or {}).get("truncated")),
+            },
+        )
+        return result
 
     @agent.tool
     def find_elements_by_class(
@@ -635,11 +890,36 @@ def register_graph_tools(agent: Any) -> None:
         max_results: int = _LEGACY_SCAN_MAX_RESULTS,
     ) -> dict[str, Any]:
         """Find a bounded set of elements of a specific IFC class."""
-        return query_ifc_graph(
+        normalized_class = class_.strip()
+        reused = _reuse_broad_search(
+            ctx.deps,
+            key=("find_elements_by_class", normalized_class.lower()),
+            requested_metadata={"limit": max_results},
+            warning=(
+                "Reused the prior broad class scan. Prefer the existing candidate "
+                "set or add narrower evidence before repeating the same class-wide "
+                "search."
+            ),
+            should_reuse=_reuse_when_not_expanding,
+        )
+        if reused is not None:
+            return reused
+
+        result = query_ifc_graph(
             ctx.deps,
             "find_elements_by_class",
             {"class": class_, "max_results": max_results},
         )
+        _record_broad_search(
+            ctx.deps,
+            key=("find_elements_by_class", normalized_class.lower()),
+            response=result,
+            metadata={
+                "limit": max_results,
+                "truncated": bool((result.get("data") or {}).get("truncated")),
+            },
+        )
+        return result
 
     @agent.tool
     def get_adjacent_elements(
@@ -862,7 +1142,9 @@ def register_graph_tools(agent: Any) -> None:
         }
         if field is not None:
             params["field"] = field
-        return query_ifc_graph(ctx.deps, "aggregate_elements", params)
+        result = query_ifc_graph(ctx.deps, "aggregate_elements", params)
+        _mark_stable_set_tool(ctx.deps, tool_name="aggregate_elements")
+        return result
 
     @agent.tool
     def group_elements_by_property(
@@ -876,7 +1158,7 @@ def register_graph_tools(agent: Any) -> None:
         Use this after graph discovery when the user asks for a deterministic
         breakdown by level, type, property, or quantity value.
         """
-        return query_ifc_graph(
+        result = query_ifc_graph(
             ctx.deps,
             "group_elements_by_property",
             {
@@ -885,3 +1167,5 @@ def register_graph_tools(agent: Any) -> None:
                 "max_groups": max_groups,
             },
         )
+        _mark_stable_set_tool(ctx.deps, tool_name="group_elements_by_property")
+        return result

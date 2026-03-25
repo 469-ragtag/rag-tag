@@ -24,7 +24,7 @@ from rag_tag.config import get_default_graph_output_retries
 from rag_tag.graph import GraphRuntime
 from rag_tag.llm.pydantic_ai import get_agent_model, get_agent_model_settings
 
-from .graph_tools import register_graph_tools
+from .graph_tools import _RUN_GUARD_CACHE_KEY, register_graph_tools
 from .models import (
     GraphAnswer,
     RecoveryKind,
@@ -41,6 +41,65 @@ _MODULE_DIR = Path(__file__).resolve().parent
 _MAX_INVALID_TOOL_RETRIES = 2
 _OUTPUT_REPAIR_REQUEST_LIMIT = 2
 _OUTPUT_REPAIR_TOOL_CALL_LIMIT = 1
+_BROAD_CONTAINER_QUESTION_PATTERN = re.compile(
+    r"\b(building|site|storey|floor|level|room|space)\b",
+    flags=re.IGNORECASE,
+)
+_BROAD_CONTAINER_RELATION_PATTERNS = (
+    re.compile(r"\b(outside|inside|exterior|interior|within)\b", re.IGNORECASE),
+    re.compile(r"\bnot\s+(?:in|on)\b", re.IGNORECASE),
+    re.compile(r"\b(excluding|except)\b", re.IGNORECASE),
+    re.compile(r"\b(?:what|which)\s+(?:is|are|elements?)\b", re.IGNORECASE),
+    re.compile(r"\b(?:is|are)\s+there\b", re.IGNORECASE),
+)
+
+
+def _is_broad_container_question(question: str) -> bool:
+    """Return True for broad generic container/exterior questions."""
+    normalized = question.strip()
+    if not normalized:
+        return False
+    if _BROAD_CONTAINER_QUESTION_PATTERN.search(normalized) is None:
+        return False
+    return any(
+        pattern.search(normalized) for pattern in _BROAD_CONTAINER_RELATION_PATTERNS
+    )
+
+
+def _build_execution_brief(question: str) -> str | None:
+    """Return a run-scoped execution brief for broad container questions."""
+    if not _is_broad_container_question(question):
+        return None
+    return (
+        "Execution discipline for this run:\n"
+        "- Resolve one plausible canonical container once and reuse its exact ID.\n"
+        "- Do not repeat near-duplicate generic anchor searches or broad class "
+        "scans unless new narrowing evidence appears.\n"
+        "- Prefer containment helpers before broad traversal for inside/outside "
+        "or in/not-in questions.\n"
+        "- For yes/no existence questions, stop once grounded evidence is "
+        "sufficient.\n"
+        "- After aggregate_elements or group_elements_by_property on a stable "
+        "discovered set, stop unless ambiguity or truncation still matters."
+    )
+
+
+def _build_run_prompt(question: str) -> str:
+    """Return the effective user prompt for the graph-agent run."""
+    brief = _build_execution_brief(question)
+    if brief is None:
+        return question
+    return f"{brief}\n\nUser question:\n{question.strip()}"
+
+
+def _make_run_guard(question: str) -> dict[str, object]:
+    """Build fresh per-run guard state shared with graph tools."""
+    return {
+        "question": question,
+        "broad_container_question": _is_broad_container_question(question),
+        "broad_searches": {},
+        "stable_set_tools_used": [],
+    }
 
 
 def _is_pydantic_test_model(model: object) -> bool:
@@ -665,13 +724,18 @@ class GraphAgent:
 
         for attempt in range(_MAX_INVALID_TOOL_RETRIES + 1):
             captured_messages: Sequence[ModelMessage] | None = None
+            effective_question = _build_run_prompt(question)
+            runtime.caches[_RUN_GUARD_CACHE_KEY] = _make_run_guard(question)
             try:
-                with capture_run_messages() as captured_messages:
-                    result = self._agent.run_sync(
-                        question,
-                        deps=runtime,
-                        usage_limits=usage_limits,
-                    )
+                try:
+                    with capture_run_messages() as captured_messages:
+                        result = self._agent.run_sync(
+                            effective_question,
+                            deps=runtime,
+                            usage_limits=usage_limits,
+                        )
+                finally:
+                    runtime.caches.pop(_RUN_GUARD_CACHE_KEY, None)
                 output = result.output
                 return _graph_answer_to_response(output)
 
