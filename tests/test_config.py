@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -321,10 +322,26 @@ def test_checked_in_config_example_matches_app_config_schema() -> None:
         )
 
 
-def test_repo_does_not_require_checked_in_runtime_config_yaml() -> None:
-    config_path = Path(__file__).resolve().parents[1] / "config.yaml"
+def test_repo_keeps_runtime_config_yaml_untracked() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
 
-    assert not config_path.exists()
+    tracked_example = subprocess.run(
+        ["git", "ls-files", "--error-unmatch", "config.example.yaml"],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    tracked_runtime = subprocess.run(
+        ["git", "ls-files", "--error-unmatch", "config.yaml"],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert tracked_example.returncode == 0
+    assert tracked_runtime.returncode != 0
 
 
 def test_resolve_graph_orchestrator_defaults_to_pydanticai_without_config(
