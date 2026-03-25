@@ -311,6 +311,124 @@ If `--db` resolves to exactly one SQLite database, its file stem is reused as
 the graph dataset automatically. Pass `--graph-dataset` when you need to pin a
 specific JSONL graph dataset instead.
 
+## Benchmarking
+
+Use `scripts/eval_benchmarks.py` to run end-to-end benchmarks over a checked-in
+or local YAML case set. The benchmark runner:
+
+- loads only the YAML cases you author
+- expands the router x agent x prompt-strategy matrix
+- runs the full routed query flow end to end
+- writes Excel-friendly CSV artifacts plus a full JSON report
+- optionally enables Logfire tracing with `--trace`
+
+### YAML case format
+
+Put benchmark questions in a YAML file such as `evals/benchmark_cases_v1.yaml`.
+V1 required fields are:
+
+- `id`
+- `question`
+- `expected_route`
+
+V1 recommended fields are:
+
+- `reference_points`
+- `tags`
+- `max_duration_s`
+
+Example:
+
+```yaml
+dataset_name: benchmark_cases_v1
+cases:
+  - id: q001
+    question: Which rooms are adjacent to the kitchen?
+    expected_route: graph
+    reference_points:
+      - identifies the kitchen correctly
+      - avoids fabricated room names
+    tags: [graph, spatial, adjacency]
+    max_duration_s: 20
+
+  - id: q002
+    question: How many doors are on Level 2?
+    expected_route: sql
+    reference_points:
+      - chooses sql routing
+      - gives a deterministic count
+    tags: [sql, count, level]
+    max_duration_s: 10
+```
+
+### Run from config
+
+Use the benchmark experiment defined in `config.example.yaml` as the starting
+point for a one-command run:
+
+```bash
+uv run python scripts/eval_benchmarks.py \
+  --config ./config.yaml \
+  --experiment benchmark-e2e-v1 \
+  --db ./output/Building-Architecture.db \
+  --graph-dataset Building-Architecture \
+  --trace
+```
+
+### Run with direct overrides
+
+Use direct CLI overrides when you want to bypass experiment defaults:
+
+```bash
+uv run python scripts/eval_benchmarks.py \
+  --questions-file ./evals/benchmark_cases_v1.yaml \
+  --router-profiles router-gemini-flash dbx-gpt-oss-20b dbx-gemma-3-12b \
+  --agent-profiles cohere-command-a dbx-claude-sonnet-4-6 dbx-gpt-oss-20b dbx-llama-4-maverick dbx-gemma-3-12b \
+  --prompt-strategies baseline strict-grounded decompose \
+  --repeat 1 \
+  --max-concurrency 1 \
+  --db ./output/Building-Architecture.db \
+  --graph-dataset Building-Architecture
+```
+
+### Run a subset by tags
+
+Use `--tags` to keep only YAML cases whose tag list intersects the requested
+tags:
+
+```bash
+uv run python scripts/eval_benchmarks.py \
+  --questions-file ./evals/benchmark_cases_v1.yaml \
+  --tags sql graph \
+  --db ./output/Building-Architecture.db
+```
+
+### Benchmark artifacts
+
+Each benchmark run writes artifacts under `output/benchmarks/<run-id>/` unless
+you override the output directory:
+
+- `leaderboard.csv`
+- `case_groups.csv`
+- `runs.csv`
+- `report.json`
+- `run_manifest.json`
+
+`leaderboard.csv` contains one row per router x agent x prompt-strategy
+combination. `case_groups.csv` groups repeated runs by original case. `runs.csv`
+contains one row per actual execution.
+
+### Tracing and token fields
+
+Use `--trace` to initialize Logfire for the benchmark run. If Logfire is
+unavailable or `LOGFIRE_TOKEN` is missing, the benchmark still succeeds and
+writes local artifacts.
+
+Token usage fields are included when the provider returns usage metadata. When a
+provider does not expose token counts, benchmark outputs leave those fields
+blank rather than fabricating zeros. Use `token_coverage_rate` in the grouped
+and leaderboard outputs to see how much of a run returned token data.
+
 ## Key repository paths
 
 ```

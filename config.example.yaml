@@ -132,6 +132,9 @@ experiments:
 
   benchmark-e2e-v1:
     description: Starter end-to-end benchmark experiment using the YAML question set.
+    # Benchmark experiments are consumed by:
+    #   uv run python scripts/eval_benchmarks.py --experiment benchmark-e2e-v1
+    # The runner loads only the YAML cases you author in questions_file.
     router_profile: router-gemini-flash
     agent_profile: cohere-command-a
     questions_file: evals/benchmark_cases_v1.yaml
@@ -151,6 +154,7 @@ experiments:
       - decompose
     repeat: 1
     max_concurrency: 1
+    # Optional case filtering: keep only YAML cases whose tags intersect this list.
     tags:
       - sql
       - graph

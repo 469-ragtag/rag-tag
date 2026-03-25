@@ -296,5 +296,5 @@ def test_evaluate_benchmark_dataset_disables_state_reuse_when_concurrent(
     assert report.experiment_metadata is not None
     assert report.experiment_metadata["max_concurrency"] == 2
     assert report.experiment_metadata["state_reuse_enabled"] is False
-    assert calls == [("q001", None, None), ("q002", None, None)]
+    assert sorted(calls) == [("q001", None, None), ("q002", None, None)]
     assert len(closed_runtimes) == 2

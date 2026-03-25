@@ -128,6 +128,11 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
+        if args.experiment is None and args.questions_file is None:
+            raise ValueError(
+                "Pass either --experiment or --questions-file to select a "
+                "benchmark dataset."
+            )
         config_override_path = _resolve_config_override_path(args.config)
         db_paths, context_db = _resolve_db_paths(args.db)
         if not db_paths:

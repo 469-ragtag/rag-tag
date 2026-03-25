@@ -362,9 +362,15 @@ def _resolve_dataset_path(
     experiment: ExperimentConfig | None,
 ) -> Path:
     if questions_file is not None:
-        return questions_file.expanduser().resolve()
+        candidate = questions_file.expanduser().resolve()
+        if not candidate.is_file():
+            raise FileNotFoundError(f"Benchmark dataset file not found: {candidate}")
+        return candidate
     if experiment is not None and experiment.questions_file:
-        return Path(experiment.questions_file).expanduser().resolve()
+        candidate = Path(experiment.questions_file).expanduser().resolve()
+        if not candidate.is_file():
+            raise FileNotFoundError(f"Benchmark dataset file not found: {candidate}")
+        return candidate
     raise ValueError(
         "No benchmark questions file selected. Pass --questions-file or use an "
         "experiment with questions_file configured."
