@@ -27,6 +27,37 @@ uv run rag-tag-jsonl-to-sql
 uv run rag-tag-jsonl-to-graph
 ```
 
+## Make shortcuts
+
+Use the checked-in `Makefile` when you want short, shared commands for common
+workflows:
+
+```bash
+make build
+make tui-trace
+make benchmark
+make benchmark-sql
+make graph-agent-compare
+make lint
+make test
+```
+
+Useful overrides:
+
+```bash
+make tui DATASET=Building-Architecture
+make tui-trace DATASET=BigBuildingBIMModel
+make benchmark BENCH_DATASET=Building-Architecture
+make benchmark BENCH_TAGS="sql graph"
+make benchmark CONFIG=config.yaml
+```
+
+List all available targets with:
+
+```bash
+make help
+```
+
 Ontology support commands:
 
 ```bash
