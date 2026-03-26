@@ -7,7 +7,6 @@ from pathlib import Path
 from rag_tag.config import AppConfig, load_project_config
 from rag_tag.evals.benchmark import build_benchmark_cli_config, run_benchmark_suite
 from rag_tag.evals.reporting import top_leaderboard_rows
-from rag_tag.query_service import find_sqlite_dbs
 
 
 def _parse_profile_name(value: str) -> str:
@@ -64,26 +63,14 @@ def _resolve_config_override_path(config_path: Path | None) -> str | None:
     return str(candidate)
 
 
-def _resolve_db_paths(db_path: Path | None) -> tuple[list[Path], Path | None]:
+def _resolve_db_paths(db_path: Path | None) -> tuple[list[Path] | None, Path | None]:
     if db_path is None:
-        db_paths = find_sqlite_dbs()
-        return db_paths, db_paths[0] if len(db_paths) == 1 else None
+        return None, None
 
     candidate = db_path.expanduser().resolve()
     if not candidate.is_file():
         raise FileNotFoundError(f"SQLite database not found: {candidate}")
     return [candidate], candidate
-
-
-def _resolve_graph_dataset(
-    graph_dataset: str | None,
-    db_path: Path | None,
-) -> str | None:
-    if graph_dataset:
-        return graph_dataset.strip()
-    if db_path is not None:
-        return db_path.stem
-    return None
 
 
 def _load_app_config(config_override_path: str | None) -> tuple[AppConfig, str | None]:
@@ -119,9 +106,14 @@ def _format_token_triplet(row: dict[str, object]) -> str:
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Run end-to-end rag-tag benchmarks over the YAML case set."
+        description=(
+            "Run end-to-end rag-tag benchmarks over the YAML case set. "
+            "Prefer --preset with an optional --target override."
+        )
     )
     parser.add_argument("--config", type=Path, default=None)
+    parser.add_argument("--preset", type=str, default=None)
+    parser.add_argument("--target", type=str, default=None)
     parser.add_argument("--experiment", type=str, default=None)
     parser.add_argument("--questions-file", type=Path, default=None)
     parser.add_argument(
@@ -164,24 +156,25 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        if args.experiment is None and args.questions_file is None:
+        if (
+            args.preset is None
+            and args.target is None
+            and args.experiment is None
+            and args.questions_file is None
+        ):
             raise ValueError(
-                "Pass either --experiment or --questions-file to select a "
-                "benchmark dataset."
+                "Pass --preset, --target, --experiment, or --questions-file "
+                "to select a benchmark dataset."
             )
         config_override_path = _resolve_config_override_path(args.config)
-        db_paths, context_db = _resolve_db_paths(args.db)
-        if not db_paths:
-            raise FileNotFoundError(
-                "No SQLite database found. Pass --db or generate output/*.db first."
-            )
-
-        graph_dataset = _resolve_graph_dataset(args.graph_dataset, context_db)
         app_config, loaded_config_path = _load_app_config(config_override_path)
+        db_paths, context_db = _resolve_db_paths(args.db)
 
         cli_config = build_benchmark_cli_config(
             config=app_config,
             experiment_name=args.experiment,
+            preset_name=args.preset,
+            target_name=args.target,
             questions_file=args.questions_file,
             router_profiles=args.router_profiles,
             agent_profiles=args.agent_profiles,
@@ -191,7 +184,7 @@ def main(argv: list[str] | None = None) -> int:
             repeat=args.repeat,
             max_concurrency=args.max_concurrency,
             db_paths=db_paths,
-            graph_dataset=graph_dataset,
+            graph_dataset=args.graph_dataset,
             context_db=context_db,
             config_path=loaded_config_path,
             trace=args.trace,

@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from rag_tag.config import AppConfig
 from rag_tag.evals.benchmark import (
     BenchmarkCliConfig,
     BenchmarkCombination,
@@ -281,8 +282,6 @@ def test_build_benchmark_cli_config_uses_experiment_defaults_and_tag_filter(
         encoding="utf-8",
     )
 
-    from rag_tag.config import AppConfig
-
     config = AppConfig.model_validate(
         {
             "profiles": {
@@ -309,6 +308,8 @@ def test_build_benchmark_cli_config_uses_experiment_defaults_and_tag_filter(
     cli_config = build_benchmark_cli_config(
         config=config,
         experiment_name="benchmark-e2e-v1",
+        preset_name=None,
+        target_name=None,
         questions_file=None,
         router_profiles=None,
         agent_profiles=None,
@@ -361,8 +362,6 @@ def test_build_benchmark_cli_config_resolves_relative_dataset_from_config_path(
     outside_dir.mkdir()
     monkeypatch.chdir(outside_dir)
 
-    from rag_tag.config import AppConfig
-
     config = AppConfig.model_validate(
         {
             "experiments": {
@@ -378,6 +377,8 @@ def test_build_benchmark_cli_config_resolves_relative_dataset_from_config_path(
     cli_config = build_benchmark_cli_config(
         config=config,
         experiment_name="benchmark-e2e-v1",
+        preset_name=None,
+        target_name=None,
         questions_file=None,
         router_profiles=None,
         agent_profiles=None,
@@ -395,6 +396,207 @@ def test_build_benchmark_cli_config_resolves_relative_dataset_from_config_path(
     assert cli_config.dataset_path == dataset_path.resolve()
     assert cli_config.answer_judge_model == DEFAULT_ANSWER_JUDGE_MODEL
     assert cli_config.combinations[0].graph_orchestrator == "pydanticai"
+
+
+def test_build_benchmark_cli_config_resolves_preset_target_bundle(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project_root = tmp_path / "project"
+    evals_dir = project_root / "evals"
+    output_dir = project_root / "output"
+    evals_dir.mkdir(parents=True)
+    output_dir.mkdir()
+    dataset_path = evals_dir / "benchmark_cases_v1.yaml"
+    dataset_path.write_text(
+        "dataset_name: benchmark_cases_v1\n"
+        "cases:\n"
+        "  - id: q001\n"
+        "    question: How many doors?\n"
+        "    expected_route: sql\n",
+        encoding="utf-8",
+    )
+    db_path = output_dir / "Building-Architecture.db"
+    db_path.write_text("", encoding="utf-8")
+    config_path = project_root / "config.yaml"
+    config_path.write_text("benchmark_targets: {}\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    config = AppConfig.model_validate(
+        {
+            "benchmark_targets": {
+                "building-architecture": {
+                    "questions_file": "evals/benchmark_cases_v1.yaml",
+                    "db_paths": ["output/Building-Architecture.db"],
+                    "graph_dataset": "Building-Architecture",
+                }
+            },
+            "benchmark_presets": {
+                "smoke": {
+                    "target": "building-architecture",
+                    "router_profiles": ["router-a"],
+                    "agent_profiles": ["agent-a"],
+                    "prompt_strategies": ["baseline"],
+                    "graph_orchestrators": ["langgraph"],
+                    "tags": ["sql"],
+                    "repeat": 2,
+                    "max_concurrency": 1,
+                    "answer_judge_model": "judge-model",
+                }
+            },
+        }
+    )
+
+    cli_config = build_benchmark_cli_config(
+        config=config,
+        experiment_name=None,
+        preset_name="smoke",
+        target_name=None,
+        questions_file=None,
+        router_profiles=None,
+        agent_profiles=None,
+        prompt_strategies=None,
+        orchestrators=None,
+        tags=None,
+        repeat=None,
+        max_concurrency=None,
+        db_paths=None,
+        graph_dataset=None,
+        context_db=None,
+        config_path=str(config_path),
+    )
+
+    assert cli_config.experiment_name == "smoke"
+    assert cli_config.dataset_path == dataset_path.resolve()
+    assert cli_config.db_paths == [db_path.resolve()]
+    assert cli_config.context_db == db_path.resolve()
+    assert cli_config.graph_dataset == "Building-Architecture"
+    assert cli_config.tags == ["sql"]
+    assert cli_config.repeat == 2
+    assert cli_config.max_concurrency == 1
+    assert cli_config.answer_judge_model == "judge-model"
+    assert cli_config.combinations == [
+        BenchmarkCombination(
+            router_profile="router-a",
+            agent_profile="agent-a",
+            prompt_strategy="baseline",
+            graph_orchestrator="langgraph",
+        )
+    ]
+
+
+def test_build_benchmark_cli_config_cli_overrides_beat_preset_target_and_experiment(
+    tmp_path: Path,
+) -> None:
+    dataset_from_cli = tmp_path / "cli.yaml"
+    dataset_from_cli.write_text(
+        "dataset_name: benchmark_cases_v1\n"
+        "cases:\n"
+        "  - id: q001\n"
+        "    question: How many doors?\n"
+        "    expected_route: sql\n",
+        encoding="utf-8",
+    )
+    db_from_cli = tmp_path / "cli.db"
+    db_from_cli.write_text("", encoding="utf-8")
+
+    config = AppConfig.model_validate(
+        {
+            "defaults": {
+                "router_profile": "router-default",
+                "agent_profile": "agent-default",
+                "graph_orchestrator": "pydanticai",
+            },
+            "benchmark_targets": {
+                "target-a": {
+                    "questions_file": str(tmp_path / "target-a.yaml"),
+                    "db_paths": [str(tmp_path / "target-a.db")],
+                    "graph_dataset": "target-a",
+                },
+                "target-b": {
+                    "questions_file": str(tmp_path / "target-b.yaml"),
+                    "db_paths": [str(tmp_path / "target-b.db")],
+                    "graph_dataset": "target-b",
+                },
+            },
+            "benchmark_presets": {
+                "full": {
+                    "target": "target-a",
+                    "router_profiles": ["router-preset"],
+                    "agent_profiles": ["agent-preset"],
+                    "prompt_strategies": ["strict-grounded"],
+                    "graph_orchestrators": ["langgraph"],
+                    "tags": ["preset"],
+                    "repeat": 2,
+                    "max_concurrency": 3,
+                    "answer_judge_model": "preset-judge",
+                }
+            },
+            "experiments": {
+                "benchmark-e2e-v1": {
+                    "questions_file": str(tmp_path / "experiment.yaml"),
+                    "router_profile": "router-experiment",
+                    "agent_profile": "agent-experiment",
+                    "prompt_strategies": ["baseline"],
+                    "graph_orchestrators": ["pydanticai"],
+                    "tags": ["experiment"],
+                    "repeat": 5,
+                    "max_concurrency": 4,
+                    "answer_judge_model": "experiment-judge",
+                }
+            },
+        }
+    )
+
+    for filename in ("target-a.yaml", "target-b.yaml", "experiment.yaml"):
+        (tmp_path / filename).write_text(
+            "dataset_name: benchmark_cases_v1\n"
+            "cases:\n"
+            "  - id: q001\n"
+            "    question: How many doors?\n"
+            "    expected_route: sql\n",
+            encoding="utf-8",
+        )
+    for filename in ("target-a.db", "target-b.db"):
+        (tmp_path / filename).write_text("", encoding="utf-8")
+
+    cli_config = build_benchmark_cli_config(
+        config=config,
+        experiment_name="benchmark-e2e-v1",
+        preset_name="full",
+        target_name="target-b",
+        questions_file=dataset_from_cli,
+        router_profiles=["router-cli"],
+        agent_profiles=["agent-cli"],
+        prompt_strategies=["baseline"],
+        orchestrators=["pydanticai"],
+        tags=["cli"],
+        repeat=7,
+        max_concurrency=8,
+        db_paths=[db_from_cli],
+        graph_dataset="cli-graph",
+        context_db=db_from_cli,
+        config_path=None,
+        answer_judge_model="cli-judge",
+    )
+
+    assert cli_config.experiment_name == "full"
+    assert cli_config.dataset_path == dataset_from_cli.resolve()
+    assert cli_config.db_paths == [db_from_cli.resolve()]
+    assert cli_config.context_db == db_from_cli.resolve()
+    assert cli_config.graph_dataset == "cli-graph"
+    assert cli_config.tags == ["cli"]
+    assert cli_config.repeat == 7
+    assert cli_config.max_concurrency == 8
+    assert cli_config.answer_judge_model == "cli-judge"
+    assert cli_config.combinations == [
+        BenchmarkCombination(
+            router_profile="router-cli",
+            agent_profile="agent-cli",
+            prompt_strategy="baseline",
+            graph_orchestrator="pydanticai",
+        )
+    ]
 
 
 def test_eval_benchmarks_script_passes_answer_judge_and_orchestrator_overrides(
@@ -452,8 +654,10 @@ def test_eval_benchmarks_script_passes_answer_judge_and_orchestrator_overrides(
 
     exit_code = module.main(
         [
-            "--questions-file",
-            str(tmp_path / "benchmark.yaml"),
+            "--preset",
+            "smoke",
+            "--target",
+            "building-architecture",
             "--db",
             str(db_path),
             "--answer-judge-model",
@@ -464,6 +668,8 @@ def test_eval_benchmarks_script_passes_answer_judge_and_orchestrator_overrides(
     )
 
     assert exit_code == 0
+    assert captured["preset_name"] == "smoke"
+    assert captured["target_name"] == "building-architecture"
     assert captured["answer_judge_model"] == "google-gla:gemini-2.5-flash"
     assert captured["orchestrators"] == ["langgraph"]
     capsys.readouterr()

@@ -10,23 +10,27 @@ DB ?= output/$(DATASET).db
 GRAPH_DATASET ?= $(DATASET)
 APP_ARGS ?=
 
-BENCH_DATASET ?= Building-Architecture
-BENCH_DB ?= output/$(BENCH_DATASET).db
-BENCH_GRAPH_DATASET ?= $(BENCH_DATASET)
-BENCH_EXPERIMENT ?= benchmark-e2e-v1
+TARGET ?=
+PRESET ?= smoke
+BENCH_TARGET ?= $(TARGET)
+BENCH_PRESET ?= $(PRESET)
+BENCH_DB ?=
+BENCH_GRAPH_DATASET ?=
+BENCH_EXPERIMENT ?=
 BENCH_QUESTIONS_FILE ?=
-BENCH_SOURCE_ARGS = $(if $(strip $(BENCH_QUESTIONS_FILE)),--questions-file $(BENCH_QUESTIONS_FILE),--experiment $(BENCH_EXPERIMENT))
-BENCH_ANSWER_JUDGE_MODEL ?= google-gla:gemini-2.5-flash
+BENCH_SELECTOR_ARGS = $(if $(strip $(BENCH_QUESTIONS_FILE)),--questions-file $(BENCH_QUESTIONS_FILE),$(if $(strip $(BENCH_EXPERIMENT)),--experiment $(BENCH_EXPERIMENT),$(if $(strip $(BENCH_PRESET)),--preset $(BENCH_PRESET),))) $(if $(strip $(BENCH_TARGET)),--target $(BENCH_TARGET),)
+BENCH_ANSWER_JUDGE_MODEL ?=
 BENCH_TAGS ?=
+BENCH_RESOURCE_ARGS = $(if $(strip $(BENCH_DB)),--db $(BENCH_DB),) $(if $(strip $(BENCH_GRAPH_DATASET)),--graph-dataset $(BENCH_GRAPH_DATASET),) $(if $(strip $(BENCH_ANSWER_JUDGE_MODEL)),--answer-judge-model $(BENCH_ANSWER_JUDGE_MODEL),) $(if $(strip $(BENCH_TAGS)),--tags $(BENCH_TAGS),)
 BENCH_ARGS ?=
 
-ROUTING_DB ?= $(BENCH_DB)
+ROUTING_DB ?= output/Building-Architecture.db
 ROUTING_MODE ?=
 ROUTING_ARGS ?=
 
 GRAPH_COMPARE_EXPERIMENT ?= graph-agent-compare
-GRAPH_COMPARE_DB ?= $(BENCH_DB)
-GRAPH_COMPARE_DATASET ?= $(BENCH_GRAPH_DATASET)
+GRAPH_COMPARE_DB ?= output/Building-Architecture.db
+GRAPH_COMPARE_DATASET ?= Building-Architecture
 GRAPH_COMPARE_ARGS ?=
 
 TEST_ARGS ?=
@@ -34,7 +38,7 @@ LINT_ARGS ?=
 
 .PHONY: help setup install-hooks pre-commit ontology-map refresh-ifc43-rdf \
 	ifc-to-jsonl jsonl-to-sql jsonl-to-graph build run run-trace tui tui-trace \
-	tui-ready benchmark benchmark-trace benchmark-sql benchmark-graph \
+	tui-ready bench bench-trace benchmark benchmark-trace benchmark-sql benchmark-graph \
 	routing-eval routing-eval-strict graph-agent-compare check-payload-parity \
 	check-graph-relationships check-graph-contract check-batch4 check-batch5 \
 	check-batch6 test lint lint-fix format check-format
@@ -87,17 +91,23 @@ tui-ready: ## Rebuild artifacts, then launch the traced TUI
 	$(MAKE) build
 	$(MAKE) tui-trace
 
-benchmark: ## Run the benchmark suite for BENCH_DATASET
-	uv run python scripts/eval_benchmarks.py $(CONFIG_ARGS) $(BENCH_SOURCE_ARGS) --db $(BENCH_DB) --graph-dataset $(BENCH_GRAPH_DATASET) --answer-judge-model $(BENCH_ANSWER_JUDGE_MODEL) $(if $(strip $(BENCH_TAGS)),--tags $(BENCH_TAGS),) $(BENCH_ARGS)
+bench: ## Run benchmarks via TARGET/PRESET or compatibility selectors
+	uv run python scripts/eval_benchmarks.py $(CONFIG_ARGS) $(BENCH_SELECTOR_ARGS) $(BENCH_RESOURCE_ARGS) $(BENCH_ARGS)
 
-benchmark-trace: ## Run the benchmark suite with tracing enabled
-	uv run python scripts/eval_benchmarks.py $(CONFIG_ARGS) $(BENCH_SOURCE_ARGS) --db $(BENCH_DB) --graph-dataset $(BENCH_GRAPH_DATASET) --answer-judge-model $(BENCH_ANSWER_JUDGE_MODEL) --trace $(if $(strip $(BENCH_TAGS)),--tags $(BENCH_TAGS),) $(BENCH_ARGS)
+bench-trace: ## Run benchmarks with tracing enabled
+	uv run python scripts/eval_benchmarks.py $(CONFIG_ARGS) $(BENCH_SELECTOR_ARGS) $(BENCH_RESOURCE_ARGS) --trace $(BENCH_ARGS)
+
+benchmark: ## Compatibility alias for bench
+	uv run python scripts/eval_benchmarks.py $(CONFIG_ARGS) $(BENCH_SELECTOR_ARGS) $(BENCH_RESOURCE_ARGS) $(BENCH_ARGS)
+
+benchmark-trace: ## Compatibility alias for bench-trace
+	uv run python scripts/eval_benchmarks.py $(CONFIG_ARGS) $(BENCH_SELECTOR_ARGS) $(BENCH_RESOURCE_ARGS) --trace $(BENCH_ARGS)
 
 benchmark-sql: ## Run only benchmark cases tagged with sql
-	$(MAKE) benchmark BENCH_TAGS="sql"
+	$(MAKE) bench BENCH_TAGS="sql"
 
 benchmark-graph: ## Run only benchmark cases tagged with graph
-	$(MAKE) benchmark BENCH_TAGS="graph"
+	$(MAKE) bench BENCH_TAGS="graph"
 
 routing-eval: ## Run the router evaluation script
 	uv run python scripts/eval_routing.py --db $(ROUTING_DB) $(if $(strip $(ROUTING_MODE)),--router-mode $(ROUTING_MODE),) $(ROUTING_ARGS)

@@ -12,8 +12,14 @@ from typing import Any
 
 from pydantic_evals.reporting import EvaluationReport
 
-from rag_tag.config import AppConfig, ExperimentConfig
+from rag_tag.config import (
+    AppConfig,
+    BenchmarkPresetConfig,
+    BenchmarkTargetConfig,
+    ExperimentConfig,
+)
 from rag_tag.observability import LogfireStatus, setup_logfire
+from rag_tag.query_service import find_sqlite_dbs
 
 from .dataset import BenchmarkCase, BenchmarkDataset, load_benchmark_dataset
 from .evaluators import DEFAULT_ANSWER_JUDGE_MODEL
@@ -99,6 +105,8 @@ def build_benchmark_cli_config(
     *,
     config: AppConfig,
     experiment_name: str | None,
+    preset_name: str | None,
+    target_name: str | None,
     questions_file: Path | None,
     router_profiles: list[str] | None,
     agent_profiles: list[str] | None,
@@ -107,7 +115,7 @@ def build_benchmark_cli_config(
     tags: list[str] | None,
     repeat: int | None,
     max_concurrency: int | None,
-    db_paths: list[Path],
+    db_paths: list[Path] | None,
     graph_dataset: str | None,
     context_db: Path | None,
     config_path: str | None,
@@ -124,28 +132,67 @@ def build_benchmark_cli_config(
     """Resolve CLI/config inputs into one executable benchmark suite config."""
 
     experiment = _resolve_experiment_config(config, experiment_name)
+    preset = _resolve_benchmark_preset_config(config, preset_name)
+    target = _resolve_benchmark_target_config(
+        config,
+        target_name if target_name is not None else preset.target if preset else None,
+    )
     dataset_path = _resolve_dataset_path(
         questions_file,
+        target,
         experiment,
         config_path=config_path,
     )
-    if experiment_name is not None:
+    resolved_db_paths = _resolve_db_paths(
+        db_paths,
+        target,
+        config_path=config_path,
+    )
+    resolved_context_db = _resolve_context_db(
+        explicit_context_db=context_db,
+        db_paths=resolved_db_paths,
+        target=target,
+        config_path=config_path,
+    )
+    resolved_graph_dataset = _resolve_graph_dataset(
+        graph_dataset,
+        context_db=resolved_context_db,
+        target=target,
+    )
+    if preset_name is not None:
+        resolved_experiment_name = preset_name
+    elif experiment_name is not None:
         resolved_experiment_name = experiment_name
-    elif experiment is not None and experiment.description:
-        resolved_experiment_name = experiment.description
+    elif target_name is not None:
+        resolved_experiment_name = target_name
+    elif preset is not None:
+        resolved_experiment_name = preset.target
     else:
         resolved_experiment_name = dataset_path.stem
 
     combinations = expand_benchmark_matrix(
         router_profiles=router_profiles
+        or _list_or_empty(preset, "router_profiles")
         or _list_or_empty(experiment, "router_profiles"),
-        agent_profiles=agent_profiles or _list_or_empty(experiment, "agent_profiles"),
+        agent_profiles=agent_profiles
+        or _list_or_empty(preset, "agent_profiles")
+        or _list_or_empty(experiment, "agent_profiles"),
         prompt_strategies=prompt_strategies
+        or _list_or_empty(preset, "prompt_strategies")
         or _list_or_empty(experiment, "prompt_strategies"),
         graph_orchestrators=orchestrators
+        or _list_or_empty(preset, "graph_orchestrators")
         or _list_or_empty(experiment, "graph_orchestrators"),
-        fallback_router_profile=experiment.router_profile if experiment else None,
-        fallback_agent_profile=experiment.agent_profile if experiment else None,
+        fallback_router_profile=(
+            experiment.router_profile
+            if experiment is not None and experiment.router_profile
+            else config.defaults.router_profile
+        ),
+        fallback_agent_profile=(
+            experiment.agent_profile
+            if experiment is not None and experiment.agent_profile
+            else config.defaults.agent_profile
+        ),
         fallback_graph_orchestrator=(
             experiment.graph_orchestrator
             if experiment is not None and experiment.graph_orchestrator
@@ -155,11 +202,15 @@ def build_benchmark_cli_config(
     )
 
     resolved_tags = list(
-        tags or (experiment.tags if experiment is not None and experiment.tags else [])
+        tags
+        or (preset.tags if preset is not None and preset.tags else [])
+        or (experiment.tags if experiment is not None and experiment.tags else [])
     )
     resolved_repeat = (
         repeat
         if repeat is not None
+        else preset.repeat
+        if preset is not None and preset.repeat
         else experiment.repeat
         if experiment is not None and experiment.repeat
         else 1
@@ -167,6 +218,8 @@ def build_benchmark_cli_config(
     resolved_max_concurrency = (
         max_concurrency
         if max_concurrency is not None
+        else preset.max_concurrency
+        if preset is not None and preset.max_concurrency is not None
         else experiment.max_concurrency
         if experiment is not None
         else None
@@ -174,18 +227,29 @@ def build_benchmark_cli_config(
     resolved_answer_judge_model = (
         answer_judge_model
         if answer_judge_model is not None
+        else preset.answer_judge_model
+        if preset is not None and preset.answer_judge_model
         else experiment.answer_judge_model
         if experiment is not None and experiment.answer_judge_model
         else DEFAULT_ANSWER_JUDGE_MODEL
     )
+    resolved_runtime_config_path = config_path
+    if (
+        resolved_runtime_config_path is None
+        and target is not None
+        and target.config_path
+    ):
+        resolved_runtime_config_path = str(
+            _resolve_path_like(target.config_path, config_path=config_path)
+        )
 
     return BenchmarkCliConfig(
         experiment_name=resolved_experiment_name,
         dataset_path=dataset_path,
-        db_paths=list(db_paths),
-        config_path=config_path,
-        graph_dataset=graph_dataset,
-        context_db=context_db,
+        db_paths=resolved_db_paths,
+        config_path=resolved_runtime_config_path,
+        graph_dataset=resolved_graph_dataset,
+        context_db=resolved_context_db,
         payload_mode=payload_mode,
         strict_sql=strict_sql,
         graph_max_steps=graph_max_steps,
@@ -200,6 +264,34 @@ def build_benchmark_cli_config(
         output_dir=output_dir,
         combinations=combinations,
     )
+
+
+def _resolve_benchmark_preset_config(
+    config: AppConfig,
+    preset_name: str | None,
+) -> BenchmarkPresetConfig | None:
+    if preset_name is None:
+        return None
+    try:
+        return config.benchmark_presets[preset_name]
+    except KeyError as exc:
+        raise ValueError(
+            f"Benchmark preset '{preset_name}' was not found in project config."
+        ) from exc
+
+
+def _resolve_benchmark_target_config(
+    config: AppConfig,
+    target_name: str | None,
+) -> BenchmarkTargetConfig | None:
+    if target_name is None:
+        return None
+    try:
+        return config.benchmark_targets[target_name]
+    except KeyError as exc:
+        raise ValueError(
+            f"Benchmark target '{target_name}' was not found in project config."
+        ) from exc
 
 
 def expand_benchmark_matrix(
@@ -426,40 +518,135 @@ def _resolve_experiment_config(
 
 def _resolve_dataset_path(
     questions_file: Path | None,
+    target: BenchmarkTargetConfig | None,
     experiment: ExperimentConfig | None,
     *,
     config_path: str | None,
 ) -> Path:
     if questions_file is not None:
-        candidate = questions_file.expanduser().resolve()
-        if not candidate.is_file():
-            raise FileNotFoundError(f"Benchmark dataset file not found: {candidate}")
-        return candidate
+        return _resolve_existing_file(
+            questions_file,
+            config_path=config_path,
+            kind="Benchmark dataset file",
+        )
+    if target is not None:
+        return _resolve_existing_file(
+            target.questions_file,
+            config_path=config_path,
+            kind="Benchmark dataset file",
+        )
     if experiment is not None and experiment.questions_file:
-        candidate = Path(experiment.questions_file).expanduser()
-        if not candidate.is_absolute():
-            if config_path is not None:
-                candidate = Path(config_path).expanduser().resolve().parent / candidate
-            else:
-                candidate = candidate.resolve()
-        else:
-            candidate = candidate.resolve()
-        if not candidate.is_file():
-            raise FileNotFoundError(f"Benchmark dataset file not found: {candidate}")
-        return candidate
+        return _resolve_existing_file(
+            experiment.questions_file,
+            config_path=config_path,
+            kind="Benchmark dataset file",
+        )
     raise ValueError(
-        "No benchmark questions file selected. Pass --questions-file or use an "
-        "experiment with questions_file configured."
+        "No benchmark questions file selected. Pass --questions-file, --target, "
+        "--preset, or use an experiment with questions_file configured."
     )
 
 
+def _resolve_db_paths(
+    explicit_db_paths: list[Path] | None,
+    target: BenchmarkTargetConfig | None,
+    *,
+    config_path: str | None,
+) -> list[Path]:
+    if explicit_db_paths:
+        return [path.expanduser().resolve() for path in explicit_db_paths]
+
+    configured_paths: list[str] = []
+    if target is not None:
+        if target.db_path:
+            configured_paths.append(target.db_path)
+        configured_paths.extend(target.db_paths)
+    if configured_paths:
+        return [
+            _resolve_existing_file(
+                path,
+                config_path=config_path,
+                kind="SQLite database",
+            )
+            for path in configured_paths
+        ]
+
+    discovered_paths = find_sqlite_dbs()
+    if discovered_paths:
+        return discovered_paths
+    raise FileNotFoundError(
+        "No SQLite database found. Pass --db, use a benchmark target with db_paths, "
+        "or generate output/*.db first."
+    )
+
+
+def _resolve_context_db(
+    *,
+    explicit_context_db: Path | None,
+    db_paths: list[Path],
+    target: BenchmarkTargetConfig | None,
+    config_path: str | None,
+) -> Path | None:
+    if explicit_context_db is not None:
+        return explicit_context_db.expanduser().resolve()
+    if target is not None and target.context_db:
+        return _resolve_existing_file(
+            target.context_db,
+            config_path=config_path,
+            kind="Benchmark context DB",
+        )
+    if len(db_paths) == 1:
+        return db_paths[0]
+    return None
+
+
+def _resolve_graph_dataset(
+    explicit_graph_dataset: str | None,
+    *,
+    context_db: Path | None,
+    target: BenchmarkTargetConfig | None,
+) -> str | None:
+    if explicit_graph_dataset and explicit_graph_dataset.strip():
+        return explicit_graph_dataset.strip()
+    if target is not None and target.graph_dataset and target.graph_dataset.strip():
+        return target.graph_dataset.strip()
+    if context_db is not None:
+        return context_db.stem
+    return None
+
+
+def _resolve_existing_file(
+    value: str | Path,
+    *,
+    config_path: str | None,
+    kind: str,
+) -> Path:
+    candidate = _resolve_path_like(value, config_path=config_path)
+    if not candidate.is_file():
+        raise FileNotFoundError(f"{kind} not found: {candidate}")
+    return candidate
+
+
+def _resolve_path_like(
+    value: str | Path,
+    *,
+    config_path: str | None,
+) -> Path:
+    candidate = Path(value).expanduser()
+    if candidate.is_absolute():
+        return candidate.resolve()
+    if config_path is not None:
+        return (Path(config_path).expanduser().resolve().parent / candidate).resolve()
+    return candidate.resolve()
+
+
 def _list_or_empty(
-    experiment: ExperimentConfig | None,
+    source: BenchmarkPresetConfig | ExperimentConfig | None,
     field_name: str,
 ) -> list[str]:
-    if experiment is None:
+    if source is None:
         return []
-    value = getattr(experiment, field_name, [])
+    value = getattr(source, field_name, [])
     if not value:
         return []
     return [item.strip() for item in value if item and item.strip()]

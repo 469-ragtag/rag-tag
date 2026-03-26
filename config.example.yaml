@@ -11,7 +11,7 @@
 # Put in config:
 # - shared defaults (router/agent profiles, router mode, graph limits)
 # - provider wiring (env var names such as host_env/base_url_env/token_env)
-# - reusable profiles and experiment groupings
+# - reusable profiles, benchmark targets/presets, and experiment groupings
 #
 # Put in .env (or shell):
 # - API keys/tokens: DATABRICKS_TOKEN, GEMINI_API_KEY, COHERE_API_KEY
@@ -104,6 +104,59 @@ profiles:
       temperature: 0.1
       max_tokens: 1024
 
+benchmark_targets:
+  # benchmark_targets: reusable dataset/db/graph bundles for end-to-end benchmark runs.
+  # Preferred with scripts/eval_benchmarks.py --preset <name> [--target <name>].
+  building-architecture:
+    description: Building-Architecture benchmark dataset and runtime artifacts.
+    questions_file: evals/benchmark_cases_v1.yaml
+    db_paths:
+      - output/Building-Architecture.db
+    graph_dataset: Building-Architecture
+
+benchmark_presets:
+  # benchmark_presets: recommended short benchmark recipes layered on a target.
+  smoke:
+    description: Fast sanity-check benchmark run on one router/agent baseline.
+    target: building-architecture
+    router_profiles:
+      - router-gemini-flash
+    agent_profiles:
+      - cohere-command-a
+    prompt_strategies:
+      - baseline
+    graph_orchestrators:
+      - pydanticai
+    answer_judge_model: google-gla:gemini-2.5-flash
+    repeat: 1
+    max_concurrency: 1
+
+  full:
+    description: Full end-to-end benchmark matrix used for shared team comparisons.
+    target: building-architecture
+    router_profiles:
+      - router-gemini-flash
+      - dbx-gpt-oss-20b
+      - dbx-gemma-3-12b
+    agent_profiles:
+      - cohere-command-a
+      - dbx-claude-sonnet-4-6
+      - dbx-gpt-oss-20b
+      - dbx-llama-4-maverick
+      - dbx-gemma-3-12b
+    prompt_strategies:
+      - baseline
+      - strict-grounded
+    graph_orchestrators:
+      - pydanticai
+      - langgraph
+    answer_judge_model: google-gla:gemini-2.5-flash
+    repeat: 1
+    max_concurrency: 1
+    tags:
+      - sql
+      - graph
+
 experiments:
   # experiments: named profile sets for repeatable comparisons
   # (for example scripts/eval_graph_models.py --experiment <name>).
@@ -131,10 +184,10 @@ experiments:
       - dbx-gemma-3-12b
 
   benchmark-e2e-v1:
-    description: Starter end-to-end benchmark experiment using the YAML question set.
-    # Benchmark experiments are consumed by:
+    description: Compatibility benchmark experiment mirroring the full preset.
+    # Compatibility path for older commands:
     #   uv run python scripts/eval_benchmarks.py --experiment benchmark-e2e-v1
-    # The runner loads only the YAML cases you author in questions_file.
+    # Preferred path now uses benchmark_targets + benchmark_presets above.
     router_profile: router-gemini-flash
     agent_profile: cohere-command-a
     questions_file: evals/benchmark_cases_v1.yaml

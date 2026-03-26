@@ -35,8 +35,8 @@ workflows:
 ```bash
 make build
 make tui-trace
-make benchmark
-make benchmark-sql
+make bench TARGET=building-architecture PRESET=smoke
+make bench-trace TARGET=building-architecture PRESET=full
 make graph-agent-compare
 make lint
 make test
@@ -47,9 +47,9 @@ Useful overrides:
 ```bash
 make tui DATASET=Building-Architecture
 make tui-trace DATASET=BigBuildingBIMModel
-make benchmark BENCH_DATASET=Building-Architecture
-make benchmark BENCH_TAGS="sql graph"
-make benchmark CONFIG=config.yaml
+make bench TARGET=building-architecture PRESET=smoke CONFIG=config.yaml
+make bench TARGET=building-architecture PRESET=full BENCH_TAGS="sql graph"
+make benchmark BENCH_EXPERIMENT=benchmark-e2e-v1
 ```
 
 List all available targets with:
@@ -130,6 +130,8 @@ a local `config.yaml` for non-secret runtime defaults:
 - `providers` for named provider configuration such as Databricks hosts
 - `profiles` for reusable router and graph-agent model selections
 - `experiments` for repeatable graph comparison groups
+- `benchmark_targets` for reusable benchmark dataset/db/graph bundles
+- `benchmark_presets` for recommended shared benchmark recipes
 
 Use `.env` or shell environment variables for secrets and one-off overrides:
 
@@ -357,57 +359,90 @@ or local YAML case set. The benchmark runner:
 ### YAML case format
 
 Put benchmark questions in a YAML file such as `evals/benchmark_cases_v1.yaml`.
-V1 required fields are:
+Current required fields are:
 
+- `schema_version`
 - `id`
 - `question`
 - `expected_route`
+- `answer.canonical`
 
-V1 recommended fields are:
+Recommended fields are:
 
-- `expected_answer`
-- `reference_points`
+- `answer.acceptable`
+- `answer.judge_notes`
 - `tags`
 - `max_duration_s`
 
 Example:
 
 ```yaml
+schema_version: 2
 dataset_name: benchmark_cases_v1
 cases:
   - id: q001
     question: Which rooms are adjacent to the kitchen?
     expected_route: graph
-    expected_answer: The kitchen is adjacent to the dining room.
-    reference_points:
-      - identifies the kitchen correctly
-      - avoids fabricated room names
+    answer:
+      canonical: The kitchen is adjacent to the dining room.
+      acceptable:
+        - Dining room.
+      judge_notes:
+        - identifies the kitchen correctly
+        - avoids fabricated room names
     tags: [graph, spatial, adjacency]
     max_duration_s: 20
 
   - id: q002
     question: How many doors are on Level 2?
     expected_route: sql
-    expected_answer: There are 3 doors on Level 2.
-    reference_points:
-      - chooses sql routing
-      - gives a deterministic count
+    answer:
+      canonical: There are 3 doors on Level 2.
+      judge_notes:
+        - chooses sql routing
+        - gives a deterministic count
     tags: [sql, count, level]
     max_duration_s: 10
 ```
 
-### Run from config
+### Preferred shared commands
 
-Use the benchmark experiment defined in `config.example.yaml` as the starting
-point for a one-command run:
+Define checked-in benchmark targets/presets in `config.example.yaml`, then run:
+
+```bash
+make bench TARGET=building-architecture PRESET=smoke
+make bench-trace TARGET=building-architecture PRESET=full
+```
+
+Equivalent direct CLI form:
+
+```bash
+uv run python scripts/eval_benchmarks.py \
+  --config ./config.yaml \
+  --preset smoke \
+  --target building-architecture
+```
+
+Use CLI overrides when you want to keep the preset but change one dimension:
+
+```bash
+uv run python scripts/eval_benchmarks.py \
+  --config ./config.yaml \
+  --preset full \
+  --target building-architecture \
+  --agent-profiles cohere-command-a dbx-claude-sonnet-4-6 \
+  --orchestrators pydanticai \
+  --tags graph
+```
+
+### Compatibility experiment path
+
+The older `--experiment` flow still works:
 
 ```bash
 uv run python scripts/eval_benchmarks.py \
   --config ./config.yaml \
   --experiment benchmark-e2e-v1 \
-  --db ./output/Building-Architecture.db \
-  --graph-dataset Building-Architecture \
-  --answer-judge-model google-gla:gemini-2.5-flash \
   --trace
 ```
 
@@ -420,7 +455,7 @@ uv run python scripts/eval_benchmarks.py \
   --questions-file ./evals/benchmark_cases_v1.yaml \
   --router-profiles router-gemini-flash dbx-gpt-oss-20b dbx-gemma-3-12b \
   --agent-profiles cohere-command-a dbx-claude-sonnet-4-6 dbx-gpt-oss-20b dbx-llama-4-maverick dbx-gemma-3-12b \
-  --prompt-strategies baseline strict-grounded decompose \
+  --prompt-strategies baseline strict-grounded \
   --answer-judge-model google-gla:gemini-2.5-flash \
   --repeat 1 \
   --max-concurrency 1 \

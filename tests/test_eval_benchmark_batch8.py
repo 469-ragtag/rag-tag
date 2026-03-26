@@ -18,6 +18,8 @@ def test_build_benchmark_cli_config_rejects_missing_dataset_file(
         build_benchmark_cli_config(
             config=config,
             experiment_name=None,
+            preset_name=None,
+            target_name=None,
             questions_file=tmp_path / "missing.yaml",
             router_profiles=None,
             agent_profiles=None,
@@ -33,7 +35,7 @@ def test_build_benchmark_cli_config_rejects_missing_dataset_file(
         )
 
 
-def test_eval_benchmarks_script_requires_experiment_or_questions_file(
+def test_eval_benchmarks_script_requires_dataset_selector(
     tmp_path: Path,
     capsys,
 ) -> None:
@@ -50,4 +52,4 @@ def test_eval_benchmarks_script_requires_experiment_or_questions_file(
 
     assert exit_code == 1
     stderr = capsys.readouterr().err
-    assert "Pass either --experiment or --questions-file" in stderr
+    assert "Pass --preset, --target, --experiment, or --questions-file" in stderr

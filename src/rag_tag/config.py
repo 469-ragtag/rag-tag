@@ -76,6 +76,37 @@ class ExperimentConfig(BaseModel):
     profiles: list[str] = Field(default_factory=list)
 
 
+class BenchmarkTargetConfig(BaseModel):
+    """Named benchmark dataset/db/graph bundle."""
+
+    model_config = ConfigDict(extra="allow")
+
+    description: str | None = None
+    questions_file: str
+    db_path: str | None = None
+    db_paths: list[str] = Field(default_factory=list)
+    graph_dataset: str | None = None
+    context_db: str | None = None
+    config_path: str | None = None
+
+
+class BenchmarkPresetConfig(BaseModel):
+    """Named benchmark run recipe layered on top of a target."""
+
+    model_config = ConfigDict(extra="allow")
+
+    description: str | None = None
+    target: str
+    router_profiles: list[str] = Field(default_factory=list)
+    agent_profiles: list[str] = Field(default_factory=list)
+    prompt_strategies: list[str] = Field(default_factory=list)
+    graph_orchestrators: list[str] = Field(default_factory=list)
+    tags: list[str] | None = None
+    repeat: int | None = Field(default=None, ge=1)
+    max_concurrency: int | None = Field(default=None, ge=1)
+    answer_judge_model: str | None = None
+
+
 class DefaultsConfig(BaseModel):
     """Role defaults used when no explicit runtime selection is provided."""
 
@@ -113,6 +144,8 @@ class AppConfig(BaseModel):
     providers: dict[str, ProviderConfig] = Field(default_factory=dict)
     profiles: dict[str, ProfileConfig] = Field(default_factory=dict)
     experiments: dict[str, ExperimentConfig] = Field(default_factory=dict)
+    benchmark_targets: dict[str, BenchmarkTargetConfig] = Field(default_factory=dict)
+    benchmark_presets: dict[str, BenchmarkPresetConfig] = Field(default_factory=dict)
 
 
 @dataclass(frozen=True)
