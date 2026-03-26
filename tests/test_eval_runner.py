@@ -7,6 +7,7 @@ from pydantic_evals.evaluators import LLMJudge, MaxDuration
 from rag_tag.evals import (
     DEFAULT_ANSWER_JUDGE_MODEL,
     DEFAULT_ANSWER_JUDGE_RUBRIC,
+    BenchmarkAnswer,
     BenchmarkCase,
     BenchmarkDataset,
     BenchmarkExperimentConfig,
@@ -25,8 +26,10 @@ def test_build_eval_dataset_adds_case_and_dataset_evaluators() -> None:
                 id="q001",
                 question="How many walls are in the model?",
                 expected_route="sql",
-                expected_answer="There are 4 walls in the model.",
-                reference_points=["returns a deterministic count"],
+                answer=BenchmarkAnswer(
+                    canonical="There are 4 walls in the model.",
+                    judge_notes=["returns a deterministic count"],
+                ),
                 tags=["sql", "count"],
                 max_duration_s=10,
             )
@@ -45,6 +48,11 @@ def test_build_eval_dataset_adds_case_and_dataset_evaluators() -> None:
     assert eval_dataset.cases[0].metadata == {
         "case_id": "q001",
         "expected_route": "sql",
+        "answer": {
+            "canonical": "There are 4 walls in the model.",
+            "acceptable": [],
+            "judge_notes": ["returns a deterministic count"],
+        },
         "expected_answer": "There are 4 walls in the model.",
         "reference_points": ["returns a deterministic count"],
         "tags": ["sql", "count"],

@@ -132,6 +132,7 @@ async def evaluate_benchmark_dataset_async(
         effective_max_concurrency = _effective_max_concurrency(
             experiment.max_concurrency
         )
+
         async def run_case(case: BenchmarkCase) -> BenchmarkTaskResult:
             return await _run_case_with_state(
                 case,
@@ -211,6 +212,9 @@ def _build_case_metadata(case: BenchmarkCase) -> BenchmarkCaseMetadata:
     return {
         "case_id": case.id,
         "expected_route": case.expected_route,
+        "answer": case.answer.model_dump(mode="python")
+        if case.answer is not None
+        else None,
         "expected_answer": case.expected_answer,
         "reference_points": list(case.reference_points),
         "tags": list(case.tags),

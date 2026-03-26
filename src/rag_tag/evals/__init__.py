@@ -11,6 +11,10 @@ from .benchmark import (
     run_benchmark_suite,
 )
 from .dataset import (
+    CURRENT_BENCHMARK_SCHEMA_VERSION,
+    DEFAULT_BENCHMARK_SCHEMA_VERSION,
+    SUPPORTED_BENCHMARK_SCHEMA_VERSIONS,
+    BenchmarkAnswer,
     BenchmarkCase,
     BenchmarkDataset,
     BenchmarkRoute,
@@ -51,6 +55,7 @@ from .task_runner import (
 
 __all__ = [
     "BenchmarkCase",
+    "BenchmarkAnswer",
     "BenchmarkCliConfig",
     "BenchmarkCombination",
     "BenchmarkDataset",
@@ -64,10 +69,13 @@ __all__ = [
     "BenchmarkTaskResult",
     "BenchmarkUsage",
     "BenchmarkUsageAggregate",
+    "CURRENT_BENCHMARK_SCHEMA_VERSION",
     "DEFAULT_ANSWER_JUDGE_MODEL",
     "DEFAULT_ANSWER_JUDGE_RUBRIC",
+    "DEFAULT_BENCHMARK_SCHEMA_VERSION",
     "NoExecutionError",
     "RouteMatchesExpected",
+    "SUPPORTED_BENCHMARK_SCHEMA_VERSIONS",
     "aggregate_benchmark_usage",
     "build_benchmark_cli_config",
     "build_case_groups_rows",
