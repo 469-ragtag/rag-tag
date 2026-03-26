@@ -71,6 +71,7 @@ def build_eval_dataset(
     benchmark_dataset: BenchmarkDataset,
     *,
     answer_judge_model: str | None = None,
+    config_path: str | None = None,
     include_answer_judge: bool = True,
 ) -> Dataset[BenchmarkCase, BenchmarkTaskResult, BenchmarkCaseMetadata]:
     """Convert the checked-in benchmark dataset into a Pydantic Evals dataset."""
@@ -83,7 +84,12 @@ def build_eval_dataset(
         NoExecutionError(),
     ]
     if include_answer_judge:
-        dataset_evaluators.append(build_default_answer_judge(answer_judge_model))
+        dataset_evaluators.append(
+            build_default_answer_judge(
+                answer_judge_model,
+                config_path=config_path,
+            )
+        )
 
     cases = [_build_eval_case(case) for case in benchmark_dataset.cases]
     return Dataset(
@@ -121,6 +127,7 @@ async def evaluate_benchmark_dataset_async(
     dataset = build_eval_dataset(
         benchmark_dataset,
         answer_judge_model=experiment.answer_judge_model,
+        config_path=experiment.config_path,
         include_answer_judge=experiment.include_answer_judge,
     )
 

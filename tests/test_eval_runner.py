@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from pydantic_evals.evaluators import LLMJudge, MaxDuration
+from pydantic_ai.models.openai import OpenAIChatModel
 
 from rag_tag.evals import (
     DEFAULT_ANSWER_JUDGE_MODEL,
@@ -106,6 +107,104 @@ def test_build_eval_dataset_adds_case_and_dataset_evaluators() -> None:
     }
     assert "output.answer" in DEFAULT_ANSWER_JUDGE_RUBRIC
     assert "expected_output.answer.canonical" in DEFAULT_ANSWER_JUDGE_RUBRIC
+
+
+def test_build_eval_dataset_resolves_databricks_judge_profile_name(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "providers:\n"
+        "  databricks:\n"
+        "    type: databricks\n"
+        "    host_env: DATABRICKS_HOST\n"
+        "    token_env: DATABRICKS_TOKEN\n"
+        "profiles:\n"
+        "  dbx-judge:\n"
+        "    provider: databricks\n"
+        "    model: databricks-gpt-oss-20b\n"
+        "    settings:\n"
+        "      temperature: 0.2\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("DATABRICKS_HOST", "workspace.example.com")
+    monkeypatch.setenv("DATABRICKS_TOKEN", "test-token")
+
+    dataset = BenchmarkDataset(
+        dataset_name="benchmark_cases_v1",
+        cases=[
+            BenchmarkCase(
+                id="q001",
+                question="How many walls are in the model?",
+                expected_route="sql",
+            )
+        ],
+    )
+
+    eval_dataset = build_eval_dataset(
+        dataset,
+        include_answer_judge=True,
+        answer_judge_model="dbx-judge",
+        config_path=str(config_path),
+    )
+
+    judge = next(
+        evaluator
+        for evaluator in eval_dataset.evaluators
+        if isinstance(evaluator, LLMJudge)
+    )
+    assert isinstance(judge.model, OpenAIChatModel)
+    assert judge.model.model_name == "databricks-gpt-oss-20b"
+    assert judge.model.base_url == "https://workspace.example.com/serving-endpoints/"
+    assert judge.model_settings == {"temperature": 0.2}
+
+
+def test_build_eval_dataset_resolves_databricks_judge_by_model_name(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "providers:\n"
+        "  databricks:\n"
+        "    type: databricks\n"
+        "    host_env: DATABRICKS_HOST\n"
+        "    token_env: DATABRICKS_TOKEN\n"
+        "profiles:\n"
+        "  dbx-judge:\n"
+        "    provider: databricks\n"
+        "    model: databricks-gpt-oss-20b\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("DATABRICKS_HOST", "workspace.example.com")
+    monkeypatch.setenv("DATABRICKS_TOKEN", "test-token")
+
+    dataset = BenchmarkDataset(
+        dataset_name="benchmark_cases_v1",
+        cases=[
+            BenchmarkCase(
+                id="q001",
+                question="How many walls are in the model?",
+                expected_route="sql",
+            )
+        ],
+    )
+
+    eval_dataset = build_eval_dataset(
+        dataset,
+        include_answer_judge=True,
+        answer_judge_model="databricks-gpt-oss-20b",
+        config_path=str(config_path),
+    )
+
+    judge = next(
+        evaluator
+        for evaluator in eval_dataset.evaluators
+        if isinstance(evaluator, LLMJudge)
+    )
+    assert isinstance(judge.model, OpenAIChatModel)
+    assert judge.model.model_name == "databricks-gpt-oss-20b"
 
 
 def test_build_eval_dataset_defaults_answer_judge_to_repo_model() -> None:

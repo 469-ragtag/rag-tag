@@ -12,6 +12,8 @@ from pydantic_evals.evaluators import (
     LLMJudge,
 )
 
+from rag_tag.llm.pydantic_ai import resolve_evaluator_model
+
 from .dataset import BenchmarkCase
 from .task_runner import BenchmarkTaskResult
 
@@ -133,14 +135,23 @@ class LoopSafeLLMJudge(LLMJudge):
         return await super().evaluate(ctx)
 
 
-def build_default_answer_judge(model: str | None = None) -> LLMJudge:
+def build_default_answer_judge(
+    model: str | None = None,
+    *,
+    config_path: str | None = None,
+) -> LLMJudge:
     """Build the default answer-quality evaluator for benchmark experiments."""
 
+    resolved = resolve_evaluator_model(
+        model or DEFAULT_ANSWER_JUDGE_MODEL,
+        config_path=config_path,
+    )
     return LoopSafeLLMJudge(
         rubric=DEFAULT_ANSWER_JUDGE_RUBRIC,
-        model=model or DEFAULT_ANSWER_JUDGE_MODEL,
+        model=resolved.model,
         include_input=True,
         include_expected_output=True,
+        model_settings=resolved.settings,
         assertion={
             "evaluation_name": "answer_correct",
             "include_reason": True,
