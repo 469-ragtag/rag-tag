@@ -676,9 +676,7 @@ def _ensure_graph_context(
             }
             init_parameters = inspect.signature(LangGraphAgent.__init__).parameters
             if "prompt_append" in init_parameters:
-                langgraph_kwargs["prompt_append"] = (
-                    get_benchmark_graph_prompt_append()
-                )
+                langgraph_kwargs["prompt_append"] = get_benchmark_graph_prompt_append()
             agent = LangGraphAgent(**langgraph_kwargs)
         else:
             agent = GraphAgent(debug_llm_io=debug_llm_io)
