@@ -18,16 +18,15 @@ from rag_tag.query_service import resolve_graph_orchestrator
 def test_resolve_benchmark_strategy_returns_expected_settings() -> None:
     baseline = resolve_benchmark_strategy("baseline")
     strict_grounded = resolve_benchmark_strategy("strict-grounded")
-    decompose = resolve_benchmark_strategy("decompose")
 
-    assert baseline.graph_orchestrator_override is None
     assert baseline.graph_prompt_append is None
     assert strict_grounded.graph_prompt_append is not None
-    assert decompose.graph_orchestrator_override == "langgraph"
-    assert decompose.graph_prompt_append is not None
 
 
-def test_resolve_benchmark_strategy_rejects_unknown_values() -> None:
+def test_resolve_benchmark_strategy_rejects_removed_and_unknown_values() -> None:
+    with pytest.raises(ValueError, match="Unsupported benchmark prompt strategy"):
+        resolve_benchmark_strategy("decompose")
+
     with pytest.raises(ValueError, match="Unsupported benchmark prompt strategy"):
         resolve_benchmark_strategy("unsupported")
 
@@ -39,7 +38,7 @@ def test_temporary_runtime_overrides_restore_strategy_env_vars(
     monkeypatch.setenv(BENCHMARK_GRAPH_PROMPT_APPEND_ENV_VAR, "original appendix")
 
     with temporary_runtime_overrides(
-        graph_orchestrator_override="langgraph",
+        graph_orchestrator="langgraph",
         graph_prompt_append="benchmark appendix",
     ):
         assert os.environ[BENCHMARK_GRAPH_ORCHESTRATOR_ENV_VAR] == "langgraph"

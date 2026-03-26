@@ -1,11 +1,11 @@
-"""Benchmark-only prompt and orchestration strategy definitions."""
+"""Benchmark-only prompt strategy definitions."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Literal
 
-BenchmarkPromptStrategy = Literal["baseline", "strict-grounded", "decompose"]
+BenchmarkPromptStrategy = Literal["baseline", "strict-grounded"]
 
 _STRICT_GROUNDED_APPENDIX = """
 Benchmark strategy: strict-grounded
@@ -20,24 +20,12 @@ Additional rules:
   in the tool evidence.
 """.strip()
 
-_DECOMPOSE_APPENDIX = """
-Benchmark strategy: decompose
-
-Additional rules:
-- Break multi-hop questions into smaller grounded subproblems when useful.
-- Verify each intermediate step with tool evidence before combining results.
-- Prefer an explicit step-by-step evidence chain over a single broad inference.
-- If decomposition does not improve confidence, answer from the strongest
-  grounded evidence available and state any uncertainty plainly.
-""".strip()
-
 
 @dataclass(frozen=True)
 class BenchmarkStrategySettings:
     """Resolved benchmark-only runtime settings for a prompt strategy."""
 
     name: BenchmarkPromptStrategy
-    graph_orchestrator_override: str | None = None
     graph_prompt_append: str | None = None
 
 
@@ -54,14 +42,7 @@ def resolve_benchmark_strategy(
             name="strict-grounded",
             graph_prompt_append=_STRICT_GROUNDED_APPENDIX,
         )
-    if normalized == "decompose":
-        return BenchmarkStrategySettings(
-            name="decompose",
-            graph_orchestrator_override="langgraph",
-            graph_prompt_append=_DECOMPOSE_APPENDIX,
-        )
-
     raise ValueError(
         "Unsupported benchmark prompt strategy "
-        f"{strategy!r}. Allowed values: baseline, strict-grounded, decompose."
+        f"{strategy!r}. Allowed values: baseline, strict-grounded."
     )

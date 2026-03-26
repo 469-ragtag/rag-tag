@@ -11,7 +11,10 @@ from rag_tag.config import (
     ROUTER_PROFILE_ENV_VAR,
 )
 from rag_tag.evals import BenchmarkCase
-from rag_tag.evals.runtime import temporary_runtime_overrides
+from rag_tag.evals.runtime import (
+    BENCHMARK_GRAPH_ORCHESTRATOR_ENV_VAR,
+    temporary_runtime_overrides,
+)
 from rag_tag.evals.task_runner import BenchmarkUsage, run_benchmark_case
 
 
@@ -75,6 +78,9 @@ def test_run_benchmark_case_returns_structured_sql_result(
                 "router_profile": os.environ.get(ROUTER_PROFILE_ENV_VAR),
                 "agent_profile": os.environ.get(AGENT_PROFILE_ENV_VAR),
                 "config_path": os.environ.get(CONFIG_PATH_ENV_VAR),
+                "graph_orchestrator": os.environ.get(
+                    BENCHMARK_GRAPH_ORCHESTRATOR_ENV_VAR
+                ),
                 "graph_dataset": graph_dataset,
                 "context_db": context_db,
                 "payload_mode": payload_mode,
@@ -111,6 +117,7 @@ def test_run_benchmark_case_returns_structured_sql_result(
         config_path="/tmp/config.yaml",
         router_profile="router-alpha",
         agent_profile="agent-beta",
+        graph_orchestrator="langgraph",
         graph_dataset="model",
         context_db=Path("/tmp/model.db"),
         payload_mode="minimal",
@@ -127,6 +134,7 @@ def test_run_benchmark_case_returns_structured_sql_result(
             "router_profile": "router-alpha",
             "agent_profile": "agent-beta",
             "config_path": "/tmp/config.yaml",
+            "graph_orchestrator": "langgraph",
             "graph_dataset": "model",
             "context_db": Path("/tmp/model.db"),
             "payload_mode": "minimal",
@@ -139,6 +147,7 @@ def test_run_benchmark_case_returns_structured_sql_result(
     assert bundle.result.expected_route == "sql"
     assert bundle.result.selected_route == "sql"
     assert bundle.result.answer == "Found 12 IfcWall."
+    assert bundle.result.graph_orchestrator == "langgraph"
     assert bundle.result.sql is not None
     assert bundle.result.had_error is False
     assert bundle.result.had_warning is False
@@ -205,11 +214,13 @@ def test_run_benchmark_case_preserves_runtime_and_agent_reuse(
         router_profile="router-alpha",
         agent_profile="agent-beta",
         prompt_strategy="baseline",
+        graph_orchestrator="pydanticai",
     )
 
     assert bundle.runtime is next_runtime
     assert bundle.agent is next_agent
     assert bundle.result.selected_route == "graph"
+    assert bundle.result.graph_orchestrator == "pydanticai"
     assert bundle.result.had_warning is True
     assert bundle.result.warning == "partial evidence"
 

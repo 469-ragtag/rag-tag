@@ -18,6 +18,7 @@ _RUNS_FIELDNAMES = [
     "router_profile",
     "agent_profile",
     "prompt_strategy",
+    "graph_orchestrator",
     "report_name",
     "case_id",
     "question",
@@ -51,6 +52,7 @@ _CASE_GROUPS_FIELDNAMES = [
     "router_profile",
     "agent_profile",
     "prompt_strategy",
+    "graph_orchestrator",
     "report_name",
     "case_id",
     "question",
@@ -78,6 +80,7 @@ _LEADERBOARD_FIELDNAMES = [
     "router_profile",
     "agent_profile",
     "prompt_strategy",
+    "graph_orchestrator",
     "repeat",
     "case_count",
     "failure_count",
@@ -106,6 +109,7 @@ class NormalizedRunRecord:
     router_profile: str | None
     agent_profile: str | None
     prompt_strategy: str
+    graph_orchestrator: str | None
     report_name: str
     case_id: str
     question: str
@@ -136,6 +140,7 @@ class NormalizedRunRecord:
             "router_profile": self.router_profile,
             "agent_profile": self.agent_profile,
             "prompt_strategy": self.prompt_strategy,
+            "graph_orchestrator": self.graph_orchestrator,
             "report_name": self.report_name,
             "case_id": self.case_id,
             "question": self.question,
@@ -195,6 +200,7 @@ def build_case_groups_rows(entries: list[object]) -> list[dict[str, Any]]:
                     "router_profile": first.router_profile,
                     "agent_profile": first.agent_profile,
                     "prompt_strategy": first.prompt_strategy,
+                    "graph_orchestrator": first.graph_orchestrator,
                     "report_name": first.report_name,
                     "case_id": first.case_id,
                     "question": first.question,
@@ -248,6 +254,7 @@ def build_leaderboard_rows(
                 "router_profile": first.router_profile,
                 "agent_profile": first.agent_profile,
                 "prompt_strategy": first.prompt_strategy,
+                "graph_orchestrator": first.graph_orchestrator,
                 "repeat": repeat,
                 "case_count": len({record.source_case_name for record in records}),
                 "failure_count": sum(
@@ -375,7 +382,9 @@ def _build_case_record(
     route_eval = _find_eval_result(getattr(case, "assertions", {}), "route")
     error_eval = _find_eval_result(getattr(case, "assertions", {}), "error")
     duration_eval = _find_eval_result(getattr(case, "assertions", {}), "duration")
-    judge_eval = _first_eval_result(getattr(case, "scores", {}))
+    judge_eval = _find_eval_result(getattr(case, "scores", {}), "judge_score")
+    if judge_eval is None:
+        judge_eval = _first_eval_result(getattr(case, "scores", {}))
 
     return NormalizedRunRecord(
         experiment_name=experiment_name,
@@ -389,6 +398,11 @@ def _build_case_record(
         prompt_strategy=task_result.prompt_strategy
         if task_result is not None
         else getattr(combination, "prompt_strategy", "baseline"),
+        graph_orchestrator=(
+            task_result.graph_orchestrator
+            if task_result is not None and task_result.graph_orchestrator is not None
+            else getattr(combination, "graph_orchestrator", None)
+        ),
         report_name=report_name,
         case_id=case_id,
         question=question,
@@ -439,6 +453,7 @@ def _build_failure_record(
         router_profile=getattr(combination, "router_profile", None),
         agent_profile=getattr(combination, "agent_profile", None),
         prompt_strategy=getattr(combination, "prompt_strategy", "baseline"),
+        graph_orchestrator=getattr(combination, "graph_orchestrator", None),
         report_name=report_name,
         case_id=case_id or _coerce_text(getattr(failure, "name", None)) or "unknown",
         question=question,

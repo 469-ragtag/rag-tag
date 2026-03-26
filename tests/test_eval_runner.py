@@ -48,6 +48,16 @@ def test_build_eval_dataset_adds_case_and_dataset_evaluators() -> None:
     assert eval_dataset.cases[0].metadata == {
         "case_id": "q001",
         "expected_route": "sql",
+        "answer_judge_target": {
+            "case_id": "q001",
+            "question": "How many walls are in the model?",
+            "expected_route": "sql",
+            "answer": {
+                "canonical": "There are 4 walls in the model.",
+                "acceptable": [],
+                "judge_notes": ["returns a deterministic count"],
+            },
+        },
         "answer": {
             "canonical": "There are 4 walls in the model.",
             "acceptable": [],
@@ -57,6 +67,16 @@ def test_build_eval_dataset_adds_case_and_dataset_evaluators() -> None:
         "reference_points": ["returns a deterministic count"],
         "tags": ["sql", "count"],
         "max_duration_s": 10,
+    }
+    assert eval_dataset.cases[0].expected_output == {
+        "case_id": "q001",
+        "question": "How many walls are in the model?",
+        "expected_route": "sql",
+        "answer": {
+            "canonical": "There are 4 walls in the model.",
+            "acceptable": [],
+            "judge_notes": ["returns a deterministic count"],
+        },
     }
     assert len(eval_dataset.cases[0].evaluators) == 1
     assert isinstance(eval_dataset.cases[0].evaluators[0], MaxDuration)
@@ -75,9 +95,17 @@ def test_build_eval_dataset_adds_case_and_dataset_evaluators() -> None:
         if isinstance(evaluator, LLMJudge)
     )
     assert judge.model == "openai:gpt-5.2"
-    assert judge.assertion == {"include_reason": True}
-    assert judge.score == {"include_reason": True}
-    assert "expected_answer" in DEFAULT_ANSWER_JUDGE_RUBRIC
+    assert judge.include_expected_output is True
+    assert judge.assertion == {
+        "evaluation_name": "answer_correct",
+        "include_reason": True,
+    }
+    assert judge.score == {
+        "evaluation_name": "judge_score",
+        "include_reason": True,
+    }
+    assert "output.answer" in DEFAULT_ANSWER_JUDGE_RUBRIC
+    assert "expected_output.answer.canonical" in DEFAULT_ANSWER_JUDGE_RUBRIC
 
 
 def test_build_eval_dataset_defaults_answer_judge_to_repo_model() -> None:
@@ -100,8 +128,15 @@ def test_build_eval_dataset_defaults_answer_judge_to_repo_model() -> None:
         if isinstance(evaluator, LLMJudge)
     )
     assert judge.model == DEFAULT_ANSWER_JUDGE_MODEL
-    assert judge.assertion == {"include_reason": True}
-    assert judge.score == {"include_reason": True}
+    assert judge.include_expected_output is True
+    assert judge.assertion == {
+        "evaluation_name": "answer_correct",
+        "include_reason": True,
+    }
+    assert judge.score == {
+        "evaluation_name": "judge_score",
+        "include_reason": True,
+    }
 
 
 def test_build_eval_dataset_uses_loop_safe_answer_judge() -> None:
@@ -159,6 +194,7 @@ def test_evaluate_benchmark_dataset_runs_cases_and_repeats(
         router_profile: str | None = None,
         agent_profile: str | None = None,
         prompt_strategy: str = "baseline",
+        graph_orchestrator: str | None = None,
         graph_dataset: str | None = None,
         context_db: Path | None = None,
         payload_mode: str | None = None,
@@ -172,6 +208,7 @@ def test_evaluate_benchmark_dataset_runs_cases_and_repeats(
             router_profile,
             agent_profile,
             prompt_strategy,
+            graph_orchestrator,
             graph_dataset,
             context_db,
             payload_mode,
@@ -295,6 +332,7 @@ def test_evaluate_benchmark_dataset_disables_state_reuse_when_concurrent(
         router_profile: str | None = None,
         agent_profile: str | None = None,
         prompt_strategy: str = "baseline",
+        graph_orchestrator: str | None = None,
         graph_dataset: str | None = None,
         context_db: Path | None = None,
         payload_mode: str | None = None,
@@ -308,6 +346,7 @@ def test_evaluate_benchmark_dataset_disables_state_reuse_when_concurrent(
             router_profile,
             agent_profile,
             prompt_strategy,
+            graph_orchestrator,
             graph_dataset,
             context_db,
             payload_mode,

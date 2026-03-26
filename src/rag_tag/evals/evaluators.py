@@ -19,17 +19,39 @@ BenchmarkCaseMetadata = dict[str, Any]
 DEFAULT_ANSWER_JUDGE_MODEL = "google-gla:gemini-2.5-flash"
 
 DEFAULT_ANSWER_JUDGE_RUBRIC = """
-You are evaluating the quality of an IFC/BIM benchmark answer.
+You are evaluating whether a rag-tag benchmark answer is close enough to the
+expected IFC/BIM answer.
 
-Judge the answer against the benchmark input and output objects provided.
+Treat answer correctness as the primary task. Route correctness is scored
+separately, so a route mismatch alone should not fail an otherwise correct,
+grounded answer.
 
-Pass only when:
-- the answer addresses the user question directly
-- the selected route is appropriate for the benchmark case
-- when an expected_answer is provided, the answer is materially consistent with it
-- the answer stays grounded in the available evidence or clearly signals uncertainty
-- the answer does not fabricate entities, relationships, properties, or counts
-- the answer aligns with the case reference points when they are present
+Compare all of the following when they are available:
+- the input question
+- expected_output.answer.canonical
+- expected_output.answer.acceptable
+- expected_output.answer.judge_notes
+- expected_output.expected_route
+- output.selected_route
+- output.answer (the final answer text shown to the user)
+- output.data (structured payload and supporting evidence)
+- output.warning or output.error
+
+Judging rules:
+- Pass when the final answer is materially correct or acceptably equivalent to
+  the canonical or acceptable answers.
+- Use output.data as important evidence for counts, entities, relationships,
+  and other structured facts. The final answer text is still the main answer,
+  but the structured payload can confirm whether it is grounded.
+- Give credit for concise wording when the meaning is still correct and the
+  structured payload supports it.
+- Fail when the answer is missing, materially incorrect, contradicted by the
+  structured payload, unsupported, or fabricated.
+- If the system clearly states uncertainty because the evidence is incomplete,
+  that can still be acceptable when it matches the benchmark expectations.
+
+Score from 0.0 to 1.0, where 1.0 means clearly correct and grounded, 0.0 means
+incorrect or unsupported, and intermediate scores reflect partial correctness.
 """.strip()
 
 
@@ -118,6 +140,13 @@ def build_default_answer_judge(model: str | None = None) -> LLMJudge:
         rubric=DEFAULT_ANSWER_JUDGE_RUBRIC,
         model=model or DEFAULT_ANSWER_JUDGE_MODEL,
         include_input=True,
-        assertion={"include_reason": True},
-        score={"include_reason": True},
+        include_expected_output=True,
+        assertion={
+            "evaluation_name": "answer_correct",
+            "include_reason": True,
+        },
+        score={
+            "evaluation_name": "judge_score",
+            "include_reason": True,
+        },
     )

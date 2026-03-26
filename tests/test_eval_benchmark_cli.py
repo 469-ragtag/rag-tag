@@ -4,6 +4,8 @@ import importlib.util
 import json
 from pathlib import Path
 
+import pytest
+
 from rag_tag.evals.benchmark import (
     BenchmarkCliConfig,
     BenchmarkCombination,
@@ -20,8 +22,10 @@ def test_expand_benchmark_matrix_uses_fallbacks_when_lists_are_empty() -> None:
         router_profiles=[],
         agent_profiles=[],
         prompt_strategies=[],
+        graph_orchestrators=[],
         fallback_router_profile="router-default",
         fallback_agent_profile="agent-default",
+        fallback_graph_orchestrator="pydanticai",
     )
 
     assert combinations == [
@@ -29,8 +33,61 @@ def test_expand_benchmark_matrix_uses_fallbacks_when_lists_are_empty() -> None:
             router_profile="router-default",
             agent_profile="agent-default",
             prompt_strategy="baseline",
+            graph_orchestrator="pydanticai",
         )
     ]
+
+
+def test_expand_benchmark_matrix_includes_orchestrator_dimension() -> None:
+    combinations = expand_benchmark_matrix(
+        router_profiles=["router-a"],
+        agent_profiles=["agent-a"],
+        prompt_strategies=["baseline", "strict-grounded"],
+        graph_orchestrators=["pydanticai", "langgraph"],
+        fallback_router_profile=None,
+        fallback_agent_profile=None,
+        fallback_graph_orchestrator="pydanticai",
+    )
+
+    assert combinations == [
+        BenchmarkCombination(
+            router_profile="router-a",
+            agent_profile="agent-a",
+            prompt_strategy="baseline",
+            graph_orchestrator="pydanticai",
+        ),
+        BenchmarkCombination(
+            router_profile="router-a",
+            agent_profile="agent-a",
+            prompt_strategy="baseline",
+            graph_orchestrator="langgraph",
+        ),
+        BenchmarkCombination(
+            router_profile="router-a",
+            agent_profile="agent-a",
+            prompt_strategy="strict-grounded",
+            graph_orchestrator="pydanticai",
+        ),
+        BenchmarkCombination(
+            router_profile="router-a",
+            agent_profile="agent-a",
+            prompt_strategy="strict-grounded",
+            graph_orchestrator="langgraph",
+        ),
+    ]
+
+
+def test_expand_benchmark_matrix_rejects_removed_decompose_strategy() -> None:
+    with pytest.raises(ValueError, match="Unsupported benchmark prompt strategy"):
+        expand_benchmark_matrix(
+            router_profiles=["router-a"],
+            agent_profiles=["agent-a"],
+            prompt_strategies=["decompose"],
+            graph_orchestrators=["pydanticai"],
+            fallback_router_profile=None,
+            fallback_agent_profile=None,
+            fallback_graph_orchestrator="pydanticai",
+        )
 
 
 def test_run_benchmark_suite_skips_logfire_setup_when_trace_is_disabled(
@@ -90,6 +147,7 @@ def test_run_benchmark_suite_skips_logfire_setup_when_trace_is_disabled(
                     router_profile="router-a",
                     agent_profile="agent-a",
                     prompt_strategy="baseline",
+                    graph_orchestrator="pydanticai",
                 )
             ],
             trace=False,
@@ -145,6 +203,7 @@ def test_run_benchmark_suite_preserves_trace_metadata_when_enabled(
                     "router_profile": experiment.router_profile,
                     "agent_profile": experiment.agent_profile,
                     "prompt_strategy": experiment.prompt_strategy,
+                    "graph_orchestrator": experiment.graph_orchestrator,
                 },
                 "trace_id": "trace-123",
                 "span_id": "span-456",
@@ -167,6 +226,7 @@ def test_run_benchmark_suite_preserves_trace_metadata_when_enabled(
                     router_profile="router-a",
                     agent_profile="agent-a",
                     prompt_strategy="strict-grounded",
+                    graph_orchestrator="langgraph",
                 )
             ],
             trace=True,
@@ -180,9 +240,11 @@ def test_run_benchmark_suite_preserves_trace_metadata_when_enabled(
     assert payload["logfire"]["enabled"] is True
     assert payload["entries"][0]["report"]["trace_id"] == "trace-123"
     assert payload["entries"][0]["report"]["span_id"] == "span-456"
+    assert payload["entries"][0]["combination"]["graph_orchestrator"] == "langgraph"
     assert isinstance(payload["leaderboard"], list)
     assert isinstance(payload["case_groups"], list)
     assert isinstance(payload["runs"], list)
+    assert manifest["reports"][0]["graph_orchestrator"] == "langgraph"
     assert manifest["reports"][0]["trace_id"] == "trace-123"
     assert manifest["reports"][0]["span_id"] == "span-456"
     assert manifest["leaderboard_path"].endswith("leaderboard.csv")
@@ -218,6 +280,7 @@ def test_build_benchmark_cli_config_uses_experiment_defaults_and_tag_filter(
                     "router_profile": "router-a",
                     "agent_profile": "agent-a",
                     "prompt_strategies": ["baseline"],
+                    "graph_orchestrators": ["langgraph"],
                     "repeat": 2,
                     "max_concurrency": 1,
                     "answer_judge_model": "google-gla:gemini-2.5-flash",
@@ -234,6 +297,7 @@ def test_build_benchmark_cli_config_uses_experiment_defaults_and_tag_filter(
         router_profiles=None,
         agent_profiles=None,
         prompt_strategies=None,
+        orchestrators=None,
         tags=None,
         repeat=None,
         max_concurrency=None,
@@ -254,6 +318,7 @@ def test_build_benchmark_cli_config_uses_experiment_defaults_and_tag_filter(
             router_profile="router-a",
             agent_profile="agent-a",
             prompt_strategy="baseline",
+            graph_orchestrator="langgraph",
         )
     ]
 
@@ -288,6 +353,7 @@ def test_build_benchmark_cli_config_resolves_relative_dataset_from_config_path(
                 "benchmark-e2e-v1": {
                     "questions_file": "evals/benchmark_cases_v1.yaml",
                     "prompt_strategies": ["baseline"],
+                    "graph_orchestrators": ["pydanticai"],
                 }
             }
         }
@@ -300,6 +366,7 @@ def test_build_benchmark_cli_config_resolves_relative_dataset_from_config_path(
         router_profiles=None,
         agent_profiles=None,
         prompt_strategies=None,
+        orchestrators=None,
         tags=None,
         repeat=None,
         max_concurrency=None,
@@ -311,9 +378,10 @@ def test_build_benchmark_cli_config_resolves_relative_dataset_from_config_path(
 
     assert cli_config.dataset_path == dataset_path.resolve()
     assert cli_config.answer_judge_model == DEFAULT_ANSWER_JUDGE_MODEL
+    assert cli_config.combinations[0].graph_orchestrator == "pydanticai"
 
 
-def test_eval_benchmarks_script_passes_answer_judge_model_override(
+def test_eval_benchmarks_script_passes_answer_judge_and_orchestrator_overrides(
     tmp_path: Path,
     monkeypatch,
     capsys,
@@ -352,6 +420,7 @@ def test_eval_benchmarks_script_passes_answer_judge_model_override(
                     router_profile="router-a",
                     agent_profile="agent-a",
                     prompt_strategy="baseline",
+                    graph_orchestrator="langgraph",
                 )
             ],
         )
@@ -373,11 +442,14 @@ def test_eval_benchmarks_script_passes_answer_judge_model_override(
             str(db_path),
             "--answer-judge-model",
             "google-gla:gemini-2.5-flash",
+            "--orchestrators",
+            "langgraph",
         ]
     )
 
     assert exit_code == 0
     assert captured["answer_judge_model"] == "google-gla:gemini-2.5-flash"
+    assert captured["orchestrators"] == ["langgraph"]
     capsys.readouterr()
 
 
@@ -419,6 +491,7 @@ def test_eval_benchmarks_script_main_runs_and_prints_summary(
                     router_profile="router-a",
                     agent_profile="agent-a",
                     prompt_strategy="baseline",
+                    graph_orchestrator="langgraph",
                 )
             ],
         ),
@@ -443,7 +516,7 @@ def test_eval_benchmarks_script_main_runs_and_prints_summary(
     stdout = capsys.readouterr().out
     assert "Benchmark run: benchmark-e2e-v1" in stdout
     assert "Trace requested: yes" in stdout
-    assert "1. router-a / agent-a / baseline" in stdout
+    assert "1. router-a / agent-a / baseline / langgraph" in stdout
 
 
 def _mock_suite_result(tmp_path: Path, config: BenchmarkCliConfig):
@@ -457,6 +530,7 @@ def _mock_suite_result(tmp_path: Path, config: BenchmarkCliConfig):
                         "router_profile": "router-a",
                         "agent_profile": "agent-a",
                         "prompt_strategy": "baseline",
+                        "graph_orchestrator": "langgraph",
                         "route_accuracy": 1.0,
                         "answer_score_avg": 0.9,
                         "avg_duration_ms": 120.0,

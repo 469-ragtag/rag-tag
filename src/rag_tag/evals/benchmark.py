@@ -23,21 +23,26 @@ from .reporting import (
     write_csv_rows,
 )
 from .runner import BenchmarkExperimentConfig, evaluate_benchmark_dataset_async
+from .strategies import resolve_benchmark_strategy
+
+DEFAULT_BENCHMARK_GRAPH_ORCHESTRATOR = "pydanticai"
 
 
 @dataclass(frozen=True)
 class BenchmarkCombination:
-    """One router x agent x strategy benchmark condition."""
+    """One router x agent x strategy x orchestrator benchmark condition."""
 
     router_profile: str | None
     agent_profile: str | None
     prompt_strategy: str
+    graph_orchestrator: str | None
 
     def display_name(self) -> str:
         router = self.router_profile or "default-router"
         agent = self.agent_profile or "default-agent"
         strategy = self.prompt_strategy or "baseline"
-        return f"{router}__{agent}__{strategy}"
+        orchestrator = self.graph_orchestrator or DEFAULT_BENCHMARK_GRAPH_ORCHESTRATOR
+        return f"{router}__{agent}__{strategy}__{orchestrator}"
 
 
 @dataclass(frozen=True)
@@ -97,6 +102,7 @@ def build_benchmark_cli_config(
     router_profiles: list[str] | None,
     agent_profiles: list[str] | None,
     prompt_strategies: list[str] | None,
+    orchestrators: list[str] | None,
     tags: list[str] | None,
     repeat: int | None,
     max_concurrency: int | None,
@@ -135,8 +141,16 @@ def build_benchmark_cli_config(
         agent_profiles=agent_profiles or _list_or_empty(experiment, "agent_profiles"),
         prompt_strategies=prompt_strategies
         or _list_or_empty(experiment, "prompt_strategies"),
+        graph_orchestrators=orchestrators
+        or _list_or_empty(experiment, "graph_orchestrators"),
         fallback_router_profile=experiment.router_profile if experiment else None,
         fallback_agent_profile=experiment.agent_profile if experiment else None,
+        fallback_graph_orchestrator=(
+            experiment.graph_orchestrator
+            if experiment is not None and experiment.graph_orchestrator
+            else config.defaults.graph_orchestrator
+            or DEFAULT_BENCHMARK_GRAPH_ORCHESTRATOR
+        ),
     )
 
     resolved_tags = list(
@@ -192,41 +206,74 @@ def expand_benchmark_matrix(
     router_profiles: list[str],
     agent_profiles: list[str],
     prompt_strategies: list[str],
+    graph_orchestrators: list[str],
     fallback_router_profile: str | None,
     fallback_agent_profile: str | None,
+    fallback_graph_orchestrator: str | None,
 ) -> list[BenchmarkCombination]:
     """Expand the configured benchmark matrix into ordered combinations."""
 
     resolved_router_profiles = router_profiles or [fallback_router_profile]
     resolved_agent_profiles = agent_profiles or [fallback_agent_profile]
     resolved_prompt_strategies = prompt_strategies or ["baseline"]
+    resolved_graph_orchestrators = graph_orchestrators or [fallback_graph_orchestrator]
 
     combinations: list[BenchmarkCombination] = []
-    seen: set[tuple[str | None, str | None, str]] = set()
+    seen: set[tuple[str | None, str | None, str, str | None]] = set()
     for router_profile in resolved_router_profiles:
         for agent_profile in resolved_agent_profiles:
             for prompt_strategy in resolved_prompt_strategies:
-                normalized_strategy = prompt_strategy.strip() or "baseline"
-                key = (router_profile, agent_profile, normalized_strategy)
-                if key in seen:
-                    continue
-                seen.add(key)
-                combinations.append(
-                    BenchmarkCombination(
-                        router_profile=router_profile.strip()
-                        if router_profile
-                        else None,
-                        agent_profile=(
-                            agent_profile.strip() if agent_profile else None
-                        ),
-                        prompt_strategy=normalized_strategy,
+                normalized_strategy = resolve_benchmark_strategy(
+                    prompt_strategy.strip() or "baseline"
+                ).name
+                for graph_orchestrator in resolved_graph_orchestrators:
+                    normalized_orchestrator = _normalize_graph_orchestrator_name(
+                        graph_orchestrator,
+                        fallback=fallback_graph_orchestrator,
                     )
-                )
+                    key = (
+                        router_profile,
+                        agent_profile,
+                        normalized_strategy,
+                        normalized_orchestrator,
+                    )
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    combinations.append(
+                        BenchmarkCombination(
+                            router_profile=router_profile.strip()
+                            if router_profile
+                            else None,
+                            agent_profile=(
+                                agent_profile.strip() if agent_profile else None
+                            ),
+                            prompt_strategy=normalized_strategy,
+                            graph_orchestrator=normalized_orchestrator,
+                        )
+                    )
 
     if not combinations:
         raise ValueError("Benchmark matrix expansion produced no combinations.")
 
     return combinations
+
+
+def _normalize_graph_orchestrator_name(
+    orchestrator: str | None,
+    *,
+    fallback: str | None,
+) -> str | None:
+    candidate = orchestrator or fallback
+    if candidate is None:
+        return None
+    normalized = candidate.strip().lower()
+    if normalized in {"pydanticai", "langgraph"}:
+        return normalized
+    raise ValueError(
+        "Unsupported benchmark graph orchestrator "
+        f"{candidate!r}. Allowed values: langgraph, pydanticai."
+    )
 
 
 def load_benchmark_dataset_with_tags(
@@ -284,6 +331,7 @@ async def run_benchmark_suite_async(
             router_profile=combination.router_profile,
             agent_profile=combination.agent_profile,
             prompt_strategy=combination.prompt_strategy,
+            graph_orchestrator=combination.graph_orchestrator,
             graph_dataset=config.graph_dataset,
             context_db=config.context_db,
             payload_mode=config.payload_mode,
@@ -495,6 +543,7 @@ def _build_run_manifest(
                 "router_profile": entry.combination.router_profile,
                 "agent_profile": entry.combination.agent_profile,
                 "prompt_strategy": entry.combination.prompt_strategy,
+                "graph_orchestrator": entry.combination.graph_orchestrator,
                 "report_name": entry.report.name,
                 "trace_id": entry.report.trace_id,
                 "span_id": entry.report.span_id,

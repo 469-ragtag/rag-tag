@@ -63,9 +63,11 @@ class ExperimentConfig(BaseModel):
     description: str | None = None
     router_profile: str | None = None
     agent_profile: str | None = None
+    graph_orchestrator: str | None = None
     router_profiles: list[str] = Field(default_factory=list)
     agent_profiles: list[str] = Field(default_factory=list)
     prompt_strategies: list[str] = Field(default_factory=list)
+    graph_orchestrators: list[str] = Field(default_factory=list)
     questions_file: str | None = None
     repeat: int | None = Field(default=None, ge=1)
     max_concurrency: int | None = Field(default=None, ge=1)

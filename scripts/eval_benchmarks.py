@@ -24,6 +24,13 @@ def _parse_strategy_name(value: str) -> str:
     return cleaned
 
 
+def _parse_orchestrator_name(value: str) -> str:
+    cleaned = value.strip()
+    if not cleaned:
+        raise argparse.ArgumentTypeError("Orchestrator name cannot be empty.")
+    return cleaned
+
+
 def _parse_tag(value: str) -> str:
     cleaned = value.strip()
     if not cleaned:
@@ -120,6 +127,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         type=_parse_strategy_name,
         default=None,
     )
+    parser.add_argument(
+        "--orchestrators",
+        nargs="*",
+        type=_parse_orchestrator_name,
+        default=None,
+    )
     parser.add_argument("--repeat", type=_parse_positive_int, default=None)
     parser.add_argument("--max-concurrency", type=_parse_positive_int, default=None)
     parser.add_argument("--db", type=Path, default=None)
@@ -158,6 +171,7 @@ def main(argv: list[str] | None = None) -> int:
             router_profiles=args.router_profiles,
             agent_profiles=args.agent_profiles,
             prompt_strategies=args.prompt_strategies,
+            orchestrators=args.orchestrators,
             tags=args.tags,
             repeat=args.repeat,
             max_concurrency=args.max_concurrency,
@@ -206,7 +220,8 @@ def main(argv: list[str] | None = None) -> int:
         combo = (
             f"{row.get('router_profile') or 'default-router'} / "
             f"{row.get('agent_profile') or 'default-agent'} / "
-            f"{row.get('prompt_strategy') or 'baseline'}"
+            f"{row.get('prompt_strategy') or 'baseline'} / "
+            f"{row.get('graph_orchestrator') or 'pydanticai'}"
         )
         route_accuracy = row.get("route_accuracy")
         answer_score = row.get("answer_score_avg")

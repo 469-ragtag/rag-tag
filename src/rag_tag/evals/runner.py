@@ -34,6 +34,7 @@ class BenchmarkExperimentConfig:
     router_profile: str | None = None
     agent_profile: str | None = None
     prompt_strategy: str = "baseline"
+    graph_orchestrator: str | None = None
     graph_dataset: str | None = None
     context_db: Path | None = None
     payload_mode: str | None = None
@@ -171,6 +172,7 @@ async def _run_case_with_state(
         router_profile=experiment.router_profile,
         agent_profile=experiment.agent_profile,
         prompt_strategy=experiment.prompt_strategy,
+        graph_orchestrator=experiment.graph_orchestrator,
         graph_dataset=experiment.graph_dataset,
         context_db=experiment.context_db,
         payload_mode=experiment.payload_mode,
@@ -203,15 +205,27 @@ def _build_eval_case(
     return Case(
         name=case.id,
         inputs=case,
+        expected_output=_build_answer_judge_target(case),
         metadata=_build_case_metadata(case),
         evaluators=tuple(evaluators),
     )
 
 
+def _build_answer_judge_target(case: BenchmarkCase) -> dict[str, Any]:
+    return {
+        "case_id": case.id,
+        "question": case.question,
+        "expected_route": case.expected_route,
+        "answer": case.answer.model_dump(mode="python") if case.answer else None,
+    }
+
+
 def _build_case_metadata(case: BenchmarkCase) -> BenchmarkCaseMetadata:
+    answer_judge_target = _build_answer_judge_target(case)
     return {
         "case_id": case.id,
         "expected_route": case.expected_route,
+        "answer_judge_target": answer_judge_target,
         "answer": case.answer.model_dump(mode="python")
         if case.answer is not None
         else None,
@@ -230,6 +244,7 @@ def _build_experiment_metadata(
         "router_profile": experiment.router_profile,
         "agent_profile": experiment.agent_profile,
         "prompt_strategy": experiment.prompt_strategy,
+        "graph_orchestrator": experiment.graph_orchestrator,
         "graph_dataset": experiment.graph_dataset,
         "context_db": str(experiment.context_db)
         if experiment.context_db is not None

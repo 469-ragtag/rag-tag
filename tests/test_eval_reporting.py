@@ -158,6 +158,7 @@ def test_build_runs_rows_includes_case_and_failure_records() -> None:
             router_profile="router-a",
             agent_profile="agent-a",
             prompt_strategy="baseline",
+            graph_orchestrator="langgraph",
         ),
         report=report,
     )
@@ -166,6 +167,7 @@ def test_build_runs_rows_includes_case_and_failure_records() -> None:
 
     assert len(rows) == 2
     assert rows[0]["case_id"] == "q001"
+    assert rows[0]["graph_orchestrator"] == "langgraph"
     assert rows[0]["repeat_index"] == 1
     assert rows[0]["repeat_total"] == 2
     assert rows[0]["judge_score"] == 0.8
@@ -242,6 +244,7 @@ def test_build_case_groups_and_leaderboard_rows_aggregate_metrics() -> None:
             router_profile="router-a",
             agent_profile="agent-a",
             prompt_strategy="baseline",
+            graph_orchestrator="langgraph",
         ),
         report=report,
     )
@@ -250,6 +253,7 @@ def test_build_case_groups_and_leaderboard_rows_aggregate_metrics() -> None:
     leaderboard_rows = build_leaderboard_rows([entry], repeat=2)
 
     assert len(case_group_rows) == 1
+    assert case_group_rows[0]["graph_orchestrator"] == "langgraph"
     assert case_group_rows[0]["run_count"] == 2
     assert case_group_rows[0]["route_accuracy"] == 0.5
     assert case_group_rows[0]["duration_pass_rate"] == 0.5
@@ -260,6 +264,7 @@ def test_build_case_groups_and_leaderboard_rows_aggregate_metrics() -> None:
     assert case_group_rows[0]["token_coverage_rate"] == 0.5
 
     assert len(leaderboard_rows) == 1
+    assert leaderboard_rows[0]["graph_orchestrator"] == "langgraph"
     assert leaderboard_rows[0]["case_count"] == 1
     assert leaderboard_rows[0]["route_accuracy"] == 0.5
     assert leaderboard_rows[0]["answer_score_avg"] == 0.6

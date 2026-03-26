@@ -22,6 +22,7 @@ def test_build_benchmark_cli_config_rejects_missing_dataset_file(
             router_profiles=None,
             agent_profiles=None,
             prompt_strategies=None,
+            orchestrators=None,
             tags=None,
             repeat=None,
             max_concurrency=None,

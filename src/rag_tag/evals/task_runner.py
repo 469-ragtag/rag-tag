@@ -93,6 +93,7 @@ def run_benchmark_case(
     router_profile: str | None = None,
     agent_profile: str | None = None,
     prompt_strategy: str = "baseline",
+    graph_orchestrator: str | None = None,
     graph_dataset: str | None = None,
     context_db: Path | None = None,
     payload_mode: str | None = None,
@@ -116,7 +117,7 @@ def run_benchmark_case(
             config_path=config_path,
             router_profile=router_profile,
             agent_profile=agent_profile,
-            graph_orchestrator_override=strategy_settings.graph_orchestrator_override,
+            graph_orchestrator=graph_orchestrator,
             graph_prompt_append=strategy_settings.graph_prompt_append,
         ):
             resolved_router_profile, resolved_agent_profile = (
@@ -148,7 +149,7 @@ def run_benchmark_case(
         router_profile=resolved_router_profile,
         agent_profile=resolved_agent_profile,
         prompt_strategy=prompt_strategy,
-        graph_orchestrator=strategy_settings.graph_orchestrator_override,
+        graph_orchestrator=graph_orchestrator,
         graph_dataset=graph_dataset,
         context_db=context_db,
         db_paths=db_paths,

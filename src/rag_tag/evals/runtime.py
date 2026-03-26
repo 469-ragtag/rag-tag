@@ -25,7 +25,7 @@ def temporary_runtime_overrides(
     config_path: str | None = None,
     router_profile: str | None = None,
     agent_profile: str | None = None,
-    graph_orchestrator_override: str | None = None,
+    graph_orchestrator: str | None = None,
     graph_prompt_append: str | None = None,
 ) -> Iterator[None]:
     """Temporarily apply config/profile overrides for benchmark runs.
@@ -59,10 +59,8 @@ def temporary_runtime_overrides(
         if agent_profile is not None:
             os.environ[AGENT_PROFILE_ENV_VAR] = agent_profile
             os.environ.pop(_AGENT_MODEL_ENV_VAR, None)
-        if graph_orchestrator_override is not None:
-            os.environ[BENCHMARK_GRAPH_ORCHESTRATOR_ENV_VAR] = (
-                graph_orchestrator_override
-            )
+        if graph_orchestrator is not None:
+            os.environ[BENCHMARK_GRAPH_ORCHESTRATOR_ENV_VAR] = graph_orchestrator
         if graph_prompt_append is not None:
             os.environ[BENCHMARK_GRAPH_PROMPT_APPEND_ENV_VAR] = graph_prompt_append
         yield
