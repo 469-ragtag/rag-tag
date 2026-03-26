@@ -29,7 +29,7 @@ import json
 import logging
 import math
 import os
-from collections import Counter, defaultdict
+from collections import Counter, defaultdict, deque
 from dataclasses import dataclass
 from itertools import product
 from pathlib import Path
@@ -47,6 +47,23 @@ from rag_tag.paths import find_project_root
 
 LOG = logging.getLogger(__name__)
 _MODULE_DIR = Path(__file__).resolve().parent
+
+_VIZ_ALIGNED_WITH_ALLOWED_CLASSES = frozenset(
+    {"IfcWall", "IfcBeam", "IfcMember", "IfcCurtainWall", "IfcRailing"}
+)
+_VIZ_ALIGNED_WITH_MAX_PER_NODE = 8
+_VIZ_CONTAINER_CLASSES = frozenset(
+    {
+        "IfcProject",
+        "IfcSite",
+        "IfcBuilding",
+        "IfcBuildingStorey",
+        "IfcSpace",
+        "IfcZone",
+        "IfcSpatialZone",
+        "IfcTypeObject",
+    }
+)
 
 try:
     import ifcopenshell
@@ -1841,6 +1858,431 @@ def add_topology_facts(
     )
 
 
+def _iter_edge_attrs_between(
+    G: nx.DiGraph | nx.MultiDiGraph,
+    source_id: str,
+    target_id: str,
+) -> list[dict[str, object]]:
+    if not G.has_edge(source_id, target_id):
+        return []
+    edge_data = G.get_edge_data(source_id, target_id)
+    if isinstance(edge_data, dict):
+        relation = edge_data.get("relation")
+        if isinstance(relation, str):
+            return [edge_data]
+        return [
+            attrs
+            for attrs in edge_data.values()
+            if isinstance(attrs, dict) and isinstance(attrs.get("relation"), str)
+        ]
+    return []
+
+
+def _viz_node_class_name(node_data: dict[str, object]) -> str | None:
+    return _normalize_ifc_class_name(node_data.get("class_"))
+
+
+def _viz_node_dataset(node_data: dict[str, object]) -> str | None:
+    dataset = node_data.get("dataset")
+    return dataset if isinstance(dataset, str) and dataset else None
+
+
+def _viz_node_is_container(node_data: dict[str, object]) -> bool:
+    class_name = _viz_node_class_name(node_data)
+    return class_name in _VIZ_CONTAINER_CLASSES
+
+
+def _viz_normalize_text(value: str) -> str:
+    return " ".join(value.lower().split())
+
+
+def _viz_non_container_descendants(
+    G: nx.DiGraph | nx.MultiDiGraph,
+    root_id: str,
+) -> list[str]:
+    descendants: set[str] = set()
+    queue: deque[str] = deque([root_id])
+    visited = {root_id}
+
+    while queue:
+        current = queue.popleft()
+        for child_id in G.successors(current):
+            child_text = str(child_id)
+            if child_text in visited:
+                continue
+            if not any(
+                str(attrs.get("relation", "")).strip().lower() == "contains"
+                for attrs in _iter_edge_attrs_between(G, current, child_text)
+            ):
+                continue
+            visited.add(child_text)
+            child_data = G.nodes[child_text]
+            if _viz_node_is_container(child_data):
+                queue.append(child_text)
+            else:
+                descendants.add(child_text)
+    return sorted(descendants)
+
+
+def _viz_resolve_storey_for_node(
+    G: nx.DiGraph | nx.MultiDiGraph,
+    node_id: str,
+) -> tuple[str | None, str | None]:
+    node_data = G.nodes[node_id]
+    if _viz_node_class_name(node_data) == "IfcBuildingStorey":
+        return node_id, "self"
+
+    queue: deque[str] = deque([node_id])
+    visited = {node_id}
+    while queue:
+        current = queue.popleft()
+        for parent_id in G.successors(current):
+            parent_text = str(parent_id)
+            if parent_text in visited:
+                continue
+            if not any(
+                str(attrs.get("relation", "")).strip().lower() == "contained_in"
+                for attrs in _iter_edge_attrs_between(G, current, parent_text)
+            ):
+                continue
+            if _viz_node_class_name(G.nodes[parent_text]) == "IfcBuildingStorey":
+                return parent_text, "contained_in"
+            visited.add(parent_text)
+            queue.append(parent_text)
+
+        for parent_id in G.predecessors(current):
+            parent_text = str(parent_id)
+            if parent_text in visited:
+                continue
+            if not any(
+                str(attrs.get("relation", "")).strip().lower() == "contains"
+                for attrs in _iter_edge_attrs_between(G, parent_text, current)
+            ):
+                continue
+            if _viz_node_class_name(G.nodes[parent_text]) == "IfcBuildingStorey":
+                return parent_text, "contains"
+            visited.add(parent_text)
+            queue.append(parent_text)
+
+    props = node_data.get("properties") or {}
+    if not isinstance(props, dict):
+        return None, None
+    level_value = props.get("Level")
+    if not isinstance(level_value, str) or not level_value.strip():
+        return None, None
+
+    normalized_level = _viz_normalize_text(level_value)
+    dataset_key = _viz_node_dataset(node_data)
+    matches = [
+        candidate_id
+        for candidate_id, candidate_data in G.nodes(data=True)
+        if _viz_node_class_name(candidate_data) == "IfcBuildingStorey"
+        and (dataset_key is None or _viz_node_dataset(candidate_data) == dataset_key)
+        and _viz_normalize_text(str(candidate_data.get("label", "")))
+        == normalized_level
+    ]
+    if len(matches) == 1:
+        return str(matches[0]), "level"
+    return None, None
+
+
+def _viz_node_plan_point(
+    node_data: dict[str, object],
+) -> tuple[tuple[float, float] | None, str | None]:
+    geometry = node_data.get("geometry")
+    if isinstance(geometry, (list, tuple)) and len(geometry) >= 2:
+        try:
+            return (float(geometry[0]), float(geometry[1])), "centroid"
+        except (TypeError, ValueError):
+            pass
+
+    bbox = node_data.get("bbox")
+    if (
+        isinstance(bbox, (list, tuple))
+        and len(bbox) == 2
+        and isinstance(bbox[0], (list, tuple))
+        and isinstance(bbox[1], (list, tuple))
+        and len(bbox[0]) >= 2
+        and len(bbox[1]) >= 2
+    ):
+        try:
+            return (
+                (
+                    (float(bbox[0][0]) + float(bbox[1][0])) * 0.5,
+                    (float(bbox[0][1]) + float(bbox[1][1])) * 0.5,
+                ),
+                "bbox_center_fallback",
+            )
+        except (TypeError, ValueError):
+            return None, None
+    return None, None
+
+
+def _viz_point_in_polygon_xy(
+    point: tuple[float, float],
+    polygon: list[tuple[float, float]],
+) -> bool:
+    x, y = point
+    inside = False
+    epsilon = 1e-9
+
+    for index, (x1, y1) in enumerate(polygon):
+        x2, y2 = polygon[(index + 1) % len(polygon)]
+        dx = x2 - x1
+        dy = y2 - y1
+        cross = (x - x1) * dy - (y - y1) * dx
+        if abs(cross) <= epsilon:
+            dot = (x - x1) * (x - x2) + (y - y1) * (y - y2)
+            if dot <= epsilon:
+                return True
+
+        intersects = ((y1 > y) != (y2 > y)) and (
+            x <= ((x2 - x1) * (y - y1) / ((y2 - y1) or epsilon)) + x1 + epsilon
+        )
+        if intersects:
+            inside = not inside
+    return inside
+
+
+def _viz_point_in_bbox_2d(
+    point: tuple[float, float],
+    bbox_2d: tuple[float, float, float, float],
+) -> bool:
+    x, y = point
+    min_x, min_y, max_x, max_y = bbox_2d
+    epsilon = 1e-9
+    return (
+        min_x - epsilon <= x <= max_x + epsilon
+        and min_y - epsilon <= y <= max_y + epsilon
+    )
+
+
+def _viz_node_footprint_geometry(
+    node_data: dict[str, object],
+) -> tuple[list[tuple[float, float]] | None, tuple[float, float, float, float] | None]:
+    footprint = node_data.get("footprint_polygon")
+    if isinstance(footprint, list) and len(footprint) >= 3:
+        polygon: list[tuple[float, float]] = []
+        for point in footprint:
+            if isinstance(point, (list, tuple)) and len(point) == 2:
+                polygon.append((float(point[0]), float(point[1])))
+        if len(polygon) >= 3:
+            return polygon, None
+
+    bbox_2d = node_data.get("footprint_bbox_2d")
+    if isinstance(bbox_2d, (list, tuple)) and len(bbox_2d) == 4:
+        try:
+            return None, tuple(float(value) for value in bbox_2d)
+        except (TypeError, ValueError):
+            return None, None
+    return None, None
+
+
+def _viz_aligned_signature(node_data: dict[str, object]) -> dict[str, object] | None:
+    if _viz_node_class_name(node_data) not in _VIZ_ALIGNED_WITH_ALLOWED_CLASSES:
+        return None
+
+    obb = node_data.get("obb")
+    if not isinstance(obb, dict):
+        return None
+    axes = obb.get("axes")
+    extents = obb.get("extents")
+    center = obb.get("center")
+    if (
+        not isinstance(axes, (list, tuple))
+        or len(axes) < 2
+        or not isinstance(extents, (list, tuple))
+        or len(extents) < 2
+        or not isinstance(center, (list, tuple))
+        or len(center) < 2
+    ):
+        return None
+
+    axis_candidates: list[tuple[float, tuple[float, float], float]] = []
+    short_extents: list[float] = []
+    for raw_axis, raw_extent in zip(axes[:2], extents[:2], strict=False):
+        if not isinstance(raw_axis, (list, tuple)) or len(raw_axis) < 2:
+            return None
+        try:
+            axis_x = float(raw_axis[0])
+            axis_y = float(raw_axis[1])
+            extent = abs(float(raw_extent))
+        except (TypeError, ValueError):
+            return None
+        axis_len = math.hypot(axis_x, axis_y)
+        if axis_len <= 1e-9 or extent <= 1e-9:
+            continue
+        normalized_axis = (axis_x / axis_len, axis_y / axis_len)
+        axis_candidates.append((extent * axis_len, normalized_axis, extent))
+        short_extents.append(extent)
+
+    if len(axis_candidates) < 2:
+        return None
+
+    axis_candidates.sort(key=lambda item: item[0], reverse=True)
+    try:
+        center_xy = (float(center[0]), float(center[1]))
+    except (TypeError, ValueError):
+        return None
+
+    return {
+        "axis": axis_candidates[0][1],
+        "center_xy": center_xy,
+        "short_extent": min(short_extents),
+    }
+
+
+def _viz_collect_overlay_edges(
+    G: nx.DiGraph | nx.MultiDiGraph,
+) -> dict[str, list[tuple[str, str, dict[str, object]]]]:
+    overlays: dict[str, list[tuple[str, str, dict[str, object]]]] = {
+        "aligned_with": [],
+        "inside_footprint_of": [],
+        "same_storey_as": [],
+    }
+
+    aligned_by_dataset: dict[str | None, list[tuple[str, dict[str, object]]]] = (
+        defaultdict(list)
+    )
+    for node_id, node_data in G.nodes(data=True):
+        node_text = str(node_id)
+        if not node_text.startswith("Element::"):
+            continue
+        signature = _viz_aligned_signature(node_data)
+        if signature is None:
+            continue
+        aligned_by_dataset[_viz_node_dataset(node_data)].append((node_text, signature))
+
+    for dataset_items in aligned_by_dataset.values():
+        dataset_items.sort(key=lambda item: item[0])
+        for index, (source_id, source_signature) in enumerate(dataset_items):
+            source_storey_id, _ = _viz_resolve_storey_for_node(G, source_id)
+            source_axis_x, source_axis_y = source_signature["axis"]  # type: ignore[index]
+            source_center_x, source_center_y = source_signature["center_xy"]  # type: ignore[index]
+            source_short_extent = float(source_signature["short_extent"])  # type: ignore[arg-type]
+            selected_edges: list[
+                tuple[tuple[int, float, float, str], str, dict[str, object]]
+            ] = []
+            for target_id, target_signature in dataset_items[index + 1 :]:
+                target_axis_x, target_axis_y = target_signature["axis"]  # type: ignore[index]
+                dot = source_axis_x * target_axis_x + source_axis_y * target_axis_y
+                if dot < 0.0:
+                    target_axis_x *= -1.0
+                    target_axis_y *= -1.0
+                    dot *= -1.0
+                dot = max(-1.0, min(1.0, dot))
+                angle_deg = math.degrees(math.acos(dot))
+                if angle_deg > 10.0:
+                    continue
+
+                blend_x = source_axis_x + target_axis_x
+                blend_y = source_axis_y + target_axis_y
+                blend_len = math.hypot(blend_x, blend_y)
+                if blend_len <= 1e-9:
+                    ref_axis_x, ref_axis_y = source_axis_x, source_axis_y
+                else:
+                    ref_axis_x = blend_x / blend_len
+                    ref_axis_y = blend_y / blend_len
+
+                target_center_x, target_center_y = target_signature["center_xy"]  # type: ignore[index]
+                perp_x, perp_y = -ref_axis_y, ref_axis_x
+                lateral_offset_xy = abs(
+                    (target_center_x - source_center_x) * perp_x
+                    + (target_center_y - source_center_y) * perp_y
+                )
+                target_short_extent = float(target_signature["short_extent"])  # type: ignore[arg-type]
+                offset_limit = max(0.25, min(source_short_extent, target_short_extent))
+                if lateral_offset_xy > offset_limit:
+                    continue
+
+                target_storey_id, _ = _viz_resolve_storey_for_node(G, target_id)
+                same_storey = (
+                    source_storey_id is not None
+                    and source_storey_id == target_storey_id
+                )
+                selected_edges.append(
+                    (
+                        (
+                            0 if same_storey else 1,
+                            round(angle_deg, 6),
+                            round(lateral_offset_xy, 6),
+                            target_id,
+                        ),
+                        target_id,
+                        {
+                            "relation": "aligned_with",
+                            "source": "visualization_overlay",
+                            "angle_deg": round(angle_deg, 6),
+                            "lateral_offset_xy": round(lateral_offset_xy, 6),
+                            "same_storey": same_storey,
+                        },
+                    )
+                )
+                selected_edges.sort(key=lambda item: item[0])
+                if len(selected_edges) > _VIZ_ALIGNED_WITH_MAX_PER_NODE:
+                    selected_edges.pop()
+
+            for _sort_key, target_id, attrs in selected_edges:
+                overlays["aligned_with"].append((source_id, target_id, attrs))
+
+    for node_id, node_data in G.nodes(data=True):
+        node_text = str(node_id)
+        if _viz_node_class_name(node_data) != "IfcSpace":
+            continue
+        footprint_polygon, footprint_bbox_2d = _viz_node_footprint_geometry(node_data)
+        if footprint_polygon is None and footprint_bbox_2d is None:
+            continue
+
+        for candidate_id in _viz_non_container_descendants(G, node_text):
+            if candidate_id == node_text:
+                continue
+            candidate_data = G.nodes[candidate_id]
+            point_xy, inside_method = _viz_node_plan_point(candidate_data)
+            if point_xy is None or inside_method is None:
+                continue
+            is_inside = (
+                _viz_point_in_polygon_xy(point_xy, footprint_polygon)
+                if footprint_polygon is not None
+                else _viz_point_in_bbox_2d(point_xy, footprint_bbox_2d)
+            )
+            if not is_inside:
+                continue
+            storey_id, _ = _viz_resolve_storey_for_node(G, candidate_id)
+            overlays["inside_footprint_of"].append(
+                (
+                    node_text,
+                    candidate_id,
+                    {
+                        "relation": "inside_footprint_of",
+                        "source": "visualization_overlay",
+                        "inside_method": inside_method,
+                        "storey_id": storey_id,
+                    },
+                )
+            )
+
+    for node_id, node_data in G.nodes(data=True):
+        node_text = str(node_id)
+        if _viz_node_class_name(node_data) != "IfcBuildingStorey":
+            continue
+        for candidate_id in _viz_non_container_descendants(G, node_text):
+            if candidate_id == node_text:
+                continue
+            overlays["same_storey_as"].append(
+                (
+                    node_text,
+                    candidate_id,
+                    {
+                        "relation": "same_storey_as",
+                        "source": "visualization_overlay",
+                        "storey_id": node_text,
+                    },
+                )
+            )
+
+    return {relation: edges for relation, edges in overlays.items() if edges}
+
+
 def plot_interactive_graph(G: nx.DiGraph | nx.MultiDiGraph, out_html: Path) -> None:
     # Build positions from node geometry where available.
     pos: dict[str, tuple[float, float, float] | None] = {}
@@ -1878,11 +2320,13 @@ def plot_interactive_graph(G: nx.DiGraph | nx.MultiDiGraph, out_html: Path) -> N
         "adjacent_to": "#059669",
         "intersects_bbox": "#f59e0b",
         "aligned_with": "#0f766e",
+        "inside_footprint_of": "#c2410c",
         "overlaps_xy": "#0ea5e9",
         "intersects_3d": "#b91c1c",
         "touches_surface": "#9333ea",
         "above": "#7c3aed",
         "below": "#9333ea",
+        "same_storey_as": "#1d4ed8",
         "shares_boundary_with": "#be185d",
         "hosts": "#b91c1c",
         "hosted_by": "#dc2626",
@@ -1903,11 +2347,13 @@ def plot_interactive_graph(G: nx.DiGraph | nx.MultiDiGraph, out_html: Path) -> N
         "adjacent_to": "spatially near within threshold",
         "intersects_bbox": "3D bbox overlap",
         "aligned_with": "orientation-aligned in plan",
+        "inside_footprint_of": "visualization-only footprint containment overlay",
         "overlaps_xy": "2D footprint overlap",
         "intersects_3d": "mesh-informed 3D intersection",
         "touches_surface": "mesh-informed surface contact",
         "above": "vertical ordering above",
         "below": "vertical ordering below",
+        "same_storey_as": "visualization-only same-storey scope overlay",
         "shares_boundary_with": "spaces share explicit boundary elements",
         "hosts": "explicit IFC host relationship",
         "hosted_by": "explicit IFC hosted-by relationship",
@@ -1942,26 +2388,80 @@ def plot_interactive_graph(G: nx.DiGraph | nx.MultiDiGraph, out_html: Path) -> N
             f"<b>{d.get('label', n)}</b><br>Class: {cls}<br>{hover_props}"
         )
 
-    edge_groups: dict[str, dict[str, list]] = {}
-    for u, v, d in G.edges(data=True):
-        rel = str(d.get("relation", "related_to"))
-        group = edge_groups.setdefault(
-            rel,
-            {
-                "x": [],
-                "y": [],
-                "z": [],
-                "mid_x": [],
-                "mid_y": [],
-                "mid_z": [],
-                "label_x": [],
-                "label_y": [],
-                "label_z": [],
-                "hover": [],
-            },
-        )
-        x0, y0, z0 = pos.get(u) or (0.0, 0.0, 0.0)
-        x1, y1, z1 = pos.get(v) or (0.0, 0.0, 0.0)
+    def _new_edge_group() -> dict[str, list]:
+        return {
+            "x": [],
+            "y": [],
+            "z": [],
+            "mid_x": [],
+            "mid_y": [],
+            "mid_z": [],
+            "label_x": [],
+            "label_y": [],
+            "label_z": [],
+            "hover": [],
+        }
+
+    def _edge_hover_message(rel: str, attrs: dict[str, object]) -> str:
+        meaning = edge_relation_explanations.get(rel, "graph relation")
+        message = f"Relation: {rel}<br>Meaning: {meaning}"
+        source = attrs.get("source")
+        if source is not None:
+            message += f"<br>Source: {html.escape(str(source))}"
+        distance = attrs.get("distance")
+        try:
+            if distance is not None:
+                message += f"<br>Distance: {float(distance):.3f}"
+        except (TypeError, ValueError):
+            pass
+        for key, label in (
+            ("angle_deg", "Angle"),
+            ("lateral_offset_xy", "Lateral offset XY"),
+            ("overlap_area_xy", "Overlap area XY"),
+            ("overlap_ratio_xy", "Overlap ratio XY"),
+            ("vertical_gap", "Vertical gap"),
+            ("intersection_volume", "Intersection volume"),
+            ("contact_area", "Contact area"),
+        ):
+            value = attrs.get(key)
+            try:
+                if value is not None:
+                    message += f"<br>{label}: {float(value):.6f}"
+            except (TypeError, ValueError):
+                continue
+        for key, label in (
+            ("inside_method", "Inside method"),
+            ("storey_id", "Storey"),
+            ("derived_from", "Derived from"),
+        ):
+            value = attrs.get(key)
+            if value is not None:
+                message += f"<br>{label}: {html.escape(str(value))}"
+        same_storey = attrs.get("same_storey")
+        if same_storey is not None:
+            message += (
+                "<br>Same storey: true"
+                if bool(same_storey)
+                else "<br>Same storey: false"
+            )
+        shared_boundary_elements = attrs.get("shared_boundary_elements")
+        if isinstance(shared_boundary_elements, list) and shared_boundary_elements:
+            joined = ", ".join(
+                html.escape(str(item)) for item in shared_boundary_elements
+            )
+            message += f"<br>Shared boundaries: {joined}"
+        return message
+
+    def _append_edge_group(
+        groups: dict[str, dict[str, list]],
+        source_id: str,
+        target_id: str,
+        attrs: dict[str, object],
+    ) -> None:
+        rel = str(attrs.get("relation", "related_to"))
+        group = groups.setdefault(rel, _new_edge_group())
+        x0, y0, z0 = pos.get(source_id) or (0.0, 0.0, 0.0)
+        x1, y1, z1 = pos.get(target_id) or (0.0, 0.0, 0.0)
         group["x"] += [x0, x1, None]
         group["y"] += [y0, y1, None]
         group["z"] += [z0, z1, None]
@@ -1974,16 +2474,17 @@ def plot_interactive_graph(G: nx.DiGraph | nx.MultiDiGraph, out_html: Path) -> N
         group["label_x"].append(mx)
         group["label_y"].append(my)
         group["label_z"].append(mz)
+        group["hover"].append(_edge_hover_message(rel, attrs))
 
-        source = d.get("source")
-        dist = d.get("distance")
-        meaning = edge_relation_explanations.get(rel, "graph relation")
-        msg = f"Relation: {rel}<br>Meaning: {meaning}"
-        if source is not None:
-            msg += f"<br>Source: {source}"
-        if dist is not None:
-            msg += f"<br>Distance: {float(dist):.3f}"
-        group["hover"].append(msg)
+    edge_groups: dict[str, dict[str, list]] = {}
+    for u, v, d in G.edges(data=True):
+        _append_edge_group(edge_groups, str(u), str(v), d)
+
+    overlay_edge_groups: dict[str, dict[str, list]] = {}
+    overlay_edges = _viz_collect_overlay_edges(G)
+    for overlay_items in overlay_edges.values():
+        for source_id, target_id, attrs in overlay_items:
+            _append_edge_group(overlay_edge_groups, source_id, target_id, attrs)
 
     bbox_x: list[float | None] = []
     bbox_y: list[float | None] = []
@@ -2146,6 +2647,60 @@ def plot_interactive_graph(G: nx.DiGraph | nx.MultiDiGraph, out_html: Path) -> N
         )
         trace_meta.append(("edge_label", rel))
 
+    for rel in sorted(overlay_edge_groups):
+        edge = overlay_edge_groups[rel]
+        edge_color = edge_color_map.get(rel, "#4b5563")
+        rel_expl = edge_relation_explanations.get(rel, "graph relation")
+        traces.append(
+            go.Scatter3d(
+                x=edge["x"],
+                y=edge["y"],
+                z=edge["z"],
+                mode="lines",
+                line={"width": 4, "color": edge_color},
+                opacity=0.72,
+                hoverinfo="none",
+                name=f"Overlay: {rel} - {rel_expl}",
+                legendgroup=f"overlay::{rel}",
+                showlegend=True,
+                visible=False,
+            )
+        )
+        trace_meta.append(("overlay_edge", rel))
+
+        traces.append(
+            go.Scatter3d(
+                x=edge["mid_x"],
+                y=edge["mid_y"],
+                z=edge["mid_z"],
+                mode="markers",
+                marker={"size": 2, "color": edge_color, "opacity": 0.0},
+                hoverinfo="text",
+                hovertext=edge["hover"],
+                showlegend=False,
+                legendgroup=f"overlay::{rel}",
+                visible=False,
+            )
+        )
+        trace_meta.append(("overlay_hover", rel))
+
+        traces.append(
+            go.Scatter3d(
+                x=edge["label_x"],
+                y=edge["label_y"],
+                z=edge["label_z"],
+                mode="text",
+                text=[rel] * len(edge["label_x"]),
+                textposition="middle center",
+                textfont={"size": 10, "color": edge_color},
+                hoverinfo="none",
+                showlegend=False,
+                legendgroup=f"overlay::{rel}",
+                visible=False,
+            )
+        )
+        trace_meta.append(("overlay_label", rel))
+
     for group_key in sorted(node_groups):
         node = node_groups[group_key]
         node_color = node_group_colors.get(group_key, "#22c55e")
@@ -2171,12 +2726,15 @@ def plot_interactive_graph(G: nx.DiGraph | nx.MultiDiGraph, out_html: Path) -> N
         show_edge_annotations: bool = False,
         show_bboxes: bool = False,
         show_meshes: bool = False,
+        show_helper_overlays: bool = False,
     ) -> list[bool]:
         edge_categories = G.graph.get("edge_categories", {})
         hierarchy_rels = set(edge_categories.get("hierarchy", []))
         spatial_rels = set(edge_categories.get("spatial", []))
         topology_rels = set(edge_categories.get("topology", []))
         explicit_rels = set(edge_categories.get("explicit", []))
+        spatial_rels.update({"inside_footprint_of", "same_storey_as"})
+        topology_rels.add("aligned_with")
         visible: list[bool] = []
         for kind, name in trace_meta:
             if kind == "bbox":
@@ -2184,6 +2742,50 @@ def plot_interactive_graph(G: nx.DiGraph | nx.MultiDiGraph, out_html: Path) -> N
                 continue
             if kind == "mesh":
                 visible.append(show_meshes)
+                continue
+            if kind.startswith("overlay_"):
+                if not show_helper_overlays:
+                    visible.append(False)
+                    continue
+                if mode == "all":
+                    visible.append(kind != "overlay_label" or show_edge_annotations)
+                elif mode == "nodes":
+                    visible.append(False)
+                elif mode == "edges":
+                    visible.append(
+                        kind in {"overlay_edge", "overlay_hover"}
+                        or (kind == "overlay_label" and show_edge_annotations)
+                    )
+                elif mode == "hierarchy":
+                    visible.append(False)
+                elif mode == "spatial":
+                    visible.append(
+                        (
+                            kind in {"overlay_edge", "overlay_hover"}
+                            and name in spatial_rels
+                        )
+                        or (
+                            kind == "overlay_label"
+                            and show_edge_annotations
+                            and name in spatial_rels
+                        )
+                    )
+                elif mode == "topology":
+                    visible.append(
+                        (
+                            kind in {"overlay_edge", "overlay_hover"}
+                            and name in topology_rels
+                        )
+                        or (
+                            kind == "overlay_label"
+                            and show_edge_annotations
+                            and name in topology_rels
+                        )
+                    )
+                elif mode == "explicit":
+                    visible.append(False)
+                else:
+                    visible.append(kind != "overlay_label" or show_edge_annotations)
                 continue
             if mode == "all":
                 visible.append(kind != "edge_label" or show_edge_annotations)
@@ -2238,85 +2840,42 @@ def plot_interactive_graph(G: nx.DiGraph | nx.MultiDiGraph, out_html: Path) -> N
                 visible.append(kind != "edge_label" or show_edge_annotations)
         return visible
 
+    def _mask_variants(mode: str) -> dict[str, list[bool]]:
+        variants: dict[str, list[bool]] = {}
+        for show_edge_annotations in (False, True):
+            for show_bboxes in (False, True):
+                for show_meshes in (False, True):
+                    for show_helper_overlays in (False, True):
+                        parts = []
+                        if show_edge_annotations:
+                            parts.append("annotations")
+                        if show_bboxes:
+                            parts.append("bboxes")
+                        if show_meshes:
+                            parts.append("meshes")
+                        if show_helper_overlays:
+                            parts.append("overlays")
+                        key = f"with_{'_and_'.join(parts)}" if parts else "base"
+                        variants[key] = _mask(
+                            mode,
+                            show_edge_annotations,
+                            show_bboxes,
+                            show_meshes,
+                            show_helper_overlays,
+                        )
+        return variants
+
     filter_masks = {
-        "all": {
-            "base": _mask("all", False, False),
-            "with_annotations": _mask("all", True, False),
-            "with_bboxes": _mask("all", False, True),
-            "with_annotations_and_bboxes": _mask("all", True, True),
-            "with_meshes": _mask("all", False, False, True),
-            "with_annotations_and_meshes": _mask("all", True, False, True),
-            "with_bboxes_and_meshes": _mask("all", False, True, True),
-            "with_annotations_and_bboxes_and_meshes": _mask("all", True, True, True),
-        },
-        "nodes": {
-            "base": _mask("nodes", False, False),
-            "with_annotations": _mask("nodes", True, False),
-            "with_bboxes": _mask("nodes", False, True),
-            "with_annotations_and_bboxes": _mask("nodes", True, True),
-            "with_meshes": _mask("nodes", False, False, True),
-            "with_annotations_and_meshes": _mask("nodes", True, False, True),
-            "with_bboxes_and_meshes": _mask("nodes", False, True, True),
-            "with_annotations_and_bboxes_and_meshes": _mask("nodes", True, True, True),
-        },
-        "edges": {
-            "base": _mask("edges", False, False),
-            "with_annotations": _mask("edges", True, False),
-            "with_bboxes": _mask("edges", False, True),
-            "with_annotations_and_bboxes": _mask("edges", True, True),
-            "with_meshes": _mask("edges", False, False, True),
-            "with_annotations_and_meshes": _mask("edges", True, False, True),
-            "with_bboxes_and_meshes": _mask("edges", False, True, True),
-            "with_annotations_and_bboxes_and_meshes": _mask("edges", True, True, True),
-        },
-        "hierarchy": {
-            "base": _mask("hierarchy", False, False),
-            "with_annotations": _mask("hierarchy", True, False),
-            "with_bboxes": _mask("hierarchy", False, True),
-            "with_annotations_and_bboxes": _mask("hierarchy", True, True),
-            "with_meshes": _mask("hierarchy", False, False, True),
-            "with_annotations_and_meshes": _mask("hierarchy", True, False, True),
-            "with_bboxes_and_meshes": _mask("hierarchy", False, True, True),
-            "with_annotations_and_bboxes_and_meshes": _mask(
-                "hierarchy", True, True, True
-            ),
-        },
-        "spatial": {
-            "base": _mask("spatial", False, False),
-            "with_annotations": _mask("spatial", True, False),
-            "with_bboxes": _mask("spatial", False, True),
-            "with_annotations_and_bboxes": _mask("spatial", True, True),
-            "with_meshes": _mask("spatial", False, False, True),
-            "with_annotations_and_meshes": _mask("spatial", True, False, True),
-            "with_bboxes_and_meshes": _mask("spatial", False, True, True),
-            "with_annotations_and_bboxes_and_meshes": _mask(
-                "spatial", True, True, True
-            ),
-        },
-        "topology": {
-            "base": _mask("topology", False, False),
-            "with_annotations": _mask("topology", True, False),
-            "with_bboxes": _mask("topology", False, True),
-            "with_annotations_and_bboxes": _mask("topology", True, True),
-            "with_meshes": _mask("topology", False, False, True),
-            "with_annotations_and_meshes": _mask("topology", True, False, True),
-            "with_bboxes_and_meshes": _mask("topology", False, True, True),
-            "with_annotations_and_bboxes_and_meshes": _mask(
-                "topology", True, True, True
-            ),
-        },
-        "explicit": {
-            "base": _mask("explicit", False, False),
-            "with_annotations": _mask("explicit", True, False),
-            "with_bboxes": _mask("explicit", False, True),
-            "with_annotations_and_bboxes": _mask("explicit", True, True),
-            "with_meshes": _mask("explicit", False, False, True),
-            "with_annotations_and_meshes": _mask("explicit", True, False, True),
-            "with_bboxes_and_meshes": _mask("explicit", False, True, True),
-            "with_annotations_and_bboxes_and_meshes": _mask(
-                "explicit", True, True, True
-            ),
-        },
+        mode: _mask_variants(mode)
+        for mode in (
+            "all",
+            "nodes",
+            "edges",
+            "hierarchy",
+            "spatial",
+            "topology",
+            "explicit",
+        )
     }
 
     fig = go.Figure(data=traces)
@@ -2338,6 +2897,10 @@ def plot_interactive_graph(G: nx.DiGraph | nx.MultiDiGraph, out_html: Path) -> N
         rel: len(edge["mid_x"]) for rel, edge in edge_groups.items()
     }
     total_edges = sum(edge_relation_counts.values())
+    overlay_relation_counts = {
+        rel: len(edge["mid_x"]) for rel, edge in overlay_edge_groups.items()
+    }
+    total_overlay_edges = sum(overlay_relation_counts.values())
 
     edge_items = []
     for rel in sorted(
@@ -2354,6 +2917,24 @@ def plot_interactive_graph(G: nx.DiGraph | nx.MultiDiGraph, out_html: Path) -> N
             f"<span class='legend-item-sub'>{html.escape(rel_expl)}</span>"
             "</span>"
             f"<span class='legend-count' title='Edge count'>{count}</span>"
+            "</div>"
+        )
+
+    overlay_items = []
+    for rel in sorted(
+        overlay_edge_groups, key=lambda name: (-overlay_relation_counts[name], name)
+    ):
+        rel_expl = edge_relation_explanations.get(rel, "graph relation")
+        edge_color = edge_color_map.get(rel, "#4b5563")
+        count = overlay_relation_counts[rel]
+        overlay_items.append(
+            "<div class='legend-item'>"
+            f"<span class='swatch line' style='--swatch:{edge_color}'></span>"
+            "<span class='legend-item-text'>"
+            f"<span class='legend-item-main'>Overlay: {html.escape(rel)}</span>"
+            f"<span class='legend-item-sub'>{html.escape(rel_expl)}</span>"
+            "</span>"
+            f"<span class='legend-count' title='Overlay edge count'>{count}</span>"
             "</div>"
         )
 
@@ -2575,6 +3156,14 @@ def plot_interactive_graph(G: nx.DiGraph | nx.MultiDiGraph, out_html: Path) -> N
       >
         Meshes: Off
       </button>
+      <button
+        id="toggle-helper-overlays"
+        class="toggle"
+        type="button"
+        aria-pressed="false"
+      >
+        Helper Overlays: Off
+      </button>
     </div>
     <div class="viewer-shell">
       {plotly_div}
@@ -2583,6 +3172,11 @@ def plot_interactive_graph(G: nx.DiGraph | nx.MultiDiGraph, out_html: Path) -> N
         <div class="section-title">Edges</div>
         <div class="section-meta">Total directed edges shown: {total_edges}</div>
         {"".join(edge_items)}
+        <div class="section-title">Helper Overlays</div>
+        <div class="section-meta">
+          Visualization-only overlays, hidden by default: {total_overlay_edges}
+        </div>
+        {"".join(overlay_items)}
         <div class="section-title">Nodes</div>
         {"".join(node_items)}
       </aside>
@@ -2599,16 +3193,21 @@ def plot_interactive_graph(G: nx.DiGraph | nx.MultiDiGraph, out_html: Path) -> N
     );
     const toggleBboxesButton = document.getElementById("toggle-bboxes");
     const toggleMeshesButton = document.getElementById("toggle-meshes");
+    const toggleHelperOverlaysButton = document.getElementById(
+      "toggle-helper-overlays"
+    );
     let currentMode = "all";
     let edgeAnnotationsEnabled = false;
     let bboxesEnabled = false;
     let meshesEnabled = false;
+    let helperOverlaysEnabled = false;
 
     function maskKey() {{
       const parts = [];
       if (edgeAnnotationsEnabled) parts.push("annotations");
       if (bboxesEnabled) parts.push("bboxes");
       if (meshesEnabled) parts.push("meshes");
+      if (helperOverlaysEnabled) parts.push("overlays");
       return parts.length ? `with_${{parts.join("_and_")}}` : "base";
     }}
 
@@ -2663,6 +3262,22 @@ def plot_interactive_graph(G: nx.DiGraph | nx.MultiDiGraph, out_html: Path) -> N
       toggleMeshesButton.textContent = meshesEnabled
         ? "Meshes: On"
         : "Meshes: Off";
+      applyMode(currentMode);
+    }});
+
+    toggleHelperOverlaysButton?.addEventListener("click", () => {{
+      helperOverlaysEnabled = !helperOverlaysEnabled;
+      toggleHelperOverlaysButton.classList.toggle(
+        "active",
+        helperOverlaysEnabled
+      );
+      toggleHelperOverlaysButton.setAttribute(
+        "aria-pressed",
+        helperOverlaysEnabled ? "true" : "false"
+      );
+      toggleHelperOverlaysButton.textContent = helperOverlaysEnabled
+        ? "Helper Overlays: On"
+        : "Helper Overlays: Off";
       applyMode(currentMode);
     }});
 
