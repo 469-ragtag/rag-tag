@@ -503,10 +503,32 @@ immediately. Do not restate the answer outside the tool call first.
 def build_system_prompt() -> str:
     """Return the graph-agent system prompt plus any benchmark-only appendix."""
 
+    return append_benchmark_prompt(SYSTEM_PROMPT)
+
+
+def get_benchmark_graph_prompt_append() -> str | None:
+    """Return the active benchmark-only graph prompt appendix, if any."""
+
     appendix = os.getenv(_BENCHMARK_GRAPH_PROMPT_APPEND_ENV_VAR)
-    if appendix is None or not appendix.strip():
-        return SYSTEM_PROMPT
-    return f"{SYSTEM_PROMPT}\n\n---\n\n{appendix.strip()}"
+    if appendix is None:
+        return None
+    cleaned = appendix.strip()
+    return cleaned or None
+
+
+def append_benchmark_prompt(
+    prompt: str,
+    *,
+    prompt_append: str | None = None,
+) -> str:
+    """Append the active benchmark-only prompt appendix when configured."""
+
+    appendix = prompt_append
+    if appendix is None:
+        appendix = get_benchmark_graph_prompt_append()
+    if appendix is None:
+        return prompt
+    return f"{prompt}\n\n---\n\n{appendix}"
 
 
 # ---------------------------------------------------------------------------

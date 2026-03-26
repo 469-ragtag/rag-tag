@@ -155,6 +155,55 @@ def test_load_benchmark_dataset_rejects_missing_canonical_for_new_style_case(
         load_benchmark_dataset(dataset_path)
 
 
+def test_load_benchmark_dataset_rejects_schema_v2_case_without_answer_contract(
+    tmp_path: Path,
+) -> None:
+    dataset_path = tmp_path / "benchmark.yaml"
+    dataset_path.write_text(
+        "schema_version: 2\n"
+        "dataset_name: invalid-answer-contract\n"
+        "cases:\n"
+        "  - id: q001\n"
+        "    question: How many walls are there?\n"
+        "    expected_route: sql\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            "schema_version 2 benchmark cases require "
+            "answer.canonical or expected_answer"
+        ),
+    ):
+        load_benchmark_dataset(dataset_path)
+
+
+def test_load_benchmark_dataset_accepts_schema_v2_legacy_expected_answer(
+    tmp_path: Path,
+) -> None:
+    dataset_path = tmp_path / "benchmark.yaml"
+    dataset_path.write_text(
+        "schema_version: 2\n"
+        "dataset_name: normalized-answer-contract\n"
+        "cases:\n"
+        "  - id: q001\n"
+        "    question: How many walls are there?\n"
+        "    expected_route: sql\n"
+        "    expected_answer: There are 4 walls.\n",
+        encoding="utf-8",
+    )
+
+    dataset = load_benchmark_dataset(dataset_path)
+
+    assert dataset.schema_version == 2
+    assert dataset.cases[0].answer == BenchmarkAnswer(
+        canonical="There are 4 walls.",
+        acceptable=[],
+        judge_notes=[],
+    )
+
+
 @pytest.mark.parametrize(
     ("field_name", "field_body", "expected_error"),
     [

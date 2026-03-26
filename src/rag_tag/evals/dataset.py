@@ -190,6 +190,14 @@ class BenchmarkDataset(BaseModel):
         seen_ids: set[str] = set()
         duplicates: list[str] = []
         for case in self.cases:
+            if (
+                self.schema_version >= CURRENT_BENCHMARK_SCHEMA_VERSION
+                and case.answer is None
+            ):
+                raise ValueError(
+                    "schema_version 2 benchmark cases require answer.canonical "
+                    f"or expected_answer (case id: {case.id})"
+                )
             if case.id in seen_ids:
                 duplicates.append(case.id)
                 continue

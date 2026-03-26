@@ -20,6 +20,8 @@ from .graph_agent import (
     GraphAgent,
     _graph_answer_to_response,
     _is_pydantic_test_model,
+    append_benchmark_prompt,
+    get_benchmark_graph_prompt_append,
 )
 from .langgraph_nodes import (
     decompose_question,
@@ -87,6 +89,7 @@ class LangGraphAgent:
         orchestration_config: GraphOrchestrationConfig | None = None,
         decompose: Decomposer | None = None,
         synthesize: Synthesizer | None = None,
+        prompt_append: str | None = None,
     ) -> None:
         _ensure_langgraph_dependency()
         self._debug_llm_io = debug_llm_io
@@ -94,6 +97,7 @@ class LangGraphAgent:
         self._config = orchestration_config or _load_orchestration_config()
         self._decompose = decompose
         self._synthesize = synthesize
+        self._prompt_append = prompt_append or get_benchmark_graph_prompt_append()
         self._decomposition_agent: Agent[None, _DecompositionOutput] | None = None
         self._synthesis_agent: Agent[None, GraphAnswer] | None = None
         self._active_runtime: GraphRuntime | None = None
@@ -261,7 +265,10 @@ class LangGraphAgent:
             self._decomposition_agent = Agent(
                 model,
                 output_type=_DecompositionOutput,
-                system_prompt=_DECOMPOSITION_SYSTEM_PROMPT,
+                system_prompt=append_benchmark_prompt(
+                    _DECOMPOSITION_SYSTEM_PROMPT,
+                    prompt_append=self._prompt_append,
+                ),
                 model_settings=model_settings,
                 retries=1,
                 output_retries=1,
@@ -274,7 +281,10 @@ class LangGraphAgent:
             self._synthesis_agent = Agent(
                 model,
                 output_type=GraphAnswer,
-                system_prompt=_SYNTHESIS_SYSTEM_PROMPT,
+                system_prompt=append_benchmark_prompt(
+                    _SYNTHESIS_SYSTEM_PROMPT,
+                    prompt_append=self._prompt_append,
+                ),
                 model_settings=model_settings,
                 retries=1,
                 output_retries=1,

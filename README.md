@@ -350,7 +350,7 @@ Use `scripts/eval_benchmarks.py` to run end-to-end benchmarks over a checked-in
 or local YAML case set. The benchmark runner:
 
 - loads only the YAML cases you author
-- expands the router x agent x prompt-strategy matrix
+- expands the router x agent x prompt-strategy x graph-orchestrator matrix
 - runs the full routed query flow end to end
 - writes Excel-friendly CSV artifacts plus a full JSON report
 - uses an explicit answer judge model instead of Pydantic Evals' hidden default
@@ -486,9 +486,9 @@ you override the output directory:
 - `report.json`
 - `run_manifest.json`
 
-`leaderboard.csv` contains one row per router x agent x prompt-strategy
-combination. `case_groups.csv` groups repeated runs by original case. `runs.csv`
-contains one row per actual execution.
+`leaderboard.csv` contains one row per router x agent x prompt-strategy x
+graph-orchestrator combination. `case_groups.csv` groups repeated runs by
+original case. `runs.csv` contains one row per actual execution.
 
 ### Tracing and token fields
 

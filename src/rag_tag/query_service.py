@@ -9,6 +9,7 @@ from typing import Any
 import networkx as nx
 
 from rag_tag.agent import GraphAgent, LangGraphAgent
+from rag_tag.agent.graph_agent import get_benchmark_graph_prompt_append
 from rag_tag.config import (
     GraphOrchestrationConfig,
     get_default_graph_max_steps,
@@ -671,6 +672,7 @@ def _ensure_graph_context(
             agent = LangGraphAgent(
                 debug_llm_io=debug_llm_io,
                 orchestration_config=get_graph_orchestration_config(),
+                prompt_append=get_benchmark_graph_prompt_append(),
             )
         else:
             agent = GraphAgent(debug_llm_io=debug_llm_io)
