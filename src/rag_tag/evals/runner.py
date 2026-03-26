@@ -22,6 +22,8 @@ from .evaluators import (
 )
 from .task_runner import BenchmarkTaskResult, run_benchmark_case
 
+BENCHMARK_INTER_CASE_DELAY_SECONDS = 20.0
+
 
 @dataclass(frozen=True)
 class BenchmarkExperimentConfig:
@@ -130,8 +132,15 @@ async def evaluate_benchmark_dataset_async(
         effective_max_concurrency = _effective_max_concurrency(
             experiment.max_concurrency
         )
+        async def run_case(case: BenchmarkCase) -> BenchmarkTaskResult:
+            return await _run_case_with_state(
+                case,
+                experiment=experiment,
+                state=state,
+            )
+
         report = await dataset.evaluate(
-            lambda case: _run_case_with_state(case, experiment=experiment, state=state),
+            run_case,
             name=experiment_name or benchmark_dataset.dataset_name,
             task_name=experiment_name or benchmark_dataset.dataset_name,
             max_concurrency=effective_max_concurrency,
@@ -146,7 +155,7 @@ async def evaluate_benchmark_dataset_async(
     return report
 
 
-def _run_case_with_state(
+async def _run_case_with_state(
     case: BenchmarkCase,
     *,
     experiment: BenchmarkExperimentConfig,
@@ -173,7 +182,12 @@ def _run_case_with_state(
         state["agent"] = bundle.agent
     else:
         close_runtime(bundle.runtime)
+    await _sleep_between_benchmark_cases()
     return bundle.result
+
+
+async def _sleep_between_benchmark_cases() -> None:
+    await asyncio.sleep(BENCHMARK_INTER_CASE_DELAY_SECONDS)
 
 
 def _build_eval_case(
@@ -197,6 +211,7 @@ def _build_case_metadata(case: BenchmarkCase) -> BenchmarkCaseMetadata:
     return {
         "case_id": case.id,
         "expected_route": case.expected_route,
+        "expected_answer": case.expected_answer,
         "reference_points": list(case.reference_points),
         "tags": list(case.tags),
         "max_duration_s": case.max_duration_s,

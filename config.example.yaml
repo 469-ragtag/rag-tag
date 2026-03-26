@@ -153,7 +153,7 @@ experiments:
       - strict-grounded
       - decompose
     # Keep the answer judge explicit so benchmark runs do not depend on
-    # Pydantic Evals' hidden default judge model.
+    # Pydantic Evals' hidden default judge model. 
     answer_judge_model: google-gla:gemini-2.5-flash
     repeat: 1
     max_concurrency: 1

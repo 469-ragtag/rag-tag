@@ -5,7 +5,7 @@ SHELL := /bin/bash
 CONFIG ?=
 CONFIG_ARGS = $(if $(strip $(CONFIG)),--config $(CONFIG),)
 
-DATASET ?= BigBuildingBIMModel
+DATASET ?= Building-Architecture
 DB ?= output/$(DATASET).db
 GRAPH_DATASET ?= $(DATASET)
 APP_ARGS ?=

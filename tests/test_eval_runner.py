@@ -6,6 +6,7 @@ from pydantic_evals.evaluators import LLMJudge, MaxDuration
 
 from rag_tag.evals import (
     DEFAULT_ANSWER_JUDGE_MODEL,
+    DEFAULT_ANSWER_JUDGE_RUBRIC,
     BenchmarkCase,
     BenchmarkDataset,
     BenchmarkExperimentConfig,
@@ -24,6 +25,7 @@ def test_build_eval_dataset_adds_case_and_dataset_evaluators() -> None:
                 id="q001",
                 question="How many walls are in the model?",
                 expected_route="sql",
+                expected_answer="There are 4 walls in the model.",
                 reference_points=["returns a deterministic count"],
                 tags=["sql", "count"],
                 max_duration_s=10,
@@ -43,6 +45,7 @@ def test_build_eval_dataset_adds_case_and_dataset_evaluators() -> None:
     assert eval_dataset.cases[0].metadata == {
         "case_id": "q001",
         "expected_route": "sql",
+        "expected_answer": "There are 4 walls in the model.",
         "reference_points": ["returns a deterministic count"],
         "tags": ["sql", "count"],
         "max_duration_s": 10,
@@ -66,6 +69,7 @@ def test_build_eval_dataset_adds_case_and_dataset_evaluators() -> None:
     assert judge.model == "openai:gpt-5.2"
     assert judge.assertion == {"include_reason": True}
     assert judge.score == {"include_reason": True}
+    assert "expected_answer" in DEFAULT_ANSWER_JUDGE_RUBRIC
 
 
 def test_build_eval_dataset_defaults_answer_judge_to_repo_model() -> None:
@@ -214,6 +218,15 @@ def test_evaluate_benchmark_dataset_runs_cases_and_repeats(
         "rag_tag.evals.runner.close_runtime",
         lambda runtime: closed_runtimes.append(runtime),
     )
+    sleep_calls: list[float] = []
+
+    async def fake_sleep(delay_seconds: float = 20.0) -> None:
+        sleep_calls.append(delay_seconds)
+
+    monkeypatch.setattr(
+        "rag_tag.evals.runner._sleep_between_benchmark_cases",
+        fake_sleep,
+    )
 
     report = evaluate_benchmark_dataset(
         dataset,
@@ -239,6 +252,7 @@ def test_evaluate_benchmark_dataset_runs_cases_and_repeats(
     assert calls[2][0] == "q002"
     assert calls[3][0] == "q002"
     assert closed_runtimes == [calls[-1][1]]
+    assert sleep_calls == [20.0, 20.0, 20.0, 20.0]
 
 
 def test_evaluate_benchmark_dataset_disables_state_reuse_when_concurrent(
@@ -336,6 +350,15 @@ def test_evaluate_benchmark_dataset_disables_state_reuse_when_concurrent(
         "rag_tag.evals.runner.close_runtime",
         lambda runtime: closed_runtimes.append(runtime),
     )
+    sleep_calls: list[float] = []
+
+    async def fake_sleep(delay_seconds: float = 20.0) -> None:
+        sleep_calls.append(delay_seconds)
+
+    monkeypatch.setattr(
+        "rag_tag.evals.runner._sleep_between_benchmark_cases",
+        fake_sleep,
+    )
 
     report = evaluate_benchmark_dataset(
         dataset,
@@ -360,3 +383,4 @@ def test_evaluate_benchmark_dataset_disables_state_reuse_when_concurrent(
     assert len(closed_runtimes) == 1
     assert closed_runtimes[0] is not None
     assert closed_runtimes[0] is not calls[1][1]
+    assert sleep_calls == [20.0, 20.0]

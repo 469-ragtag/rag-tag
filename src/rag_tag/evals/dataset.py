@@ -26,13 +26,16 @@ class BenchmarkCase(BaseModel):
     id: str
     question: str
     expected_route: BenchmarkRoute
+    expected_answer: str | None = None
     reference_points: list[str] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list)
     max_duration_s: float | None = Field(default=None, gt=0)
 
-    @field_validator("id", "question")
+    @field_validator("id", "question", "expected_answer")
     @classmethod
     def _validate_non_empty_text(cls, value: str, info: object) -> str:
+        if value is None:
+            return value
         cleaned = value.strip()
         if not cleaned:
             field_name = getattr(info, "field_name", "value")

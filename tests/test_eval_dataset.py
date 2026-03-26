@@ -15,6 +15,7 @@ def test_load_benchmark_dataset_parses_valid_yaml(tmp_path: Path) -> None:
         "  - id: q001\n"
         "    question: Which rooms are adjacent to the kitchen?\n"
         "    expected_route: graph\n"
+        "    expected_answer: The kitchen is adjacent to the dining room.\n"
         "    reference_points:\n"
         "      - finds the kitchen anchor\n"
         "    tags: [graph, adjacency]\n"
@@ -31,6 +32,7 @@ def test_load_benchmark_dataset_parses_valid_yaml(tmp_path: Path) -> None:
                 "id": "q001",
                 "question": "Which rooms are adjacent to the kitchen?",
                 "expected_route": "graph",
+                "expected_answer": "The kitchen is adjacent to the dining room.",
                 "reference_points": ["finds the kitchen anchor"],
                 "tags": ["graph", "adjacency"],
                 "max_duration_s": 12,
@@ -100,4 +102,22 @@ def test_load_benchmark_dataset_rejects_non_positive_duration(tmp_path: Path) ->
     )
 
     with pytest.raises(ValueError, match="max_duration_s"):
+        load_benchmark_dataset(dataset_path)
+
+
+def test_load_benchmark_dataset_rejects_blank_expected_answer(
+    tmp_path: Path,
+) -> None:
+    dataset_path = tmp_path / "benchmark.yaml"
+    dataset_path.write_text(
+        "dataset_name: invalid-answer\n"
+        "cases:\n"
+        "  - id: q001\n"
+        "    question: How many walls are there?\n"
+        "    expected_route: sql\n"
+        "    expected_answer: '   '\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="expected_answer must not be empty"):
         load_benchmark_dataset(dataset_path)

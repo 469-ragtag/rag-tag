@@ -26,6 +26,7 @@ Judge the answer against the benchmark input and output objects provided.
 Pass only when:
 - the answer addresses the user question directly
 - the selected route is appropriate for the benchmark case
+- when an expected_answer is provided, the answer is materially consistent with it
 - the answer stays grounded in the available evidence or clearly signals uncertainty
 - the answer does not fabricate entities, relationships, properties, or counts
 - the answer aligns with the case reference points when they are present

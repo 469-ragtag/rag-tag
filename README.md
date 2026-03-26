@@ -365,6 +365,7 @@ V1 required fields are:
 
 V1 recommended fields are:
 
+- `expected_answer`
 - `reference_points`
 - `tags`
 - `max_duration_s`
@@ -377,6 +378,7 @@ cases:
   - id: q001
     question: Which rooms are adjacent to the kitchen?
     expected_route: graph
+    expected_answer: The kitchen is adjacent to the dining room.
     reference_points:
       - identifies the kitchen correctly
       - avoids fabricated room names
@@ -386,6 +388,7 @@ cases:
   - id: q002
     question: How many doors are on Level 2?
     expected_route: sql
+    expected_answer: There are 3 doors on Level 2.
     reference_points:
       - chooses sql routing
       - gives a deterministic count

@@ -3,6 +3,12 @@ cases:
   - id: q001
     question: How many walls are in the model?
     expected_route: sql
+    expected_answer: |
+      There are exactly 4 walls in the model:
+      #234 "house - outer wall - house right front"
+      #258 "house - outer wall - house right back"
+      #277 "house - outer wall - house left"
+      #310 "plumbing wall"
     reference_points:
       - chooses sql routing for a deterministic count query
       - returns a grounded count of wall elements
@@ -13,6 +19,10 @@ cases:
   - id: q002
     question: List all spaces located in the groundfloor.
     expected_route: graph
+    expected_answer: |
+      There are 2 spaces contained within the 00 groundfloor:
+      #75 "living room"
+      #182 "entry hall"
     reference_points:
       - identifies the ground floor or matching storey correctly
       - returns space elements grounded in containment evidence
@@ -23,6 +33,11 @@ cases:
   - id: q003
     question: How many slabs are there, and what are their names?
     expected_route: sql
+    expected_answer: |
+      There are 3 slabs in the project:
+      #49 "floor"
+      #343 "house - roof - slab left"
+      #367 "house - roof - slab right"
     reference_points:
       - treats the request as a deterministic listing/count task
       - returns slab names grounded in retrieved data
@@ -33,6 +48,12 @@ cases:
   - id: q004
     question: What is the total number of building element proxies in the project?
     expected_route: sql
+    expected_answer: |
+      There are 4 building element proxies:
+      #172 "Group#18"
+      #302 "Group#19"
+      #417 "origin"
+      #436 "geo-reference"
     reference_points:
       - chooses sql routing for a bounded count query
       - counts only building element proxy entities
@@ -43,6 +64,11 @@ cases:
   - id: q005
     question: How many elements have the word "roof" in their name?
     expected_route: sql
+    expected_answer: |
+      There are 3 elements with "roof" in their name:
+      #334 "house - roof" (IfcRoof)
+      #343 "house - roof - slab left" (IfcSlab)
+      #367 "house - roof - slab right" (IfcSlab)
     reference_points:
       - uses deterministic name-based filtering
       - counts only elements whose name matches the roof term
@@ -53,6 +79,7 @@ cases:
   - id: q006
     question: What building storey contains the chimney?
     expected_route: graph
+    expected_answer: The chimney (#296) is contained in the "00 groundfloor" (#40).
     reference_points:
       - identifies the chimney anchor correctly
       - follows containment to the correct building storey
@@ -63,6 +90,11 @@ cases:
   - id: q007
     question: What elements are contained directly inside the Single-family house building, excluding storeys?
     expected_route: graph
+    expected_answer: |
+      The direct elements inside the Single-family house (#30), excluding storeys, are:
+      #334 "house - roof" (IfcRoof)
+      #385 "house - gross volume" (IfcSpatialZone)
+      #399 "sand bedding" (IfcEarthworksFill)
     reference_points:
       - identifies the Single-family house building correctly
       - returns only directly contained elements
@@ -73,6 +105,7 @@ cases:
   - id: q008
     question: Which site contains the "origin" element?
     expected_route: graph
+    expected_answer: The "origin" proxy (#417) is contained directly in the "house - site" (#23).
     reference_points:
       - resolves the origin element anchor correctly
       - traces containment to the site level
@@ -83,6 +116,10 @@ cases:
   - id: q009
     question: What elements make up the roof assembly?
     expected_route: graph
+    expected_answer: |
+      The "house - roof" (#334) aggregates:
+      "house - roof - slab left" (#343)
+      "house - roof - slab right" (#367)
     reference_points:
       - identifies the roof assembly anchor correctly
       - returns grounded member elements of that assembly
@@ -93,6 +130,8 @@ cases:
   - id: q010
     question: Are there any proxy elements located directly inside the living room?
     expected_route: graph
+    expected_answer: |
+      Yes. The "living room" (#75) directly contains the proxy element "Group#18" (#172).
     reference_points:
       - identifies the living room space correctly
       - checks direct containment rather than loose proximity
@@ -103,6 +142,8 @@ cases:
   - id: q011
     question: Find the material of the kitchen furniture.
     expected_route: graph
+    expected_answer: |
+      The "kitchen" furniture (#155) is associated with the material "wood_mdf_plate" (#159).
     reference_points:
       - identifies the kitchen furniture anchor correctly
       - retrieves material information from grounded data
@@ -113,6 +154,10 @@ cases:
   - id: q012
     question: What is the net volume and area of the left roof slab?
     expected_route: graph
+    expected_answer: |
+      The left roof slab (#343) has:
+      Net Volume: 6.72 m3 (6.7203428483966)
+      Net Area: 22.40 m2 (22.40114282797721)
     reference_points:
       - identifies the left roof slab correctly
       - returns grounded quantity values for net volume and area
@@ -123,6 +168,11 @@ cases:
   - id: q013
     question: What is the length, width, and volume of the left outer wall?
     expected_route: graph
+    expected_answer: |
+      The left outer wall (#277) has:
+      Length: 6000 mm (6000.000000000036)
+      Width: 200 mm (200.00000000000975)
+      Net Volume: 4.23 m3 (4.230883117545889)
     reference_points:
       - identifies the left outer wall correctly
       - returns grounded dimensional values
@@ -133,6 +183,9 @@ cases:
   - id: q014
     question: Does the ground floor slab have a fire rating?
     expected_route: graph
+    expected_answer: |
+      Yes. The "floor" slab (#49) has a FireRating property of "REI30".
+      It also inherits an "REI60" rating via its SlabType.
     reference_points:
       - identifies the ground floor slab correctly
       - checks for a grounded fire rating property
@@ -143,6 +196,9 @@ cases:
   - id: q015
     question: What material is used for the sand bedding?
     expected_route: graph
+    expected_answer: |
+      The "sand bedding" (#399) is assigned the material
+      "bulk-material_sand-coarse_generic" (#403).
     reference_points:
       - resolves the sand bedding anchor correctly
       - returns grounded material information
@@ -153,6 +209,9 @@ cases:
   - id: q016
     question: The kitchen furniture is in a specific space. What zone does that space belong to?
     expected_route: graph
+    expected_answer: |
+      The "kitchen" (#155) is in the "living room" (#75), and that space belongs to
+      the zone "house - living space" (#71).
     reference_points:
       - identifies the kitchen furniture and its containing space
       - traces the space to its zone membership
@@ -163,6 +222,10 @@ cases:
   - id: q017
     question: What are the materials of all the walls located on the groundfloor?
     expected_route: graph
+    expected_answer: |
+      The groundfloor contains 4 walls:
+      Outer walls #234, #258, and #277 use "stone_sand-lime" (#238).
+      Plumbing wall #310 uses "gypsum_fiber-board_panel" (#314).
     reference_points:
       - identifies walls associated with the ground floor correctly
       - returns grounded material information for each wall or grouped set
@@ -173,6 +236,9 @@ cases:
   - id: q018
     question: Find the entry hall. What building storey is it on, and what building is that storey in?
     expected_route: graph
+    expected_answer: |
+      The "entry hall" (#182) is on the "00 groundfloor" (#40),
+      which is in the "Single-family house" (#30).
     reference_points:
       - identifies the entry hall anchor correctly
       - returns the containing building storey
@@ -183,6 +249,10 @@ cases:
   - id: q019
     question: Compare the net volume of the right roof slab and the left roof slab. Which is larger?
     expected_route: graph
+    expected_answer: |
+      Right roof slab (#367): Net Volume 9.36 m3
+      Left roof slab (#343): Net Volume 6.72 m3
+      The right roof slab is larger.
     reference_points:
       - identifies both roof slab anchors correctly
       - compares grounded net volume values
@@ -193,6 +263,14 @@ cases:
   - id: q020
     question: Trace the full containment path of the "kitchen" element from the project level down.
     expected_route: graph
+    expected_answer: |
+      Project #13 "ifc silly sample scene - project"
+      -> Site #20 "environment - site"
+      -> Site #23 "house - site"
+      -> Building #30 "Single-family house"
+      -> Building Storey #40 "00 groundfloor"
+      -> Space #75 "living room"
+      -> Furniture #155 "kitchen"
     reference_points:
       - identifies the kitchen element anchor correctly
       - returns the containment chain in order
