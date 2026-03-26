@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pydantic_evals.evaluators import LLMJudge, MaxDuration
 from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_evals.evaluators import LLMJudge, MaxDuration
 
 from rag_tag.evals import (
     DEFAULT_ANSWER_JUDGE_MODEL,
