@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import os
 from pathlib import Path
 from typing import Any
@@ -669,11 +670,16 @@ def _ensure_graph_context(
     if agent is None:
         orchestrator = resolve_graph_orchestrator()
         if orchestrator == "langgraph":
-            agent = LangGraphAgent(
-                debug_llm_io=debug_llm_io,
-                orchestration_config=get_graph_orchestration_config(),
-                prompt_append=get_benchmark_graph_prompt_append(),
-            )
+            langgraph_kwargs: dict[str, Any] = {
+                "debug_llm_io": debug_llm_io,
+                "orchestration_config": get_graph_orchestration_config(),
+            }
+            init_parameters = inspect.signature(LangGraphAgent.__init__).parameters
+            if "prompt_append" in init_parameters:
+                langgraph_kwargs["prompt_append"] = (
+                    get_benchmark_graph_prompt_append()
+                )
+            agent = LangGraphAgent(**langgraph_kwargs)
         else:
             agent = GraphAgent(debug_llm_io=debug_llm_io)
     return runtime, agent
