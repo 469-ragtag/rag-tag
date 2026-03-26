@@ -102,6 +102,21 @@ def _load_app_config(config_override_path: str | None) -> tuple[AppConfig, str |
     )
 
 
+def _format_metric(value: object) -> str:
+    if value is None:
+        return "n/a"
+    if isinstance(value, float):
+        return f"{value:.3f}".rstrip("0").rstrip(".")
+    return str(value)
+
+
+def _format_token_triplet(row: dict[str, object]) -> str:
+    return "/".join(
+        _format_metric(row.get(field_name))
+        for field_name in ("avg_input_tokens", "avg_output_tokens", "avg_total_tokens")
+    )
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Run end-to-end rag-tag benchmarks over the YAML case set."
@@ -223,14 +238,15 @@ def main(argv: list[str] | None = None) -> int:
             f"{row.get('prompt_strategy') or 'baseline'} / "
             f"{row.get('graph_orchestrator') or 'pydanticai'}"
         )
-        route_accuracy = row.get("route_accuracy")
-        answer_score = row.get("answer_score_avg")
+        answer_correct = row.get("answer_correct_rate")
+        route_correct = row.get("route_correct_rate")
         avg_duration = row.get("avg_duration_ms")
         print(
             f"{index}. {combo} | "
-            f"route={route_accuracy if route_accuracy is not None else 'n/a'} | "
-            f"answer={answer_score if answer_score is not None else 'n/a'} | "
-            f"avg_ms={avg_duration if avg_duration is not None else 'n/a'}"
+            f"answer_correct={_format_metric(answer_correct)} | "
+            f"route_correct={_format_metric(route_correct)} | "
+            f"avg_tokens(in/out/total)={_format_token_triplet(row)} | "
+            f"avg_ms={_format_metric(avg_duration)}"
         )
     return 0
 

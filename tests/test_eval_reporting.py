@@ -7,6 +7,7 @@ from rag_tag.evals.reporting import (
     build_case_groups_rows,
     build_leaderboard_rows,
     build_runs_rows,
+    top_leaderboard_rows,
 )
 from rag_tag.evals.task_runner import BenchmarkTaskResult, BenchmarkUsage
 
@@ -125,9 +126,10 @@ def test_build_runs_rows_includes_case_and_failure_records() -> None:
                 ),
                 metrics={},
                 attributes={},
-                scores={"LLMJudge": _EvalResult(0.8, "grounded")},
+                scores={"judge_score": _EvalResult(0.8, "grounded")},
                 labels={},
                 assertions={
+                    "answer_correct": _EvalResult(True, "grounded"),
                     "RouteMatchesExpected": _EvalResult(True, None),
                     "NoExecutionError": _EvalResult(True, None),
                     "MaxDuration": _EvalResult(True, None),
@@ -170,10 +172,18 @@ def test_build_runs_rows_includes_case_and_failure_records() -> None:
     assert rows[0]["graph_orchestrator"] == "langgraph"
     assert rows[0]["repeat_index"] == 1
     assert rows[0]["repeat_total"] == 2
+    assert rows[0]["route_correct"] is True
+    assert rows[0]["answer_correct"] is True
     assert rows[0]["judge_score"] == 0.8
+    assert rows[0]["input_tokens"] == 10
+    assert rows[0]["output_tokens"] == 5
+    assert rows[0]["total_tokens"] == 15
     assert rows[0]["trace_id"] == "case-trace-1"
     assert rows[1]["case_id"] == "q002"
     assert rows[1]["error"] == "task crashed"
+    assert rows[1]["answer_correct"] is False
+    assert rows[1]["route_correct"] is False
+    assert rows[1]["no_error"] is False
     assert rows[1]["no_error_assertion"] is False
 
 
@@ -200,9 +210,10 @@ def test_build_case_groups_and_leaderboard_rows_aggregate_metrics() -> None:
                 ),
                 metrics={},
                 attributes={},
-                scores={"LLMJudge": _EvalResult(0.8, "good")},
+                scores={"judge_score": _EvalResult(0.8, "good")},
                 labels={},
                 assertions={
+                    "answer_correct": _EvalResult(True, "good"),
                     "RouteMatchesExpected": _EvalResult(True, None),
                     "NoExecutionError": _EvalResult(True, None),
                     "MaxDuration": _EvalResult(True, None),
@@ -225,9 +236,10 @@ def test_build_case_groups_and_leaderboard_rows_aggregate_metrics() -> None:
                 ),
                 metrics={},
                 attributes={},
-                scores={"LLMJudge": _EvalResult(0.4, "weak")},
+                scores={"judge_score": _EvalResult(0.4, "weak")},
                 labels={},
                 assertions={
+                    "answer_correct": _EvalResult(False, "weak"),
                     "RouteMatchesExpected": _EvalResult(False, None),
                     "NoExecutionError": _EvalResult(True, None),
                     "MaxDuration": _EvalResult(False, None),
@@ -255,17 +267,89 @@ def test_build_case_groups_and_leaderboard_rows_aggregate_metrics() -> None:
     assert len(case_group_rows) == 1
     assert case_group_rows[0]["graph_orchestrator"] == "langgraph"
     assert case_group_rows[0]["run_count"] == 2
-    assert case_group_rows[0]["route_accuracy"] == 0.5
+    assert case_group_rows[0]["answer_correct_rate"] == 0.5
+    assert case_group_rows[0]["avg_judge_score"] == 0.6
+    assert case_group_rows[0]["route_correct_rate"] == 0.5
     assert case_group_rows[0]["duration_pass_rate"] == 0.5
+    assert case_group_rows[0]["route_accuracy"] == 0.5
     assert case_group_rows[0]["answer_score_avg"] == 0.6
     assert case_group_rows[0]["avg_duration_ms"] == 140.0
     assert case_group_rows[0]["p95_duration_ms"] == 180.0
+    assert case_group_rows[0]["avg_input_tokens"] == 10.0
+    assert case_group_rows[0]["avg_output_tokens"] == 5.0
+    assert case_group_rows[0]["avg_total_tokens"] == 15.0
     assert case_group_rows[0]["sum_total_tokens"] == 15
     assert case_group_rows[0]["token_coverage_rate"] == 0.5
 
     assert len(leaderboard_rows) == 1
     assert leaderboard_rows[0]["graph_orchestrator"] == "langgraph"
     assert leaderboard_rows[0]["case_count"] == 1
+    assert leaderboard_rows[0]["answer_correct_rate"] == 0.5
+    assert leaderboard_rows[0]["avg_judge_score"] == 0.6
+    assert leaderboard_rows[0]["route_correct_rate"] == 0.5
     assert leaderboard_rows[0]["route_accuracy"] == 0.5
     assert leaderboard_rows[0]["answer_score_avg"] == 0.6
+    assert leaderboard_rows[0]["avg_total_tokens"] == 15.0
     assert leaderboard_rows[0]["sum_total_tokens"] == 15
+
+
+def test_top_leaderboard_rows_prefers_answer_then_route_then_efficiency() -> None:
+    rows = [
+        {
+            "router_profile": "router-a",
+            "agent_profile": "agent-a",
+            "prompt_strategy": "baseline",
+            "graph_orchestrator": "langgraph",
+            "answer_correct_rate": 0.9,
+            "route_correct_rate": 1.0,
+            "avg_total_tokens": 30.0,
+            "avg_output_tokens": 10.0,
+            "avg_input_tokens": 20.0,
+            "avg_duration_ms": 200.0,
+        },
+        {
+            "router_profile": "router-b",
+            "agent_profile": "agent-a",
+            "prompt_strategy": "baseline",
+            "graph_orchestrator": "langgraph",
+            "answer_correct_rate": 1.0,
+            "route_correct_rate": 0.7,
+            "avg_total_tokens": 40.0,
+            "avg_output_tokens": 20.0,
+            "avg_input_tokens": 20.0,
+            "avg_duration_ms": 120.0,
+        },
+        {
+            "router_profile": "router-c",
+            "agent_profile": "agent-a",
+            "prompt_strategy": "baseline",
+            "graph_orchestrator": "langgraph",
+            "answer_correct_rate": 1.0,
+            "route_correct_rate": 0.9,
+            "avg_total_tokens": 50.0,
+            "avg_output_tokens": 20.0,
+            "avg_input_tokens": 30.0,
+            "avg_duration_ms": 90.0,
+        },
+        {
+            "router_profile": "router-d",
+            "agent_profile": "agent-a",
+            "prompt_strategy": "baseline",
+            "graph_orchestrator": "langgraph",
+            "answer_correct_rate": 1.0,
+            "route_correct_rate": 0.9,
+            "avg_total_tokens": 45.0,
+            "avg_output_tokens": 18.0,
+            "avg_input_tokens": 27.0,
+            "avg_duration_ms": 140.0,
+        },
+    ]
+
+    top_rows = top_leaderboard_rows(rows, limit=4)
+
+    assert [row["router_profile"] for row in top_rows] == [
+        "router-d",
+        "router-c",
+        "router-b",
+        "router-a",
+    ]

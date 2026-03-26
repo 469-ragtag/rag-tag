@@ -238,12 +238,28 @@ def test_run_benchmark_suite_preserves_trace_metadata_when_enabled(
 
     assert payload["trace_requested"] is True
     assert payload["logfire"]["enabled"] is True
+    assert payload["benchmark_metadata"]["db_paths"] == [str(tmp_path / "model.db")]
+    assert payload["benchmark_metadata"]["graph_dataset"] is None
+    assert payload["benchmark_metadata"]["router_profiles"] == ["router-a"]
+    assert payload["benchmark_metadata"]["agent_profiles"] == ["agent-a"]
+    assert payload["benchmark_metadata"]["prompt_strategies"] == ["strict-grounded"]
+    assert payload["benchmark_metadata"]["graph_orchestrators"] == ["langgraph"]
     assert payload["entries"][0]["report"]["trace_id"] == "trace-123"
     assert payload["entries"][0]["report"]["span_id"] == "span-456"
+    assert payload["entries"][0]["report"]["experiment_metadata"][
+        "dataset_path"
+    ] == str(dataset_path)
+    assert (
+        payload["entries"][0]["report"]["experiment_metadata"]["answer_judge_model"]
+        == DEFAULT_ANSWER_JUDGE_MODEL
+    )
+    assert payload["entries"][0]["report"]["experiment_metadata"]["tag_filter"] == []
     assert payload["entries"][0]["combination"]["graph_orchestrator"] == "langgraph"
     assert isinstance(payload["leaderboard"], list)
     assert isinstance(payload["case_groups"], list)
     assert isinstance(payload["runs"], list)
+    assert manifest["benchmark_metadata"]["repeat"] == 1
+    assert manifest["benchmark_metadata"]["max_concurrency"] is None
     assert manifest["reports"][0]["graph_orchestrator"] == "langgraph"
     assert manifest["reports"][0]["trace_id"] == "trace-123"
     assert manifest["reports"][0]["span_id"] == "span-456"
@@ -517,6 +533,9 @@ def test_eval_benchmarks_script_main_runs_and_prints_summary(
     assert "Benchmark run: benchmark-e2e-v1" in stdout
     assert "Trace requested: yes" in stdout
     assert "1. router-a / agent-a / baseline / langgraph" in stdout
+    assert "answer_correct=1" in stdout
+    assert "route_correct=0.8" in stdout
+    assert "avg_tokens(in/out/total)=30/10/40" in stdout
 
 
 def _mock_suite_result(tmp_path: Path, config: BenchmarkCliConfig):
@@ -531,8 +550,11 @@ def _mock_suite_result(tmp_path: Path, config: BenchmarkCliConfig):
                         "agent_profile": "agent-a",
                         "prompt_strategy": "baseline",
                         "graph_orchestrator": "langgraph",
-                        "route_accuracy": 1.0,
-                        "answer_score_avg": 0.9,
+                        "answer_correct_rate": 1.0,
+                        "route_correct_rate": 0.8,
+                        "avg_input_tokens": 30.0,
+                        "avg_output_tokens": 10.0,
+                        "avg_total_tokens": 40.0,
                         "avg_duration_ms": 120.0,
                     }
                 ]

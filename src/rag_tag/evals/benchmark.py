@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field, fields, is_dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -343,14 +344,11 @@ async def run_benchmark_suite_async(
             answer_judge_model=config.answer_judge_model,
             include_answer_judge=config.include_answer_judge,
             debug_llm_io=config.debug_llm_io,
-            report_metadata={
-                "benchmark_experiment_name": config.experiment_name,
-                "dataset_name": dataset.dataset_name,
-                "trace_requested": config.trace,
-                "logfire_enabled": logfire_status.enabled,
-                "logfire_cloud_sync": logfire_status.cloud_sync,
-                "logfire_url": logfire_status.url or None,
-            },
+            report_metadata=_build_entry_report_metadata(
+                config=config,
+                dataset=dataset,
+                logfire_status=logfire_status,
+            ),
         )
         report = await evaluate_benchmark_dataset_async(
             dataset,
@@ -488,6 +486,7 @@ def _serialize_suite_report(
         "experiment_name": config.experiment_name,
         "dataset_name": dataset.dataset_name,
         "dataset_path": str(config.dataset_path),
+        "benchmark_metadata": _build_suite_metadata(config, dataset),
         "trace_requested": config.trace,
         "logfire": {
             "enabled": logfire_status.enabled,
@@ -524,6 +523,7 @@ def _build_run_manifest(
         "experiment_name": config.experiment_name,
         "dataset_name": dataset.dataset_name,
         "dataset_path": str(config.dataset_path),
+        "benchmark_metadata": _build_suite_metadata(config, dataset),
         "trace_requested": config.trace,
         "logfire": {
             "enabled": logfire_status.enabled,
@@ -553,6 +553,63 @@ def _build_run_manifest(
             for entry in entries
         ],
     }
+
+
+def _build_entry_report_metadata(
+    *,
+    config: BenchmarkCliConfig,
+    dataset: BenchmarkDataset,
+    logfire_status: LogfireStatus,
+) -> dict[str, Any]:
+    return {
+        "benchmark_experiment_name": config.experiment_name,
+        "dataset_name": dataset.dataset_name,
+        "dataset_path": str(config.dataset_path),
+        "answer_judge_model": config.answer_judge_model,
+        "tag_filter": list(config.tags),
+        "trace_requested": config.trace,
+        "logfire_enabled": logfire_status.enabled,
+        "logfire_cloud_sync": logfire_status.cloud_sync,
+        "logfire_url": logfire_status.url or None,
+    }
+
+
+def _build_suite_metadata(
+    config: BenchmarkCliConfig,
+    dataset: BenchmarkDataset,
+) -> dict[str, Any]:
+    return {
+        "dataset_name": dataset.dataset_name,
+        "dataset_path": str(config.dataset_path),
+        "db_paths": [str(path) for path in config.db_paths],
+        "graph_dataset": config.graph_dataset,
+        "context_db": str(config.context_db) if config.context_db is not None else None,
+        "config_path": config.config_path,
+        "router_profiles": _unique_preserving_order(
+            combination.router_profile for combination in config.combinations
+        ),
+        "agent_profiles": _unique_preserving_order(
+            combination.agent_profile for combination in config.combinations
+        ),
+        "prompt_strategies": _unique_preserving_order(
+            combination.prompt_strategy for combination in config.combinations
+        ),
+        "graph_orchestrators": _unique_preserving_order(
+            combination.graph_orchestrator for combination in config.combinations
+        ),
+        "answer_judge_model": config.answer_judge_model,
+        "tag_filter": list(config.tags),
+        "repeat": config.repeat,
+        "max_concurrency": config.max_concurrency,
+    }
+
+
+def _unique_preserving_order(values: Iterable[str | None]) -> list[str | None]:
+    ordered: list[str | None] = []
+    for value in values:
+        if value not in ordered:
+            ordered.append(value)
+    return ordered
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:

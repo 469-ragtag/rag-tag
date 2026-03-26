@@ -27,16 +27,17 @@ _RUNS_FIELDNAMES = [
     "repeat_total",
     "selected_route",
     "expected_route",
+    "route_correct",
     "decision_reason",
     "answer",
-    "warning",
-    "error",
-    "duration_ms",
-    "route_assertion",
-    "no_error_assertion",
-    "duration_assertion",
+    "answer_correct",
     "judge_score",
     "judge_reason",
+    "warning",
+    "error",
+    "no_error",
+    "duration_ms",
+    "duration_pass",
     "input_tokens",
     "output_tokens",
     "total_tokens",
@@ -44,6 +45,9 @@ _RUNS_FIELDNAMES = [
     "usage_available",
     "trace_id",
     "span_id",
+    "route_assertion",
+    "no_error_assertion",
+    "duration_assertion",
 ]
 
 _CASE_GROUPS_FIELDNAMES = [
@@ -59,19 +63,22 @@ _CASE_GROUPS_FIELDNAMES = [
     "source_case_name",
     "run_count",
     "failure_count",
-    "route_accuracy",
-    "no_error_rate",
-    "duration_pass_rate",
-    "answer_score_avg",
-    "avg_duration_ms",
-    "p95_duration_ms",
+    "answer_correct_rate",
+    "avg_judge_score",
+    "route_correct_rate",
     "avg_input_tokens",
     "avg_output_tokens",
     "avg_total_tokens",
+    "no_error_rate",
+    "duration_pass_rate",
+    "avg_duration_ms",
+    "p95_duration_ms",
     "sum_input_tokens",
     "sum_output_tokens",
     "sum_total_tokens",
     "token_coverage_rate",
+    "route_accuracy",
+    "answer_score_avg",
 ]
 
 _LEADERBOARD_FIELDNAMES = [
@@ -84,19 +91,22 @@ _LEADERBOARD_FIELDNAMES = [
     "repeat",
     "case_count",
     "failure_count",
-    "route_accuracy",
-    "no_error_rate",
-    "duration_pass_rate",
-    "answer_score_avg",
-    "avg_duration_ms",
-    "p95_duration_ms",
+    "answer_correct_rate",
+    "avg_judge_score",
+    "route_correct_rate",
     "avg_input_tokens",
     "avg_output_tokens",
     "avg_total_tokens",
+    "no_error_rate",
+    "duration_pass_rate",
+    "avg_duration_ms",
+    "p95_duration_ms",
     "sum_input_tokens",
     "sum_output_tokens",
     "sum_total_tokens",
     "token_coverage_rate",
+    "route_accuracy",
+    "answer_score_avg",
 ]
 
 
@@ -118,14 +128,15 @@ class NormalizedRunRecord:
     repeat_total: int | None
     selected_route: str | None
     expected_route: str | None
+    route_correct: bool | None
     decision_reason: str | None
     answer: str | None
+    answer_correct: bool | None
     warning: str | None
     error: str | None
+    no_error: bool | None
     duration_ms: float | None
-    route_assertion: bool | None
-    no_error_assertion: bool | None
-    duration_assertion: bool | None
+    duration_pass: bool | None
     judge_score: float | int | None
     judge_reason: str | None
     usage: BenchmarkUsage
@@ -149,16 +160,17 @@ class NormalizedRunRecord:
             "repeat_total": self.repeat_total,
             "selected_route": self.selected_route,
             "expected_route": self.expected_route,
+            "route_correct": self.route_correct,
             "decision_reason": self.decision_reason,
             "answer": self.answer,
-            "warning": self.warning,
-            "error": self.error,
-            "duration_ms": self.duration_ms,
-            "route_assertion": self.route_assertion,
-            "no_error_assertion": self.no_error_assertion,
-            "duration_assertion": self.duration_assertion,
+            "answer_correct": self.answer_correct,
             "judge_score": self.judge_score,
             "judge_reason": self.judge_reason,
+            "warning": self.warning,
+            "error": self.error,
+            "no_error": self.no_error,
+            "duration_ms": self.duration_ms,
+            "duration_pass": self.duration_pass,
             "input_tokens": self.usage.input_tokens,
             "output_tokens": self.usage.output_tokens,
             "total_tokens": self.usage.total_tokens,
@@ -166,6 +178,9 @@ class NormalizedRunRecord:
             "usage_available": self.usage.usage_available,
             "trace_id": self.trace_id,
             "span_id": self.span_id,
+            "route_assertion": self.route_correct,
+            "no_error_assertion": self.no_error,
+            "duration_assertion": self.duration_pass,
         }
 
 
@@ -194,39 +209,49 @@ def build_case_groups_rows(entries: list[object]) -> list[dict[str, Any]]:
                 [record.usage for record in records]
             )
             rows.append(
-                {
-                    "experiment_name": first.experiment_name,
-                    "dataset_name": first.dataset_name,
-                    "router_profile": first.router_profile,
-                    "agent_profile": first.agent_profile,
-                    "prompt_strategy": first.prompt_strategy,
-                    "graph_orchestrator": first.graph_orchestrator,
-                    "report_name": first.report_name,
-                    "case_id": first.case_id,
-                    "question": first.question,
-                    "source_case_name": source_case_name,
-                    "run_count": len(records),
-                    "failure_count": sum(
-                        1 for record in records if record.failed_before_output
-                    ),
-                    "route_accuracy": _mean_bool(
-                        record.route_assertion for record in records
-                    ),
-                    "no_error_rate": _mean_bool(
-                        record.no_error_assertion for record in records
-                    ),
-                    "duration_pass_rate": _mean_bool(
-                        record.duration_assertion for record in records
-                    ),
-                    "answer_score_avg": _mean_numeric(
-                        record.judge_score for record in records
-                    ),
-                    "avg_duration_ms": _mean_numeric(
-                        record.duration_ms for record in records
-                    ),
-                    "p95_duration_ms": _p95(record.duration_ms for record in records),
-                    **usage_aggregate.as_dict(),
-                }
+                _with_summary_aliases(
+                    {
+                        "experiment_name": first.experiment_name,
+                        "dataset_name": first.dataset_name,
+                        "router_profile": first.router_profile,
+                        "agent_profile": first.agent_profile,
+                        "prompt_strategy": first.prompt_strategy,
+                        "graph_orchestrator": first.graph_orchestrator,
+                        "report_name": first.report_name,
+                        "case_id": first.case_id,
+                        "question": first.question,
+                        "source_case_name": source_case_name,
+                        "run_count": len(records),
+                        "failure_count": sum(
+                            1 for record in records if record.failed_before_output
+                        ),
+                        "answer_correct_rate": _mean_bool(
+                            record.answer_correct for record in records
+                        ),
+                        "avg_judge_score": _mean_numeric(
+                            record.judge_score for record in records
+                        ),
+                        "route_correct_rate": _mean_bool(
+                            record.route_correct for record in records
+                        ),
+                        "avg_input_tokens": usage_aggregate.avg_input_tokens,
+                        "avg_output_tokens": usage_aggregate.avg_output_tokens,
+                        "avg_total_tokens": usage_aggregate.avg_total_tokens,
+                        "no_error_rate": _mean_bool(
+                            record.no_error for record in records
+                        ),
+                        "duration_pass_rate": _mean_bool(
+                            record.duration_pass for record in records
+                        ),
+                        "avg_duration_ms": _mean_numeric(
+                            record.duration_ms for record in records
+                        ),
+                        "p95_duration_ms": _p95(
+                            record.duration_ms for record in records
+                        ),
+                        **usage_aggregate.as_dict(),
+                    }
+                )
             )
     return rows
 
@@ -248,36 +273,42 @@ def build_leaderboard_rows(
             [record.usage for record in records]
         )
         rows.append(
-            {
-                "experiment_name": first.experiment_name,
-                "dataset_name": first.dataset_name,
-                "router_profile": first.router_profile,
-                "agent_profile": first.agent_profile,
-                "prompt_strategy": first.prompt_strategy,
-                "graph_orchestrator": first.graph_orchestrator,
-                "repeat": repeat,
-                "case_count": len({record.source_case_name for record in records}),
-                "failure_count": sum(
-                    1 for record in records if record.failed_before_output
-                ),
-                "route_accuracy": _mean_bool(
-                    record.route_assertion for record in records
-                ),
-                "no_error_rate": _mean_bool(
-                    record.no_error_assertion for record in records
-                ),
-                "duration_pass_rate": _mean_bool(
-                    record.duration_assertion for record in records
-                ),
-                "answer_score_avg": _mean_numeric(
-                    record.judge_score for record in records
-                ),
-                "avg_duration_ms": _mean_numeric(
-                    record.duration_ms for record in records
-                ),
-                "p95_duration_ms": _p95(record.duration_ms for record in records),
-                **usage_aggregate.as_dict(),
-            }
+            _with_summary_aliases(
+                {
+                    "experiment_name": first.experiment_name,
+                    "dataset_name": first.dataset_name,
+                    "router_profile": first.router_profile,
+                    "agent_profile": first.agent_profile,
+                    "prompt_strategy": first.prompt_strategy,
+                    "graph_orchestrator": first.graph_orchestrator,
+                    "repeat": repeat,
+                    "case_count": len({record.source_case_name for record in records}),
+                    "failure_count": sum(
+                        1 for record in records if record.failed_before_output
+                    ),
+                    "answer_correct_rate": _mean_bool(
+                        record.answer_correct for record in records
+                    ),
+                    "avg_judge_score": _mean_numeric(
+                        record.judge_score for record in records
+                    ),
+                    "route_correct_rate": _mean_bool(
+                        record.route_correct for record in records
+                    ),
+                    "avg_input_tokens": usage_aggregate.avg_input_tokens,
+                    "avg_output_tokens": usage_aggregate.avg_output_tokens,
+                    "avg_total_tokens": usage_aggregate.avg_total_tokens,
+                    "no_error_rate": _mean_bool(record.no_error for record in records),
+                    "duration_pass_rate": _mean_bool(
+                        record.duration_pass for record in records
+                    ),
+                    "avg_duration_ms": _mean_numeric(
+                        record.duration_ms for record in records
+                    ),
+                    "p95_duration_ms": _p95(record.duration_ms for record in records),
+                    **usage_aggregate.as_dict(),
+                }
+            )
         )
     return rows
 
@@ -303,9 +334,12 @@ def top_leaderboard_rows(
     return sorted(
         leaderboard_rows,
         key=lambda row: (
-            -_sort_number(row.get("route_accuracy")),
-            -_sort_number(row.get("answer_score_avg")),
-            _sort_number(row.get("avg_duration_ms")),
+            -_sort_desc_number(row.get("answer_correct_rate")),
+            -_sort_desc_number(row.get("route_correct_rate")),
+            _sort_asc_number(row.get("avg_total_tokens")),
+            _sort_asc_number(row.get("avg_output_tokens")),
+            _sort_asc_number(row.get("avg_input_tokens")),
+            _sort_asc_number(row.get("avg_duration_ms")),
         ),
     )[: max(limit, 0)]
 
@@ -379,12 +413,36 @@ def _build_case_record(
     )
     source_case_name = _coerce_text(getattr(case, "source_case_name", None)) or case_id
     repeat_index, repeat_total = _parse_repeat_name(getattr(case, "name", None))
-    route_eval = _find_eval_result(getattr(case, "assertions", {}), "route")
-    error_eval = _find_eval_result(getattr(case, "assertions", {}), "error")
-    duration_eval = _find_eval_result(getattr(case, "assertions", {}), "duration")
-    judge_eval = _find_eval_result(getattr(case, "scores", {}), "judge_score")
+    assertions = getattr(case, "assertions", {})
+    scores = getattr(case, "scores", {})
+    route_eval = _find_named_eval_result(
+        assertions,
+        "route_matches_expected",
+        "routematchesexpected",
+        "route_correct",
+    ) or _find_eval_result(assertions, "route")
+    error_eval = _find_named_eval_result(
+        assertions,
+        "no_execution_error",
+        "noexecutionerror",
+        "no_error",
+    ) or _find_eval_result(assertions, "error")
+    duration_eval = _find_named_eval_result(
+        assertions,
+        "max_duration",
+        "maxduration",
+        "duration_pass",
+    ) or _find_eval_result(assertions, "duration")
+    answer_eval = _find_named_eval_result(assertions, "answer_correct")
+    if answer_eval is None:
+        answer_eval = _find_eval_result(assertions, "answer_correct")
+    if answer_eval is None:
+        answer_eval = _find_eval_result(assertions, "answer")
+    judge_eval = _find_named_eval_result(scores, "judge_score")
     if judge_eval is None:
-        judge_eval = _first_eval_result(getattr(case, "scores", {}))
+        judge_eval = _find_eval_result(scores, "judge_score")
+    if judge_eval is None:
+        judge_eval = _first_eval_result(scores)
 
     return NormalizedRunRecord(
         experiment_name=experiment_name,
@@ -411,18 +469,19 @@ def _build_case_record(
         repeat_total=repeat_total,
         selected_route=task_result.selected_route if task_result is not None else None,
         expected_route=task_result.expected_route if task_result is not None else None,
+        route_correct=_eval_bool(route_eval),
         decision_reason=task_result.decision_reason
         if task_result is not None
         else None,
         answer=task_result.answer if task_result is not None else None,
+        answer_correct=_eval_bool(answer_eval),
         warning=_warning_text(task_result.warning if task_result is not None else None),
         error=task_result.error if task_result is not None else None,
+        no_error=_eval_bool(error_eval),
         duration_ms=task_result.duration_ms if task_result is not None else None,
-        route_assertion=_eval_value(route_eval),
-        no_error_assertion=_eval_value(error_eval),
-        duration_assertion=_eval_value(duration_eval),
+        duration_pass=_eval_bool(duration_eval),
         judge_score=_eval_value(judge_eval),
-        judge_reason=_eval_reason(judge_eval),
+        judge_reason=_eval_reason(judge_eval) or _eval_reason(answer_eval),
         usage=task_result.usage if task_result is not None else BenchmarkUsage(),
         trace_id=_coerce_text(getattr(case, "trace_id", None)),
         span_id=_coerce_text(getattr(case, "span_id", None)),
@@ -464,14 +523,15 @@ def _build_failure_record(
         expected_route=_coerce_text(
             _metadata_value(getattr(failure, "metadata", None), "expected_route")
         ),
+        route_correct=False,
         decision_reason=None,
         answer=None,
+        answer_correct=False,
         warning=None,
         error=_coerce_text(getattr(failure, "error_message", None)),
+        no_error=False,
         duration_ms=None,
-        route_assertion=False,
-        no_error_assertion=False,
-        duration_assertion=None,
+        duration_pass=None,
         judge_score=None,
         judge_reason=None,
         usage=BenchmarkUsage(),
@@ -510,6 +570,17 @@ def _find_eval_result(results: object, keyword: str) -> object | None:
     return None
 
 
+def _find_named_eval_result(results: object, *names: str) -> object | None:
+    if not isinstance(results, dict):
+        return None
+    normalized_names = {name.lower() for name in names}
+    for name, result in results.items():
+        normalized = str(name).replace("-", "_").replace(" ", "_").lower()
+        if normalized in normalized_names:
+            return result
+    return None
+
+
 def _first_eval_result(results: object) -> object | None:
     if not isinstance(results, dict) or not results:
         return None
@@ -521,8 +592,19 @@ def _eval_value(result: object) -> Any:
     return getattr(result, "value", None)
 
 
+def _eval_bool(result: object) -> bool | None:
+    value = _eval_value(result)
+    return value if isinstance(value, bool) else None
+
+
 def _eval_reason(result: object) -> str | None:
     return _coerce_text(getattr(result, "reason", None))
+
+
+def _with_summary_aliases(row: dict[str, Any]) -> dict[str, Any]:
+    row["route_accuracy"] = row.get("route_correct_rate")
+    row["answer_score_avg"] = row.get("avg_judge_score")
+    return row
 
 
 def _warning_text(value: object) -> str | None:
@@ -574,7 +656,7 @@ def _csv_cell(value: object) -> object:
     return value
 
 
-def _sort_number(value: object) -> float:
+def _sort_desc_number(value: object) -> float:
     if isinstance(value, (int, float)):
         return float(value)
     if value is None:
@@ -583,3 +665,14 @@ def _sort_number(value: object) -> float:
         return float(value)
     except (TypeError, ValueError):
         return float("-inf")
+
+
+def _sort_asc_number(value: object) -> float:
+    if isinstance(value, (int, float)):
+        return float(value)
+    if value is None:
+        return float("inf")
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float("inf")

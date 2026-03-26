@@ -69,3 +69,15 @@ def test_aggregate_benchmark_usage_accepts_task_results() -> None:
     assert aggregate.sum_total_tokens == 26
     assert aggregate.avg_total_tokens == 26.0
     assert aggregate.token_coverage_rate == 1.0
+
+
+def test_aggregate_benchmark_usage_returns_empty_metrics_without_usage() -> None:
+    aggregate = aggregate_benchmark_usage([BenchmarkUsage(), BenchmarkUsage()])
+
+    assert aggregate.avg_input_tokens is None
+    assert aggregate.avg_output_tokens is None
+    assert aggregate.avg_total_tokens is None
+    assert aggregate.sum_input_tokens is None
+    assert aggregate.sum_output_tokens is None
+    assert aggregate.sum_total_tokens is None
+    assert aggregate.token_coverage_rate == 0.0
