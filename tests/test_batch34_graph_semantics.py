@@ -155,6 +155,59 @@ def test_typed_by_materializes_as_ifc_edge(tmp_path: Path) -> None:
     )
 
 
+def test_build_graph_stores_symmetric_ifc_edges_once_per_pair(tmp_path: Path) -> None:
+    jsonl_path = tmp_path / "single-ifc-edge.jsonl"
+    _write_jsonl(
+        jsonl_path,
+        [
+            {
+                "GlobalId": "proj",
+                "IfcType": "IfcProject",
+                "Name": "Project",
+            },
+            {
+                "GlobalId": "bldg",
+                "IfcType": "IfcBuilding",
+                "Name": "Building",
+                "Hierarchy": {"ParentId": "proj"},
+            },
+            {
+                "GlobalId": "storey",
+                "IfcType": "IfcBuildingStorey",
+                "Name": "Level 1",
+                "Hierarchy": {"ParentId": "bldg"},
+            },
+            {
+                "GlobalId": "conn-a",
+                "IfcType": "IfcPipeSegment",
+                "Name": "Pipe A",
+                "Hierarchy": {"ParentId": "storey"},
+                "Relationships": {
+                    **empty_relation_block(),
+                    "ifc_connected_to": ["conn-b"],
+                },
+            },
+            {
+                "GlobalId": "conn-b",
+                "IfcType": "IfcPipeSegment",
+                "Name": "Pipe B",
+                "Hierarchy": {"ParentId": "storey"},
+                "Relationships": {
+                    **empty_relation_block(),
+                    "ifc_connected_to": ["conn-a"],
+                },
+            },
+        ],
+    )
+
+    graph = build_graph_from_jsonl([jsonl_path])
+
+    assert _relations_between(graph, "Element::conn-a", "Element::conn-b") == [
+        "ifc_connected_to"
+    ]
+    assert _relations_between(graph, "Element::conn-b", "Element::conn-a") == []
+
+
 def test_topology_fallback_does_not_promote_bbox_overlap_to_intersects_3d() -> None:
     graph = nx.MultiDiGraph()
     graph.add_node(
@@ -296,6 +349,7 @@ def test_shared_space_boundary_edges_are_explicit_and_ignore_openings(
     assert boundary_edges[0]["source"] == "ifc"
     assert boundary_edges[0]["derived_from"] == "space_bounded_by"
     assert boundary_edges[0]["shared_boundary_elements"] == ["Element::wall-shared"]
+    assert _relations_between(graph, "Element::space-b", "Element::space-a") == []
 
     assert "shares_boundary_with" not in _relations_between(
         graph, "Element::space-b", "Element::space-c"
@@ -304,6 +358,7 @@ def test_shared_space_boundary_edges_are_explicit_and_ignore_openings(
         _relations_between(graph, "Element::space-b", "Element::space-c")
     )
     assert heuristic_relations & {"adjacent_to", "connected_to"}
+    assert _relations_between(graph, "Element::space-c", "Element::space-b") == []
 
 
 def test_get_topology_neighbors_supports_aligned_with_and_same_storey_ordering() -> (
@@ -731,7 +786,7 @@ def test_batch3_records_pruning_metadata_for_derived_phases() -> None:
         "eligible_nodes": 2,
         "skipped_nodes": 1,
         "skipped_by_class": {"IfcPlate": 1},
-        "edges_added": 2,
+        "edges_added": 1,
         "threshold": 2.0,
     }
     assert pruning["phases"]["topology"] == {
@@ -739,7 +794,7 @@ def test_batch3_records_pruning_metadata_for_derived_phases() -> None:
         "eligible_nodes": 2,
         "skipped_nodes": 1,
         "skipped_by_class": {"IfcPlate": 1},
-        "edges_added": 2,
+        "edges_added": 1,
     }
 
 
@@ -1044,6 +1099,11 @@ def test_build_graph_honors_overlap_xy_config_and_explicit_override(
     assert overridden.graph["graph_build"]["overlap_xy"]["mode"] == "full"
     assert "overlaps_xy" in _relations_between(
         overridden,
+        "Element::floor",
+        "Element::roof",
+    )
+    assert "overlaps_xy" not in _relations_between(
+        overridden,
         "Element::roof",
         "Element::floor",
     )
@@ -1239,6 +1299,12 @@ def test_plot_interactive_graph_legend_includes_edge_counts(tmp_path: Path) -> N
         relation="adjacent_to",
         source="heuristic",
     )
+    graph.add_edge(
+        "Element::B",
+        "Element::A",
+        relation="adjacent_to",
+        source="heuristic",
+    )
 
     out_html = tmp_path / "ifc_graph.html"
     plot_interactive_graph(graph, out_html)
@@ -1248,16 +1314,221 @@ def test_plot_interactive_graph_legend_includes_edge_counts(tmp_path: Path) -> N
     legend_end = html_text.index("</aside>", legend_start)
     legend_html = html_text[legend_start:legend_end]
 
-    assert "Total directed edges shown: 4" in legend_html
-    assert re.search(
-        r"Edge: contains</span><span class='legend-item-sub'>container to child</span>"
-        r"</span><span class='legend-count' title='Edge count'>2</span>",
-        legend_html,
+    assert "Total edges shown: 6" in legend_html
+    assert "Edge: contains / contained_in" in legend_html
+    assert (
+        "containment hierarchy; source-&gt;target = contains, "
+        "target-&gt;source = contained_in; contains=2, contained_in=0"
+        in legend_html
     )
     assert re.search(
         r"Edge: aggregates</span>"
         r"<span class='legend-item-sub'>hierarchy decomposition</span>"
         r"</span><span class='legend-count' title='Edge count'>1</span>",
+        legend_html,
+    )
+    assert re.search(
+        r"Edge: adjacent_to</span>"
+        r"<span class='legend-item-sub'>spatially near within threshold</span>"
+        r"</span><span class='legend-count' title='Edge count'>1</span>",
+        legend_html,
+    )
+    assert re.search(
+        r"Edge: same_storey_as</span>"
+        r"<span class='legend-item-sub'>same-storey scope relation</span>"
+        r"</span><span class='legend-count' title='Edge count'>2</span>",
+        legend_html,
+    )
+
+
+def test_plot_interactive_graph_merges_inverse_legend_rows(tmp_path: Path) -> None:
+    graph = nx.MultiDiGraph()
+    graph.add_node(
+        "Element::roof",
+        label="Roof",
+        class_="IfcSlab",
+        geometry=(0.0, 0.0, 2.5),
+        properties={},
+    )
+    graph.add_node(
+        "Element::floor",
+        label="Floor",
+        class_="IfcSlab",
+        geometry=(0.0, 0.0, 0.5),
+        properties={},
+    )
+    graph.add_edge(
+        "Element::roof",
+        "Element::floor",
+        relation="above",
+        source="topology",
+    )
+    graph.add_edge(
+        "Element::floor",
+        "Element::roof",
+        relation="below",
+        source="topology",
+    )
+
+    out_html = tmp_path / "ifc_graph_inverse_rows.html"
+    plot_interactive_graph(graph, out_html)
+
+    html_text = out_html.read_text(encoding="utf-8")
+    legend_start = html_text.index('<aside class="legend" aria-label="Graph legend">')
+    legend_end = html_text.index("</aside>", legend_start)
+    legend_html = html_text[legend_start:legend_end]
+
+    assert "Total edges shown: 1" in legend_html
+    assert "Edge: above / below" in legend_html
+    assert (
+        "vertical ordering; source-&gt;target = above, target-&gt;source = below; "
+        "above=1, below=1" in legend_html
+    )
+    assert "Edge: above</span>" not in legend_html
+    assert "Edge: below</span>" not in legend_html
+    assert re.search(
+        (
+            r"Edge: above / below</span>.*?"
+            r"<span class='legend-count' title='Edge count'>1</span>"
+        ),
+        legend_html,
+    )
+
+
+def test_plot_interactive_graph_inverse_legend_rows_handle_missing_reverse(
+    tmp_path: Path,
+) -> None:
+    graph = nx.MultiDiGraph()
+    graph.add_node(
+        "Element::roof",
+        label="Roof",
+        class_="IfcSlab",
+        geometry=(0.0, 0.0, 2.5),
+        properties={},
+    )
+    graph.add_node(
+        "Element::floor",
+        label="Floor",
+        class_="IfcSlab",
+        geometry=(0.0, 0.0, 0.5),
+        properties={},
+    )
+    graph.add_edge(
+        "Element::roof",
+        "Element::floor",
+        relation="above",
+        source="topology",
+    )
+
+    out_html = tmp_path / "ifc_graph_inverse_rows_incomplete.html"
+    plot_interactive_graph(graph, out_html)
+
+    html_text = out_html.read_text(encoding="utf-8")
+    legend_start = html_text.index('<aside class="legend" aria-label="Graph legend">')
+    legend_end = html_text.index("</aside>", legend_start)
+    legend_html = html_text[legend_start:legend_end]
+
+    assert "Total edges shown: 1" in legend_html
+    assert (
+        "vertical ordering; source-&gt;target = above, target-&gt;source = below; "
+        "above=1, below=0" in legend_html
+    )
+    assert re.search(
+        (
+            r"Edge: above / below</span>.*?"
+            r"<span class='legend-count' title='Edge count'>1</span>"
+        ),
+        legend_html,
+    )
+
+
+def test_plot_interactive_graph_includes_derived_relations_as_edges(
+    tmp_path: Path,
+) -> None:
+    graph = nx.MultiDiGraph()
+    graph.add_node(
+        "Storey::L1",
+        label="Level 1",
+        class_="IfcBuildingStorey",
+        geometry=(0.0, 0.0, 0.0),
+        properties={},
+    )
+    graph.add_node(
+        "Space::Room1",
+        label="Room 1",
+        class_="IfcSpace",
+        geometry=(2.0, 2.0, 0.0),
+        footprint_bbox_2d=(0.0, 0.0, 6.0, 6.0),
+        properties={},
+    )
+    graph.add_node(
+        "Element::wall-a",
+        label="Wall A",
+        class_="IfcWall",
+        geometry=(1.0, 1.0, 1.5),
+        bbox=((0.5, 0.5, 0.0), (1.5, 1.5, 3.0)),
+        obb=_make_obb(
+            center=(1.0, 1.0, 1.5),
+            axis_u=(0.0, 1.0),
+            axis_v=(1.0, 0.0),
+            extent_u=2.0,
+            extent_v=0.1,
+            extent_z=1.5,
+        ),
+        properties={},
+    )
+    graph.add_node(
+        "Element::wall-b",
+        label="Wall B",
+        class_="IfcWall",
+        geometry=(1.0, 3.0, 1.5),
+        bbox=((0.5, 2.5, 0.0), (1.5, 3.5, 3.0)),
+        obb=_make_obb(
+            center=(1.0, 3.0, 1.5),
+            axis_u=(0.0, 1.0),
+            axis_v=(1.0, 0.0),
+            extent_u=2.0,
+            extent_v=0.1,
+            extent_z=1.5,
+        ),
+        properties={},
+    )
+
+    _add_contains_pair(graph, "Storey::L1", "Space::Room1")
+    _add_contains_pair(graph, "Space::Room1", "Element::wall-a")
+    _add_contains_pair(graph, "Space::Room1", "Element::wall-b")
+
+    out_html = tmp_path / "ifc_graph_with_derived_edges.html"
+    plot_interactive_graph(graph, out_html)
+
+    html_text = out_html.read_text(encoding="utf-8")
+    legend_start = html_text.index('<aside class="legend" aria-label="Graph legend">')
+    legend_end = html_text.index("</aside>", legend_start)
+    legend_html = html_text[legend_start:legend_end]
+
+    assert "Helper Overlays" not in html_text
+    assert "toggle-helper-overlays" not in html_text
+    assert "Total edges shown: 8" in legend_html
+    assert "Edge: aligned_with" in legend_html
+    assert "orientation-aligned in plan" in legend_html
+    assert "Edge: inside_footprint_of" in legend_html
+    assert "footprint containment in plan" in legend_html
+    assert "Edge: same_storey_as" in legend_html
+    assert "same-storey scope relation" in legend_html
+    assert "Overlay: aligned_with" not in html_text
+    assert re.search(
+        r"Edge: aligned_with</span>.*?"
+        r"<span class='legend-count' title='Edge count'>1</span>",
+        legend_html,
+    )
+    assert re.search(
+        r"Edge: inside_footprint_of</span>.*?"
+        r"<span class='legend-count' title='Edge count'>2</span>",
+        legend_html,
+    )
+    assert re.search(
+        r"Edge: same_storey_as</span>.*?"
+        r"<span class='legend-count' title='Edge count'>2</span>",
         legend_html,
     )
 
@@ -1330,7 +1601,12 @@ def test_plot_interactive_graph_overlap_modes_includes_toggle_controls(
     assert 'data-overlap-mode="full"' in html_text
     assert 'data-overlap-mode="none"' in html_text
     assert "Active overlap mode: full" in html_text
-    assert '"full": {"total_edges": "4"' in html_text
-    assert '"none": {"total_edges": "2"' in html_text
+    assert '"full": {"total_edges": "2"' in html_text
+    assert '"none": {"total_edges": "1"' in html_text
     assert "const legendPayloads =" in html_text
     assert "overlaps_xy" in html_text
+    assert "Edge: above / below" in html_text
+    assert (
+        "vertical ordering; source-&gt;target = above, target-&gt;source = below; "
+        "above=1, below=1" in html_text
+    )

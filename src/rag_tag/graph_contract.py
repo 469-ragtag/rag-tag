@@ -93,6 +93,19 @@ EXPLICIT_IFC_RELATIONS: tuple[str, ...] = (
     "classified_as",
 )
 
+SYMMETRIC_RELATIONS: tuple[str, ...] = (
+    "adjacent_to",
+    "connected_to",
+    "aligned_with",
+    "overlaps_xy",
+    "intersects_bbox",
+    "intersects_3d",
+    "touches_surface",
+    "shares_boundary_with",
+    "ifc_connected_to",
+    "path_connected_to",
+)
+
 RELATION_TAXONOMY: dict[str, tuple[str, ...]] = {
     "hierarchy": HIERARCHY_RELATIONS,
     "spatial": SPATIAL_RELATIONS,
@@ -103,6 +116,7 @@ RELATION_TAXONOMY: dict[str, tuple[str, ...]] = {
 CANONICAL_RELATION_SET = frozenset(
     relation for relations in RELATION_TAXONOMY.values() for relation in relations
 )
+SYMMETRIC_RELATION_SET = frozenset(SYMMETRIC_RELATIONS)
 
 
 # ---------------------------------------------------------------------------
@@ -483,6 +497,24 @@ def normalize_relation_name(relation: Any) -> str | None:
         relation = str(relation)
     cleaned = relation.strip().lower()
     return cleaned or None
+
+
+def is_symmetric_relation(relation: Any) -> bool:
+    """Return True when a relation should be traversable from either endpoint."""
+    normalized = normalize_relation_name(relation)
+    return normalized in SYMMETRIC_RELATION_SET
+
+
+def canonicalize_undirected_edge_endpoints(
+    source_id: Any,
+    target_id: Any,
+) -> tuple[str, str]:
+    """Return a deterministic endpoint ordering for one undirected edge record."""
+    source_text = str(source_id)
+    target_text = str(target_id)
+    if source_text <= target_text:
+        return source_text, target_text
+    return target_text, source_text
 
 
 def relation_bucket(relation: str | None) -> str | None:

@@ -47,6 +47,59 @@ def test_traverse_is_bounded_and_preserves_discovery_order() -> None:
     assert data["truncation_reason"] is not None
 
 
+def test_traverse_reads_incoming_symmetric_edges_once() -> None:
+    graph = nx.MultiDiGraph()
+    graph.add_node("Element::A", **_make_node("Element::A", "Root", "IfcWall", "A"))
+    graph.add_node(
+        "Element::B", **_make_node("Element::B", "Peer", "IfcPipeSegment", "B")
+    )
+    graph.add_edge(
+        "Element::B",
+        "Element::A",
+        relation="ifc_connected_to",
+        source="ifc",
+    )
+
+    result = query_ifc_graph(
+        graph,
+        "traverse",
+        {"start": "Element::A", "relation": "ifc_connected_to", "depth": 1},
+    )
+
+    assert result["status"] == "ok"
+    data = result["data"]
+    assert [item["to"] for item in data["results"]] == ["Element::B"]
+    assert [item["relation"] for item in data["results"]] == ["ifc_connected_to"]
+    assert data["total_found"] == 1
+
+
+def test_traverse_keeps_directional_relations_directional() -> None:
+    graph = nx.MultiDiGraph()
+    graph.add_node("Element::A", **_make_node("Element::A", "Root", "IfcWall", "A"))
+    graph.add_node(
+        "System::Supply",
+        label="Supply",
+        class_="IfcSystem",
+        node_kind="context",
+    )
+    graph.add_edge(
+        "Element::A",
+        "System::Supply",
+        relation="belongs_to_system",
+        source="ifc",
+    )
+
+    result = query_ifc_graph(
+        graph,
+        "traverse",
+        {"start": "System::Supply", "relation": "belongs_to_system", "depth": 1},
+    )
+
+    assert result["status"] == "ok"
+    assert result["data"]["results"] == []
+    assert result["data"]["total_found"] == 0
+
+
 def test_scan_actions_are_sorted_and_bounded() -> None:
     graph = nx.MultiDiGraph()
     graph.add_node("Element::B", **_make_node("Element::B", "Beta", "IfcWall", "B"))
@@ -116,6 +169,14 @@ def test_adjacency_and_spatial_results_sort_by_distance() -> None:
     assert adjacent["data"]["total_found"] == 3
     assert adjacent["data"]["returned_count"] == 2
     assert adjacent["data"]["truncated"] is True
+
+    reverse_adjacent = query_ifc_graph(
+        graph,
+        "get_adjacent_elements",
+        {"element_id": "Element::n1", "max_results": 5},
+    )
+    assert reverse_adjacent["status"] == "ok"
+    assert [item["label"] for item in reverse_adjacent["data"]["adjacent"]] == ["Root"]
 
     nearby = query_ifc_graph(
         graph,

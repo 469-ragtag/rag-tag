@@ -34,6 +34,7 @@ from rag_tag.graph_contract import (
     build_evidence_item,
     collect_evidence,
     is_allowed_action,
+    is_symmetric_relation,
     make_error_envelope,
     make_ok_envelope,
     merge_evidence_items,
@@ -1491,6 +1492,60 @@ class NetworkXGraphBackend:
                         "to": node_id,
                     }
 
+        def iter_traverse_neighbors(
+            node_id: str,
+            *,
+            allowed_relations: set[str] | None = None,
+        ) -> Iterable[tuple[str, dict[str, Any], str]]:
+            seen: set[tuple[str, str, str, str]] = set()
+
+            def dedupe_key(
+                nbr: str, edge: dict[str, Any], relation: str
+            ) -> tuple[str, str, str, str]:
+                return (
+                    nbr,
+                    relation,
+                    edge_source(edge, relation) or "",
+                    str(
+                        edge.get("distance")
+                        or edge.get("vertical_gap")
+                        or edge.get("intersection_volume")
+                        or ""
+                    ),
+                )
+
+            for nbr in G.successors(node_id):
+                for edge in iter_edge_dicts(node_id, nbr):
+                    relation = edge_relation(edge)
+                    if relation is None:
+                        continue
+                    if (
+                        allowed_relations is not None
+                        and relation not in allowed_relations
+                    ):
+                        continue
+                    key = dedupe_key(nbr, edge, relation)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    yield nbr, edge, relation
+
+            for nbr in G.predecessors(node_id):
+                for edge in iter_edge_dicts(nbr, node_id):
+                    relation = edge_relation(edge)
+                    if relation is None or not is_symmetric_relation(relation):
+                        continue
+                    if (
+                        allowed_relations is not None
+                        and relation not in allowed_relations
+                    ):
+                        continue
+                    key = dedupe_key(nbr, edge, relation)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    yield nbr, edge, relation
+
         def build_relation_graph(
             allowed_relations: set[str],
         ) -> nx.Graph:
@@ -1546,7 +1601,9 @@ class NetworkXGraphBackend:
                     {
                         "relation": relation,
                         "source": edge_source(edge, relation),
-                        "direction": "reverse",
+                        "direction": (
+                            "forward" if is_symmetric_relation(relation) else "reverse"
+                        ),
                     }
                 )
 
@@ -2281,20 +2338,17 @@ class NetworkXGraphBackend:
             for _ in range(depth):
                 next_frontier = set()
                 for node in frontier:
-                    for nbr in G.successors(node):
-                        matched_edges = []
-                        for edge in iter_edge_dicts(node, nbr):
-                            current_relation = edge_relation(edge)
-                            if current_relation is None:
-                                continue
-                            if (
-                                relation_filter
-                                and current_relation not in relation_filter
-                            ):
-                                continue
-                            matched_edges.append((edge, current_relation))
-                        if not matched_edges:
-                            continue
+                    matched_by_neighbor: dict[
+                        str, list[tuple[dict[str, Any], str]]
+                    ] = {}
+                    for nbr, edge, current_relation in iter_traverse_neighbors(
+                        node,
+                        allowed_relations=relation_filter,
+                    ):
+                        matched_by_neighbor.setdefault(nbr, []).append(
+                            (edge, current_relation)
+                        )
+                    for nbr, matched_edges in matched_by_neighbor.items():
                         if nbr in visited:
                             continue
                         visited.add(nbr)

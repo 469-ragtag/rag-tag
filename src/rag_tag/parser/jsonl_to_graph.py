@@ -43,6 +43,10 @@ from rag_tag.config import (
     DEFAULT_OVERLAP_XY_MODE,
     load_project_config,
 )
+from rag_tag.graph_contract import (
+    canonicalize_undirected_edge_endpoints,
+    is_symmetric_relation,
+)
 from rag_tag.paths import find_project_root
 
 LOG = logging.getLogger(__name__)
@@ -776,6 +780,73 @@ def _context_node_id(
     return f"{kind}::{label}"
 
 
+def _iter_relation_edge_attrs_between(
+    G: nx.DiGraph | nx.MultiDiGraph,
+    u: str,
+    v: str,
+):
+    edge_data = G.get_edge_data(u, v)
+    if edge_data is None:
+        return
+    if G.is_multigraph():
+        for attrs in edge_data.values():
+            if isinstance(attrs, dict):
+                yield attrs
+        return
+    if isinstance(edge_data, dict):
+        yield edge_data
+
+
+def _has_relation(
+    G: nx.DiGraph | nx.MultiDiGraph,
+    u: str,
+    v: str,
+    relation: str,
+    *,
+    source: str | None = None,
+) -> bool:
+    normalized_relation = str(relation).strip().lower()
+    normalized_source = str(source).strip().lower() if source is not None else None
+    for attrs in _iter_relation_edge_attrs_between(G, u, v) or ():
+        if str(attrs.get("relation", "")).strip().lower() != normalized_relation:
+            continue
+        if normalized_source is None:
+            return True
+        if str(attrs.get("source", "")).strip().lower() == normalized_source:
+            return True
+    return False
+
+
+def _add_edge_once(
+    G: nx.DiGraph | nx.MultiDiGraph,
+    u: str,
+    v: str,
+    **edge_attrs: object,
+) -> bool:
+    relation_value = edge_attrs.get("relation")
+    if relation_value is None:
+        return False
+    relation = str(relation_value).strip().lower()
+    if not relation:
+        return False
+    source_value = edge_attrs.get("source")
+    source = str(source_value).strip().lower() if source_value is not None else None
+    if _has_relation(G, u, v, relation, source=source):
+        return False
+    G.add_edge(u, v, **edge_attrs)
+    return True
+
+
+def _add_symmetric_edge_once(
+    G: nx.DiGraph | nx.MultiDiGraph,
+    u: str,
+    v: str,
+    **edge_attrs: object,
+) -> bool:
+    canonical_u, canonical_v = canonicalize_undirected_edge_endpoints(u, v)
+    return _add_edge_once(G, canonical_u, canonical_v, **edge_attrs)
+
+
 def _add_explicit_relationships(
     G: nx.DiGraph | nx.MultiDiGraph,
     node_id: str,
@@ -793,7 +864,7 @@ def _add_explicit_relationships(
     Relationship semantics
     ----------------------
     hosts / hosted_by  â€” element-to-element directed; target resolved via GlobalId.
-    ifc_connected_to   â€” undirected IFC connectivity; both directions added.
+    ifc_connected_to   â€” undirected IFC connectivity; stored once per pair.
     belongs_to_system  â€” element â†’ System context node (created on demand).
     in_zone            â€” element â†’ Zone context node (created on demand).
     classified_as      â€” element â†’ Classification context node (created on demand).
@@ -804,26 +875,12 @@ def _add_explicit_relationships(
         return
     dataset_label = dataset_key if isinstance(dataset_key, str) else ""
 
-    def _iter_edge_attrs_between(u: str, v: str):
-        edge_data = G.get_edge_data(u, v)
-        if edge_data is None:
-            return
-        if G.is_multigraph():
-            for attrs in edge_data.values():
-                if isinstance(attrs, dict):
-                    yield attrs
-            return
-        if isinstance(edge_data, dict):
-            yield edge_data
-
     def _add_ifc_edge_once(u: str, v: str, relation: str) -> None:
-        for attrs in _iter_edge_attrs_between(u, v) or ():
-            if (
-                str(attrs.get("relation", "")).strip().lower() == relation
-                and str(attrs.get("source", "")).strip().lower() == "ifc"
-            ):
-                return
-        G.add_edge(u, v, relation=relation, source="ifc")
+        edge_attrs = {"relation": relation, "source": "ifc"}
+        if is_symmetric_relation(relation):
+            _add_symmetric_edge_once(G, u, v, **edge_attrs)
+            return
+        _add_edge_once(G, u, v, **edge_attrs)
 
     # --- element-to-element: hosts ---
     for target_gid in rels.get("hosts") or []:
@@ -842,7 +899,6 @@ def _add_explicit_relationships(
         target = node_id_by_gid.get(target_gid)
         if target and target in G and target != node_id:
             _add_ifc_edge_once(node_id, target, "ifc_connected_to")
-            _add_ifc_edge_once(target, node_id, "ifc_connected_to")
 
     # --- element-to-type: typed_by ---
     for target_gid in rels.get("typed_by") or []:
@@ -855,7 +911,6 @@ def _add_explicit_relationships(
         target = node_id_by_gid.get(target_gid)
         if target and target in G and target != node_id:
             _add_ifc_edge_once(node_id, target, "path_connected_to")
-            _add_ifc_edge_once(target, node_id, "path_connected_to")
 
     # --- space boundary relations ---
     for target_gid in rels.get("space_bounded_by") or []:
@@ -939,24 +994,6 @@ def _add_shared_space_boundary_edges(
 ) -> int:
     """Connect spaces that share one or more explicit IFC boundary elements."""
 
-    def _iter_edge_attrs_between(u: str, v: str):
-        edge_data = G.get_edge_data(u, v)
-        if edge_data is None:
-            return
-        if G.is_multigraph():
-            for attrs in edge_data.values():
-                if isinstance(attrs, dict):
-                    yield attrs
-            return
-        if isinstance(edge_data, dict):
-            yield edge_data
-
-    def _has_relation(u: str, v: str, relation: str) -> bool:
-        for attrs in _iter_edge_attrs_between(u, v) or ():
-            if str(attrs.get("relation", "")).strip().lower() == relation:
-                return True
-        return False
-
     boundary_to_spaces: dict[str, set[str]] = defaultdict(set)
     for space_id, space_data in G.nodes(data=True):
         if _normalize_ifc_class_name(space_data.get("class_")) != "IfcSpace":
@@ -971,7 +1008,8 @@ def _add_shared_space_boundary_edges(
             has_space_boundary = any(
                 str(attrs.get("relation", "")).strip().lower() == "space_bounded_by"
                 and str(attrs.get("source", "")).strip().lower() == "ifc"
-                for attrs in _iter_edge_attrs_between(space_id, boundary_id) or ()
+                for attrs in _iter_relation_edge_attrs_between(G, space_id, boundary_id)
+                or ()
             )
             if has_space_boundary:
                 boundary_to_spaces[boundary_id].add(space_id)
@@ -993,11 +1031,7 @@ def _add_shared_space_boundary_edges(
             "derived_from": "space_bounded_by",
             "shared_boundary_elements": sorted(shared_boundary_elements),
         }
-        if not _has_relation(source_id, target_id, "shares_boundary_with"):
-            G.add_edge(source_id, target_id, **edge_attrs)
-            edges_added += 1
-        if not _has_relation(target_id, source_id, "shares_boundary_with"):
-            G.add_edge(target_id, source_id, **edge_attrs)
+        if _add_symmetric_edge_once(G, source_id, target_id, **edge_attrs):
             edges_added += 1
     return edges_added
 
@@ -1645,15 +1679,10 @@ def add_spatial_adjacency(
             else:
                 edge_attrs["verified"] = False
 
-            G.add_edge(
+            _add_symmetric_edge_once(
+                G,
                 node_a,
                 node_b,
-                relation=relation,
-                **edge_attrs,
-            )
-            G.add_edge(
-                node_b,
-                node_a,
                 relation=relation,
                 **edge_attrs,
             )
@@ -1680,7 +1709,12 @@ def add_topology_facts(
 ) -> None:
     def _add_topology_edge(u: str, v: str, **attrs: object) -> None:
         """Add topology edge with explicit topology source semantics."""
-        G.add_edge(u, v, source="topology", **attrs)
+        relation = attrs.get("relation")
+        edge_attrs = {"source": "topology", **attrs}
+        if is_symmetric_relation(relation):
+            _add_symmetric_edge_once(G, u, v, **edge_attrs)
+            return
+        _add_edge_once(G, u, v, **edge_attrs)
 
     element_nodes: list[str] = []
     element_bboxes: list[tuple] = []
@@ -2283,6 +2317,180 @@ def _viz_collect_overlay_edges(
     return {relation: edges for relation, edges in overlays.items() if edges}
 
 
+def _viz_relation_count_key(
+    source_id: str,
+    target_id: str,
+    relation: str,
+) -> tuple[str, str]:
+    if is_symmetric_relation(relation):
+        return canonicalize_undirected_edge_endpoints(source_id, target_id)
+    return str(source_id), str(target_id)
+
+
+def _viz_relation_counts(
+    edge_items: list[tuple[str, str, dict[str, object]]],
+) -> Counter[str]:
+    counts: Counter[str] = Counter()
+    seen_by_relation: dict[str, set[tuple[str, str]]] = defaultdict(set)
+    for source_id, target_id, attrs in edge_items:
+        relation = str(attrs.get("relation", "related_to"))
+        count_key = _viz_relation_count_key(source_id, target_id, relation)
+        if count_key in seen_by_relation[relation]:
+            continue
+        seen_by_relation[relation].add(count_key)
+        counts[relation] += 1
+    return counts
+
+
+@dataclass(frozen=True)
+class _VizInverseLegendPair:
+    forward_relation: str
+    reverse_relation: str
+    label: str
+    summary: str
+
+
+@dataclass(frozen=True)
+class _VizLegendEntry:
+    label: str
+    subtitle: str
+    count: int
+    swatch: str
+
+
+_VIZ_INVERSE_LEGEND_PAIRS: tuple[_VizInverseLegendPair, ...] = (
+    _VizInverseLegendPair(
+        forward_relation="above",
+        reverse_relation="below",
+        label="above / below",
+        summary="vertical ordering",
+    ),
+    _VizInverseLegendPair(
+        forward_relation="contains",
+        reverse_relation="contained_in",
+        label="contains / contained_in",
+        summary="containment hierarchy",
+    ),
+    _VizInverseLegendPair(
+        forward_relation="hosts",
+        reverse_relation="hosted_by",
+        label="hosts / hosted_by",
+        summary="explicit IFC host relationship",
+    ),
+    _VizInverseLegendPair(
+        forward_relation="space_bounded_by",
+        reverse_relation="bounds_space",
+        label="space_bounded_by / bounds_space",
+        summary="IFC space boundary",
+    ),
+)
+
+
+def _viz_inverse_pair_count(
+    edge_items: list[tuple[str, str, dict[str, object]]],
+    forward_relation: str,
+    reverse_relation: str,
+) -> int:
+    pair_keys: set[tuple[str, str]] = set()
+    relations = {forward_relation, reverse_relation}
+    for source_id, target_id, attrs in edge_items:
+        relation = str(attrs.get("relation", "related_to"))
+        if relation not in relations:
+            continue
+        pair_keys.add(canonicalize_undirected_edge_endpoints(source_id, target_id))
+    return len(pair_keys)
+
+
+def _viz_build_legend_entries(
+    edge_items: list[tuple[str, str, dict[str, object]]],
+    *,
+    edge_color_map: dict[str, str],
+    edge_relation_explanations: dict[str, str],
+) -> tuple[list[_VizLegendEntry], int]:
+    relation_counts = _viz_relation_counts(edge_items)
+    entries: list[_VizLegendEntry] = []
+    consumed_relations: set[str] = set()
+
+    for spec in _VIZ_INVERSE_LEGEND_PAIRS:
+        forward_count = relation_counts.get(spec.forward_relation, 0)
+        reverse_count = relation_counts.get(spec.reverse_relation, 0)
+        if forward_count == 0 and reverse_count == 0:
+            continue
+        consumed_relations.update({spec.forward_relation, spec.reverse_relation})
+        pair_count = _viz_inverse_pair_count(
+            edge_items,
+            spec.forward_relation,
+            spec.reverse_relation,
+        )
+        forward_color = edge_color_map.get(spec.forward_relation, "#4b5563")
+        reverse_color = edge_color_map.get(spec.reverse_relation, forward_color)
+        swatch = (
+            forward_color
+            if forward_color == reverse_color
+            else (
+                "linear-gradient(90deg, "
+                f"{forward_color} 0 50%, "
+                f"{reverse_color} 50% 100%)"
+            )
+        )
+        subtitle = (
+            f"{spec.summary}; "
+            f"source->target = {spec.forward_relation}, "
+            f"target->source = {spec.reverse_relation}; "
+            f"{spec.forward_relation}={forward_count}, "
+            f"{spec.reverse_relation}={reverse_count}"
+        )
+        entries.append(
+            _VizLegendEntry(
+                label=spec.label,
+                subtitle=subtitle,
+                count=pair_count,
+                swatch=swatch,
+            )
+        )
+
+    for relation, count in relation_counts.items():
+        if relation in consumed_relations:
+            continue
+        entries.append(
+            _VizLegendEntry(
+                label=relation,
+                subtitle=edge_relation_explanations.get(relation, "graph relation"),
+                count=count,
+                swatch=edge_color_map.get(relation, "#4b5563"),
+            )
+        )
+
+    entries.sort(key=lambda item: (-item.count, item.label))
+    return entries, sum(item.count for item in entries)
+
+
+def _viz_render_legend_entries(
+    entries: list[_VizLegendEntry],
+    *,
+    prefix: str,
+    count_title: str,
+) -> str:
+    escaped_prefix = html.escape(prefix)
+    escaped_count_title = html.escape(count_title)
+    rendered: list[str] = []
+    for entry in entries:
+        rendered.append(
+            "<div class='legend-item'>"
+            f"<span class='swatch line' style='--swatch:{entry.swatch}'></span>"
+            "<span class='legend-item-text'>"
+            "<span class='legend-item-main'>"
+            f"{escaped_prefix}: {html.escape(entry.label)}"
+            "</span>"
+            f"<span class='legend-item-sub'>{html.escape(entry.subtitle)}</span>"
+            "</span>"
+            "<span class='legend-count' "
+            f"title='{escaped_count_title}'>{entry.count}</span>"
+            "</div>"
+        )
+    return "".join(rendered)
+
+
 def plot_interactive_graph(G: nx.DiGraph | nx.MultiDiGraph, out_html: Path) -> None:
     # Build positions from node geometry where available.
     pos: dict[str, tuple[float, float, float] | None] = {}
@@ -2347,13 +2555,13 @@ def plot_interactive_graph(G: nx.DiGraph | nx.MultiDiGraph, out_html: Path) -> N
         "adjacent_to": "spatially near within threshold",
         "intersects_bbox": "3D bbox overlap",
         "aligned_with": "orientation-aligned in plan",
-        "inside_footprint_of": "visualization-only footprint containment overlay",
+        "inside_footprint_of": "footprint containment in plan",
         "overlaps_xy": "2D footprint overlap",
         "intersects_3d": "mesh-informed 3D intersection",
         "touches_surface": "mesh-informed surface contact",
         "above": "vertical ordering above",
         "below": "vertical ordering below",
-        "same_storey_as": "visualization-only same-storey scope overlay",
+        "same_storey_as": "same-storey scope relation",
         "shares_boundary_with": "spaces share explicit boundary elements",
         "hosts": "explicit IFC host relationship",
         "hosted_by": "explicit IFC hosted-by relationship",
@@ -2476,15 +2684,19 @@ def plot_interactive_graph(G: nx.DiGraph | nx.MultiDiGraph, out_html: Path) -> N
         group["label_z"].append(mz)
         group["hover"].append(_edge_hover_message(rel, attrs))
 
-    edge_groups: dict[str, dict[str, list]] = {}
-    for u, v, d in G.edges(data=True):
-        _append_edge_group(edge_groups, str(u), str(v), d)
+    graph_edge_items = [(str(u), str(v), d) for u, v, d in G.edges(data=True)]
 
-    overlay_edge_groups: dict[str, dict[str, list]] = {}
     overlay_edges = _viz_collect_overlay_edges(G)
-    for overlay_items in overlay_edges.values():
-        for source_id, target_id, attrs in overlay_items:
-            _append_edge_group(overlay_edge_groups, source_id, target_id, attrs)
+    derived_edge_items = [
+        (source_id, target_id, attrs)
+        for overlay_items in overlay_edges.values()
+        for source_id, target_id, attrs in overlay_items
+    ]
+    display_edge_items = graph_edge_items + derived_edge_items
+
+    edge_groups: dict[str, dict[str, list]] = {}
+    for source_id, target_id, attrs in display_edge_items:
+        _append_edge_group(edge_groups, source_id, target_id, attrs)
 
     bbox_x: list[float | None] = []
     bbox_y: list[float | None] = []
@@ -2647,60 +2859,6 @@ def plot_interactive_graph(G: nx.DiGraph | nx.MultiDiGraph, out_html: Path) -> N
         )
         trace_meta.append(("edge_label", rel))
 
-    for rel in sorted(overlay_edge_groups):
-        edge = overlay_edge_groups[rel]
-        edge_color = edge_color_map.get(rel, "#4b5563")
-        rel_expl = edge_relation_explanations.get(rel, "graph relation")
-        traces.append(
-            go.Scatter3d(
-                x=edge["x"],
-                y=edge["y"],
-                z=edge["z"],
-                mode="lines",
-                line={"width": 4, "color": edge_color},
-                opacity=0.72,
-                hoverinfo="none",
-                name=f"Overlay: {rel} - {rel_expl}",
-                legendgroup=f"overlay::{rel}",
-                showlegend=True,
-                visible=False,
-            )
-        )
-        trace_meta.append(("overlay_edge", rel))
-
-        traces.append(
-            go.Scatter3d(
-                x=edge["mid_x"],
-                y=edge["mid_y"],
-                z=edge["mid_z"],
-                mode="markers",
-                marker={"size": 2, "color": edge_color, "opacity": 0.0},
-                hoverinfo="text",
-                hovertext=edge["hover"],
-                showlegend=False,
-                legendgroup=f"overlay::{rel}",
-                visible=False,
-            )
-        )
-        trace_meta.append(("overlay_hover", rel))
-
-        traces.append(
-            go.Scatter3d(
-                x=edge["label_x"],
-                y=edge["label_y"],
-                z=edge["label_z"],
-                mode="text",
-                text=[rel] * len(edge["label_x"]),
-                textposition="middle center",
-                textfont={"size": 10, "color": edge_color},
-                hoverinfo="none",
-                showlegend=False,
-                legendgroup=f"overlay::{rel}",
-                visible=False,
-            )
-        )
-        trace_meta.append(("overlay_label", rel))
-
     for group_key in sorted(node_groups):
         node = node_groups[group_key]
         node_color = node_group_colors.get(group_key, "#22c55e")
@@ -2726,7 +2884,6 @@ def plot_interactive_graph(G: nx.DiGraph | nx.MultiDiGraph, out_html: Path) -> N
         show_edge_annotations: bool = False,
         show_bboxes: bool = False,
         show_meshes: bool = False,
-        show_helper_overlays: bool = False,
     ) -> list[bool]:
         edge_categories = G.graph.get("edge_categories", {})
         hierarchy_rels = set(edge_categories.get("hierarchy", []))
@@ -2742,50 +2899,6 @@ def plot_interactive_graph(G: nx.DiGraph | nx.MultiDiGraph, out_html: Path) -> N
                 continue
             if kind == "mesh":
                 visible.append(show_meshes)
-                continue
-            if kind.startswith("overlay_"):
-                if not show_helper_overlays:
-                    visible.append(False)
-                    continue
-                if mode == "all":
-                    visible.append(kind != "overlay_label" or show_edge_annotations)
-                elif mode == "nodes":
-                    visible.append(False)
-                elif mode == "edges":
-                    visible.append(
-                        kind in {"overlay_edge", "overlay_hover"}
-                        or (kind == "overlay_label" and show_edge_annotations)
-                    )
-                elif mode == "hierarchy":
-                    visible.append(False)
-                elif mode == "spatial":
-                    visible.append(
-                        (
-                            kind in {"overlay_edge", "overlay_hover"}
-                            and name in spatial_rels
-                        )
-                        or (
-                            kind == "overlay_label"
-                            and show_edge_annotations
-                            and name in spatial_rels
-                        )
-                    )
-                elif mode == "topology":
-                    visible.append(
-                        (
-                            kind in {"overlay_edge", "overlay_hover"}
-                            and name in topology_rels
-                        )
-                        or (
-                            kind == "overlay_label"
-                            and show_edge_annotations
-                            and name in topology_rels
-                        )
-                    )
-                elif mode == "explicit":
-                    visible.append(False)
-                else:
-                    visible.append(kind != "overlay_label" or show_edge_annotations)
                 continue
             if mode == "all":
                 visible.append(kind != "edge_label" or show_edge_annotations)
@@ -2845,24 +2958,20 @@ def plot_interactive_graph(G: nx.DiGraph | nx.MultiDiGraph, out_html: Path) -> N
         for show_edge_annotations in (False, True):
             for show_bboxes in (False, True):
                 for show_meshes in (False, True):
-                    for show_helper_overlays in (False, True):
-                        parts = []
-                        if show_edge_annotations:
-                            parts.append("annotations")
-                        if show_bboxes:
-                            parts.append("bboxes")
-                        if show_meshes:
-                            parts.append("meshes")
-                        if show_helper_overlays:
-                            parts.append("overlays")
-                        key = f"with_{'_and_'.join(parts)}" if parts else "base"
-                        variants[key] = _mask(
-                            mode,
-                            show_edge_annotations,
-                            show_bboxes,
-                            show_meshes,
-                            show_helper_overlays,
-                        )
+                    parts = []
+                    if show_edge_annotations:
+                        parts.append("annotations")
+                    if show_bboxes:
+                        parts.append("bboxes")
+                    if show_meshes:
+                        parts.append("meshes")
+                    key = f"with_{'_and_'.join(parts)}" if parts else "base"
+                    variants[key] = _mask(
+                        mode,
+                        show_edge_annotations,
+                        show_bboxes,
+                        show_meshes,
+                    )
         return variants
 
     filter_masks = {
@@ -2893,50 +3002,17 @@ def plot_interactive_graph(G: nx.DiGraph | nx.MultiDiGraph, out_html: Path) -> N
         plot_bgcolor="#f7f9fc",
     )
 
-    edge_relation_counts = {
-        rel: len(edge["mid_x"]) for rel, edge in edge_groups.items()
-    }
-    total_edges = sum(edge_relation_counts.values())
-    overlay_relation_counts = {
-        rel: len(edge["mid_x"]) for rel, edge in overlay_edge_groups.items()
-    }
-    total_overlay_edges = sum(overlay_relation_counts.values())
+    edge_entries, total_edges = _viz_build_legend_entries(
+        display_edge_items,
+        edge_color_map=edge_color_map,
+        edge_relation_explanations=edge_relation_explanations,
+    )
 
-    edge_items = []
-    for rel in sorted(
-        edge_groups, key=lambda name: (-edge_relation_counts[name], name)
-    ):
-        rel_expl = edge_relation_explanations.get(rel, "graph relation")
-        edge_color = edge_color_map.get(rel, "#4b5563")
-        count = edge_relation_counts[rel]
-        edge_items.append(
-            "<div class='legend-item'>"
-            f"<span class='swatch line' style='--swatch:{edge_color}'></span>"
-            "<span class='legend-item-text'>"
-            f"<span class='legend-item-main'>Edge: {html.escape(rel)}</span>"
-            f"<span class='legend-item-sub'>{html.escape(rel_expl)}</span>"
-            "</span>"
-            f"<span class='legend-count' title='Edge count'>{count}</span>"
-            "</div>"
-        )
-
-    overlay_items = []
-    for rel in sorted(
-        overlay_edge_groups, key=lambda name: (-overlay_relation_counts[name], name)
-    ):
-        rel_expl = edge_relation_explanations.get(rel, "graph relation")
-        edge_color = edge_color_map.get(rel, "#4b5563")
-        count = overlay_relation_counts[rel]
-        overlay_items.append(
-            "<div class='legend-item'>"
-            f"<span class='swatch line' style='--swatch:{edge_color}'></span>"
-            "<span class='legend-item-text'>"
-            f"<span class='legend-item-main'>Overlay: {html.escape(rel)}</span>"
-            f"<span class='legend-item-sub'>{html.escape(rel_expl)}</span>"
-            "</span>"
-            f"<span class='legend-count' title='Overlay edge count'>{count}</span>"
-            "</div>"
-        )
+    edge_items = _viz_render_legend_entries(
+        edge_entries,
+        prefix="Edge",
+        count_title="Edge count",
+    )
 
     node_items = []
     for group_key in sorted(node_groups):
@@ -3156,27 +3232,14 @@ def plot_interactive_graph(G: nx.DiGraph | nx.MultiDiGraph, out_html: Path) -> N
       >
         Meshes: Off
       </button>
-      <button
-        id="toggle-helper-overlays"
-        class="toggle"
-        type="button"
-        aria-pressed="false"
-      >
-        Helper Overlays: Off
-      </button>
     </div>
     <div class="viewer-shell">
       {plotly_div}
       <aside class="legend" aria-label="Graph legend">
         <h3>Legend</h3>
         <div class="section-title">Edges</div>
-        <div class="section-meta">Total directed edges shown: {total_edges}</div>
+        <div class="section-meta">Total edges shown: {total_edges}</div>
         {"".join(edge_items)}
-        <div class="section-title">Helper Overlays</div>
-        <div class="section-meta">
-          Visualization-only overlays, hidden by default: {total_overlay_edges}
-        </div>
-        {"".join(overlay_items)}
         <div class="section-title">Nodes</div>
         {"".join(node_items)}
       </aside>
@@ -3193,21 +3256,16 @@ def plot_interactive_graph(G: nx.DiGraph | nx.MultiDiGraph, out_html: Path) -> N
     );
     const toggleBboxesButton = document.getElementById("toggle-bboxes");
     const toggleMeshesButton = document.getElementById("toggle-meshes");
-    const toggleHelperOverlaysButton = document.getElementById(
-      "toggle-helper-overlays"
-    );
     let currentMode = "all";
     let edgeAnnotationsEnabled = false;
     let bboxesEnabled = false;
     let meshesEnabled = false;
-    let helperOverlaysEnabled = false;
 
     function maskKey() {{
       const parts = [];
       if (edgeAnnotationsEnabled) parts.push("annotations");
       if (bboxesEnabled) parts.push("bboxes");
       if (meshesEnabled) parts.push("meshes");
-      if (helperOverlaysEnabled) parts.push("overlays");
       return parts.length ? `with_${{parts.join("_and_")}}` : "base";
     }}
 
@@ -3262,22 +3320,6 @@ def plot_interactive_graph(G: nx.DiGraph | nx.MultiDiGraph, out_html: Path) -> N
       toggleMeshesButton.textContent = meshesEnabled
         ? "Meshes: On"
         : "Meshes: Off";
-      applyMode(currentMode);
-    }});
-
-    toggleHelperOverlaysButton?.addEventListener("click", () => {{
-      helperOverlaysEnabled = !helperOverlaysEnabled;
-      toggleHelperOverlaysButton.classList.toggle(
-        "active",
-        helperOverlaysEnabled
-      );
-      toggleHelperOverlaysButton.setAttribute(
-        "aria-pressed",
-        helperOverlaysEnabled ? "true" : "false"
-      );
-      toggleHelperOverlaysButton.textContent = helperOverlaysEnabled
-        ? "Helper Overlays: On"
-        : "Helper Overlays: Off";
       applyMode(currentMode);
     }});
 
@@ -3822,30 +3864,22 @@ def plot_interactive_graph_overlap_modes(
     legend_payloads: dict[str, dict[str, str]] = {}
     for mode in ordered_modes:
         graph = graphs_by_mode[mode]
-        relation_counts: Counter[str] = Counter()
-        for _source, _target, attrs in graph.edges(data=True):
-            relation_counts[str(attrs.get("relation", "related_to"))] += 1
-        edge_items = []
-        for rel in sorted(
-            relation_counts,
-            key=lambda name: (-relation_counts[name], name),
-        ):
-            rel_expl = edge_relation_explanations.get(rel, "graph relation")
-            edge_color = edge_color_map.get(rel, "#4b5563")
-            count = relation_counts[rel]
-            edge_items.append(
-                "<div class='legend-item'>"
-                f"<span class='swatch line' style='--swatch:{edge_color}'></span>"
-                "<span class='legend-item-text'>"
-                f"<span class='legend-item-main'>Edge: {html.escape(rel)}</span>"
-                f"<span class='legend-item-sub'>{html.escape(rel_expl)}</span>"
-                "</span>"
-                f"<span class='legend-count' title='Edge count'>{count}</span>"
-                "</div>"
-            )
+        graph_edge_items = [
+            (str(source_id), str(target_id), attrs)
+            for source_id, target_id, attrs in graph.edges(data=True)
+        ]
+        edge_entries, total_edges = _viz_build_legend_entries(
+            graph_edge_items,
+            edge_color_map=edge_color_map,
+            edge_relation_explanations=edge_relation_explanations,
+        )
         legend_payloads[mode] = {
-            "total_edges": str(graph.number_of_edges()),
-            "edge_items_html": "".join(edge_items),
+            "total_edges": str(total_edges),
+            "edge_items_html": _viz_render_legend_entries(
+                edge_entries,
+                prefix="Edge",
+                count_title="Edge count",
+            ),
         }
 
     node_items = []
@@ -4095,7 +4129,7 @@ def plot_interactive_graph_overlap_modes(
         </div>
         <div class="section-title">Edges</div>
         <div class="section-meta" id="legend-total-edges">
-          Total directed edges shown: {initial_legend["total_edges"]}
+          Total edges shown: {initial_legend["total_edges"]}
         </div>
         <div id="legend-edge-items">{initial_legend["edge_items_html"]}</div>
         <div class="section-title">Nodes</div>
@@ -4140,7 +4174,7 @@ def plot_interactive_graph_overlap_modes(
       if (!payload) return;
       legendEdgeItems.innerHTML = payload.edge_items_html;
       legendTotalEdges.textContent =
-        `Total directed edges shown: ${{payload.total_edges}}`;
+        `Total edges shown: ${{payload.total_edges}}`;
       overlapModeSummary.textContent =
         `Active overlap mode: ${{currentOverlapMode}}`;
     }}
