@@ -1,0 +1,455 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>How to Use the RAGTAG Viewer</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body class="guide-page">
+  <main class="legend-app-shell">
+    <header class="guide-hero">
+      <div class="guide-hero-copy">
+        <p class="eyebrow">How To Use</p>
+        <h1>RAGTAG Viewer Guide</h1>
+        <p class="guide-hero-text">
+          A practical walkthrough of the local viewer: how to launch it, load an
+          IFC, move between the graph and 3D model pages, inspect elements, run
+          questions, and understand what the app can and cannot tell you.
+        </p>
+        <p class="guide-status">
+          This guide reflects the current local FastAPI viewer in
+          <code>src/rag_tag/viewer</code>.
+        </p>
+      </div>
+      <div class="hero-actions">
+        <a class="toolbar-link" href="/">Open Graph</a>
+        <a class="toolbar-link" href="/model">Open 3D Model</a>
+        <a class="toolbar-link" href="/legend">Relation Guide</a>
+      </div>
+    </header>
+
+    <section class="guide-section">
+      <div class="guide-section-header">
+        <div>
+          <p class="eyebrow">Overview</p>
+          <h2>What This App Does</h2>
+          <p>
+            The viewer is a local workspace for exploring one IFC dataset through
+            three connected perspectives: a WebGL graph view, a raw 3D IFC model
+            view, and a relation guide. It also includes a natural-language query
+            panel backed by the main RAGTAG query pipeline.
+          </p>
+        </div>
+      </div>
+      <div class="guide-card-grid">
+        <article class="guide-card">
+          <div class="guide-card-head">
+            <h3>Graph View</h3>
+            <span class="guide-stat">Default page</span>
+          </div>
+          <p class="guide-card-summary">
+            Explore nodes and relations, filter edge families, focus elements,
+            and inspect graph structure around the active dataset.
+          </p>
+        </article>
+        <article class="guide-card">
+          <div class="guide-card-head">
+            <h3>3D Model View</h3>
+            <span class="guide-stat">IFC geometry</span>
+          </div>
+          <p class="guide-card-summary">
+            Open the IFC model itself, search for elements, and inspect the
+            currently selected object without leaving the viewer.
+          </p>
+        </article>
+        <article class="guide-card">
+          <div class="guide-card-head">
+            <h3>Query Runner</h3>
+            <span class="guide-stat">Shared pipeline</span>
+          </div>
+          <p class="guide-card-summary">
+            Ask natural-language questions. The response shows the chosen route,
+            the answer, and optional structured details from the underlying tools.
+          </p>
+        </article>
+        <article class="guide-card">
+          <div class="guide-card-head">
+            <h3>Legend Guide</h3>
+            <span class="guide-stat">Reference</span>
+          </div>
+          <p class="guide-card-summary">
+            Read what each relation family means, how viewer modes group edges,
+            and when each relation type is useful.
+          </p>
+        </article>
+      </div>
+    </section>
+
+    <section class="guide-section">
+      <div class="guide-section-header">
+        <div>
+          <p class="eyebrow">Start</p>
+          <h2>How to Launch It</h2>
+          <p>
+            You can open the viewer against an existing dataset, or point it at a
+            raw IFC and let the viewer build its runtime artifacts before the
+            server starts.
+          </p>
+        </div>
+      </div>
+      <div class="guide-mini-grid">
+        <article class="guide-card">
+          <div class="guide-card-head">
+            <h3>Launch from an IFC</h3>
+            <span class="guide-stat">Builds artifacts</span>
+          </div>
+          <pre class="guide-code-block"><code>uv run rag-tag-viewer --ifc ./IFC-Files/Building.ifc</code></pre>
+          <p class="guide-card-summary">
+            This builds JSONL, SQLite, the debug graph HTML, and the WebGL graph
+            assets before serving the app.
+          </p>
+        </article>
+        <article class="guide-card">
+          <div class="guide-card-head">
+            <h3>Launch from an existing dataset</h3>
+            <span class="guide-stat">Fastest startup</span>
+          </div>
+          <pre class="guide-code-block"><code>uv run rag-tag-viewer --graph-dataset Building-Architecture</code></pre>
+          <p class="guide-card-summary">
+            Use this when your `.jsonl`, `.db`, and viewer assets already exist in
+            `output/`.
+          </p>
+        </article>
+        <article class="guide-card">
+          <div class="guide-card-head">
+            <h3>Launch with explicit DBs</h3>
+            <span class="guide-stat">Multi-DB support</span>
+          </div>
+          <pre class="guide-code-block"><code>uv run rag-tag-viewer --db ./output/A.db --db ./output/B.db</code></pre>
+          <p class="guide-card-summary">
+            The viewer can expose one or more SQLite databases. If a single DB is
+            present, its stem becomes the active dataset automatically.
+          </p>
+        </article>
+        <article class="guide-card">
+          <div class="guide-card-head">
+            <h3>Useful options</h3>
+            <span class="guide-stat">Server + payload</span>
+          </div>
+          <ul class="guide-detail-list">
+            <li><code>--host</code> and <code>--port</code> choose where the local server runs.</li>
+            <li><code>--graph-payload-mode minimal</code> keeps graph payloads lighter.</li>
+            <li><code>--graph-payload-mode full</code> exposes fuller graph payloads if you need them.</li>
+          </ul>
+        </article>
+      </div>
+      <aside class="guide-callout">
+        Open the app in a browser after startup. The default graph page is
+        served at <code>/</code>, the model page at <code>/model</code>, and this
+        guide at <code>/how-to-use</code>.
+      </aside>
+    </section>
+
+    <section class="guide-section">
+      <div class="guide-section-header">
+        <div>
+          <p class="eyebrow">Workflow</p>
+          <h2>Typical End-to-End Flow</h2>
+          <p>
+            Most sessions follow the same loop: load a model, inspect the graph,
+            search for elements, open the 3D view when needed, then ask targeted
+            questions in the query runner.
+          </p>
+        </div>
+      </div>
+      <ol class="guide-step-list">
+        <li class="guide-step">
+          <h3>Start with an IFC or an existing dataset</h3>
+          <p>
+            If you launch with <code>--ifc</code>, the viewer builds everything it
+            needs up front. If you launch against existing output files, it loads
+            the detected dataset and graph assets directly.
+          </p>
+        </li>
+        <li class="guide-step">
+          <h3>Upload a new IFC if you want to rebuild in-place</h3>
+          <p>
+            The <strong>Upload IFC</strong> button on the graph and model pages
+            sends the file to the server, starts a build job, shows progress, and
+            refreshes the viewer when the new artifacts are ready.
+          </p>
+        </li>
+        <li class="guide-step">
+          <h3>Explore the graph</h3>
+          <p>
+            Use the graph modes, legend, explorer, and inspector to understand
+            structure, class distribution, and relation slices before asking more
+            complex questions.
+          </p>
+        </li>
+        <li class="guide-step">
+          <h3>Switch to the 3D model when geometry matters</h3>
+          <p>
+            The 3D view helps when you need the raw IFC model context instead of
+            the abstracted relation graph.
+          </p>
+        </li>
+        <li class="guide-step">
+          <h3>Ask natural-language questions</h3>
+          <p>
+            The query runner uses the main RAGTAG pipeline. You can keep a local
+            transcript, inspect the chosen route, and copy the conversation.
+          </p>
+        </li>
+      </ol>
+    </section>
+
+    <section class="guide-section">
+      <div class="guide-section-header">
+        <div>
+          <p class="eyebrow">Graph Page</p>
+          <h2>Using the Graph Viewer</h2>
+          <p>
+            The graph page is the main workspace. It combines a large WebGL graph
+            canvas with filtering controls, side panels, and the query dock.
+          </p>
+        </div>
+      </div>
+      <div class="guide-mini-grid">
+        <article class="guide-card">
+          <h3>Graph modes</h3>
+          <ul class="guide-detail-list">
+            <li><strong>Full Graph</strong> shows the broadest available context.</li>
+            <li><strong>Nodes</strong> emphasizes node structure.</li>
+            <li><strong>Edges</strong> emphasizes connections.</li>
+            <li><strong>Hierarchy</strong>, <strong>Spatial</strong>, <strong>Topology</strong>, and <strong>Explicit IFC</strong> focus on relation families.</li>
+          </ul>
+        </article>
+        <article class="guide-card">
+          <h3>Display toggles</h3>
+          <ul class="guide-detail-list">
+            <li><strong>Edge Labels</strong> shows or hides relation labels.</li>
+            <li><strong>BBoxes</strong> overlays available bounding boxes.</li>
+            <li><strong>Meshes</strong> overlays exported mesh data when present.</li>
+            <li><strong>Legend</strong>, <strong>Explorer</strong>, and <strong>Inspector</strong> show or hide the side panels.</li>
+          </ul>
+        </article>
+        <article class="guide-card">
+          <h3>Utility buttons</h3>
+          <ul class="guide-detail-list">
+            <li><strong>Fullscreen</strong> expands the graph stage.</li>
+            <li><strong>Reset view</strong> fits the graph back into view.</li>
+            <li><strong>Relation guide</strong> opens the explainer page in a new tab.</li>
+            <li><strong>Legacy Plotly debugger</strong> opens the older debug graph HTML.</li>
+          </ul>
+        </article>
+        <article class="guide-card">
+          <h3>When the graph is empty</h3>
+          <p class="guide-card-summary">
+            If no IFC or graph assets are available, the graph stage shows an
+            empty-state panel explaining what is missing and how to recover.
+          </p>
+        </article>
+      </div>
+    </section>
+
+    <section class="guide-section">
+      <div class="guide-section-header">
+        <div>
+          <p class="eyebrow">Side Panels</p>
+          <h2>Search and Inspect Elements</h2>
+          <p>
+            Both the graph and model pages expose a search-driven element browser
+            plus an inspector for the currently selected element.
+          </p>
+        </div>
+      </div>
+      <div class="guide-card-grid">
+        <article class="guide-card">
+          <h3>Node Explorer</h3>
+          <ul class="guide-detail-list">
+            <li>Search by label, IFC class, GUID, or element identifier.</li>
+            <li>Filter by IFC class and change page size.</li>
+            <li>Move through paginated results with Previous and Next.</li>
+            <li>Use <strong>Focus</strong> to jump the graph or model to an element.</li>
+          </ul>
+        </article>
+        <article class="guide-card">
+          <h3>Inspector</h3>
+          <ul class="guide-detail-list">
+            <li>Select a node in the graph, select an object in the 3D model, or focus a search result.</li>
+            <li>The inspector shows a JSON-like payload with label, class, identifiers, and properties.</li>
+            <li>Element lookup supports direct node IDs, GlobalId values, and Express IDs.</li>
+          </ul>
+        </article>
+      </div>
+    </section>
+
+    <section class="guide-section">
+      <div class="guide-section-header">
+        <div>
+          <p class="eyebrow">3D View</p>
+          <h2>Using the IFC Model Viewer</h2>
+          <p>
+            The model page is paired with the graph page and uses the currently
+            active IFC file when one is available.
+          </p>
+        </div>
+      </div>
+      <div class="guide-card-grid">
+        <article class="guide-card">
+          <h3>What it needs</h3>
+          <p class="guide-card-summary">
+            The graph view can still work from generated artifacts alone, but the
+            3D page needs an active raw IFC file. If none is available, the page
+            shows an empty state explaining how to provide one.
+          </p>
+        </article>
+        <article class="guide-card">
+          <h3>Main controls</h3>
+          <ul class="guide-detail-list">
+            <li>Switch back to the graph page from the top nav or graph shortcut.</li>
+            <li>Use fullscreen for a larger modeling workspace.</li>
+            <li>Use reset view to fit the model back into frame.</li>
+            <li>Use the same explorer and inspector pattern as the graph page.</li>
+          </ul>
+        </article>
+      </div>
+    </section>
+
+    <section class="guide-section">
+      <div class="guide-section-header">
+        <div>
+          <p class="eyebrow">Queries</p>
+          <h2>Using the Query Runner</h2>
+          <p>
+            The bottom dock on the graph page lets you ask natural-language
+            questions about the active dataset and review the response history.
+          </p>
+        </div>
+      </div>
+      <div class="guide-mini-grid">
+        <article class="guide-card">
+          <h3>How to ask</h3>
+          <ul class="guide-detail-list">
+            <li>Type a question into the text area and press <strong>Run Query</strong>.</li>
+            <li>Press <strong>Enter</strong> to submit quickly, or use line breaks when needed.</li>
+            <li>Each response is appended to the running transcript.</li>
+          </ul>
+        </article>
+        <article class="guide-card">
+          <h3>What the response shows</h3>
+          <ul class="guide-detail-list">
+            <li>The chosen <strong>route</strong>, such as SQL or graph.</li>
+            <li>A short routing <strong>decision</strong> summary.</li>
+            <li>The answer text plus optional samples, list rows, warnings, or details.</li>
+          </ul>
+        </article>
+        <article class="guide-card">
+          <h3>Details and transcript</h3>
+          <ul class="guide-detail-list">
+            <li><strong>Details: On</strong> shows the structured JSON details block.</li>
+            <li><strong>Copy Transcript</strong> copies the full session transcript in a Markdown-friendly format.</li>
+          </ul>
+        </article>
+        <article class="guide-card">
+          <h3>How routing works</h3>
+          <p class="guide-card-summary">
+            Deterministic counts and aggregations are intended to come from SQL,
+            while spatial, adjacency, containment, and topological reasoning are
+            handled through the graph path.
+          </p>
+        </article>
+      </div>
+    </section>
+
+    <section class="guide-section">
+      <div class="guide-section-header">
+        <div>
+          <p class="eyebrow">Artifacts</p>
+          <h2>What Gets Built Behind the Scenes</h2>
+          <p>
+            Uploading or launching from an IFC does more than load a single file.
+            The viewer depends on several generated artifacts that support
+            different parts of the app.
+          </p>
+        </div>
+      </div>
+      <div class="guide-card-grid">
+        <article class="guide-card">
+          <h3>JSONL export</h3>
+          <p class="guide-card-summary">
+            Parsed IFC content is exported into JSONL so the graph and SQL stages
+            can work from a normalized intermediate format.
+          </p>
+        </article>
+        <article class="guide-card">
+          <h3>SQLite database</h3>
+          <p class="guide-card-summary">
+            SQL-backed counts, lists, and aggregations rely on the generated or
+            discovered SQLite database for the active dataset.
+          </p>
+        </article>
+        <article class="guide-card">
+          <h3>Graph runtime + WebGL bundle</h3>
+          <p class="guide-card-summary">
+            The interactive graph page loads a manifest plus binary assets for
+            nodes, edges, and optional overlays such as bounding boxes and meshes.
+          </p>
+        </article>
+        <article class="guide-card">
+          <h3>Legacy debug graph</h3>
+          <p class="guide-card-summary">
+            The older Plotly HTML graph is still available as a debugging aid and
+            can be opened from the graph toolbar.
+          </p>
+        </article>
+      </div>
+    </section>
+
+    <section class="guide-section">
+      <div class="guide-section-header">
+        <div>
+          <p class="eyebrow">Limits</p>
+          <h2>Known Limitations</h2>
+          <p>
+            A few important constraints matter when you interpret what the viewer
+            shows. These are part of the current system design, not user error.
+          </p>
+        </div>
+      </div>
+      <div class="guide-card-grid">
+        <article class="guide-card">
+          <h3>Adjacency is approximate</h3>
+          <p class="guide-card-summary">
+            The current graph uses centroid-distance-based adjacency, not true
+            topological contact detection.
+          </p>
+        </article>
+        <article class="guide-card">
+          <h3>Graph backend is still NetworkX</h3>
+          <p class="guide-card-summary">
+            There is no Neo4j or Cypher backend yet, so graph exploration stays
+            within the current in-process runtime.
+          </p>
+        </article>
+        <article class="guide-card">
+          <h3>3D view depends on raw IFC availability</h3>
+          <p class="guide-card-summary">
+            If you only have generated graph or DB artifacts but no IFC file, the
+            graph page can still work while the model page cannot.
+          </p>
+        </article>
+        <article class="guide-card">
+          <h3>Query quality follows dataset quality</h3>
+          <p class="guide-card-summary">
+            Missing geometry, incomplete IFC relationships, or absent assets can
+            reduce what the graph and query layers are able to answer cleanly.
+          </p>
+        </article>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

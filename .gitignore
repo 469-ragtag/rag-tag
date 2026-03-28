@@ -19,7 +19,9 @@ config.yaml
 # Runtime outputs
 output/ifc_graph.html
 output/*.jsonl
+output/*.db
 output/*.log
+output/*_graph_viewer/
 output/metadata/bsdd/*.ttl
 output/metadata/bsdd/*.json
 

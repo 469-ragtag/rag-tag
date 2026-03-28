@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>RAGTAG Viewer Legend Guide</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body class="legend-page">
+  <main class="legend-app-shell">
+    <header class="guide-hero">
+      <div class="guide-hero-copy">
+        <p class="eyebrow">Know More</p>
+        <h1>Viewer Legend Guide</h1>
+        <p class="guide-hero-text">
+          A compact reference for how the viewer groups relations, why each
+          edge family exists, and when each mode is most useful.
+        </p>
+        <p id="legend-status" class="guide-status">
+          Loading graph manifest details...
+        </p>
+      </div>
+      <div class="hero-actions">
+        <a class="toolbar-link" href="/">Back to Viewer</a>
+        <a
+          id="manifest-link"
+          class="toolbar-link"
+          href="/debug/graph-assets/manifest"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          Open Manifest
+        </a>
+      </div>
+    </header>
+
+    <section class="guide-section">
+      <div class="guide-section-header">
+        <div>
+          <p class="eyebrow">Modes</p>
+          <h2>Viewer Modes</h2>
+          <p>
+            These presets help you switch between broad graph context and
+            targeted relation slices without changing the underlying dataset.
+          </p>
+        </div>
+      </div>
+      <div id="legend-mode-cards" class="guide-card-grid"></div>
+    </section>
+
+    <section class="guide-section">
+      <div class="guide-section-header">
+        <div>
+          <p class="eyebrow">Families</p>
+          <h2>Edge Families</h2>
+          <p>
+            Relation families organize the exported edges by the kind of
+            reasoning they support inside the viewer.
+          </p>
+        </div>
+      </div>
+      <div id="legend-family-cards" class="guide-card-grid"></div>
+    </section>
+
+    <section class="guide-section guide-section-relations">
+      <div class="guide-section-header">
+        <div>
+          <p class="eyebrow">Reference</p>
+          <h2>Relation Reference</h2>
+          <p>
+            Scan relation names quickly, use the badges to identify category,
+            and expand rows to see both why a relation matters and how it was
+            calculated.
+          </p>
+        </div>
+      </div>
+      <div id="legend-relation-list" class="relation-list"></div>
+    </section>
+  </main>
+
+  <script type="module" src="/static/legend.js"></script>
+</body>
+</html>
