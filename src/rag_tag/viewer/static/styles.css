@@ -662,11 +662,15 @@ body.guide-page {
 }
 
 .model-sidebar {
-  flex: 0 0 clamp(320px, 24vw, 380px);
+  flex: 0 1 clamp(280px, 24vw, 380px);
+  min-width: min(100%, 280px);
+  max-width: 100%;
 }
 
 .sidebar {
-  flex: 0 0 clamp(320px, 24vw, 380px);
+  flex: 0 1 clamp(280px, 24vw, 380px);
+  min-width: min(100%, 280px);
+  max-width: 100%;
   min-height: 0;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
@@ -722,11 +726,14 @@ body.guide-page {
   flex-direction: column;
   gap: var(--space-3);
   padding: 0 var(--space-3) var(--space-3);
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
 }
 
 .sidebar-search-section {
-  flex: 1 1 0;
+  flex: 1 1 360px;
+  min-height: 280px;
   grid-template-rows: auto auto auto auto minmax(0, 1fr);
   padding: var(--space-4) 0 var(--space-3);
   border: 1px solid rgba(154, 170, 194, 0.05);
@@ -735,7 +742,8 @@ body.guide-page {
 }
 
 .sidebar-inspector-section {
-  flex: 1 1 0;
+  flex: 0 1 220px;
+  min-height: 180px;
   grid-template-rows: auto minmax(0, 1fr);
   gap: var(--space-3);
   padding: var(--space-4) var(--space-5) var(--space-5);
@@ -1775,6 +1783,20 @@ label {
 
   .bottom-dock {
     max-height: none;
+  }
+}
+
+@media (max-height: 860px) {
+  .bottom-dock {
+    max-height: min(28dvh, 280px);
+  }
+
+  .sidebar-search-section {
+    min-height: 240px;
+  }
+
+  .sidebar-inspector-section {
+    min-height: 160px;
   }
 }
 
