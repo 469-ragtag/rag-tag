@@ -75,9 +75,9 @@ let graphView = null;
 let edgeLabelsEnabled = false;
 let bboxesEnabled = false;
 let meshesEnabled = false;
-let legendVisible = true;
-let searchPanelVisible = true;
-let inspectorPanelVisible = true;
+let legendVisible = false;
+let searchPanelVisible = false;
+let inspectorPanelVisible = false;
 let ifcUploadBusy = false;
 let legendNodeGroups = {};
 let activeLegendPage = "relations";
@@ -958,7 +958,7 @@ function startIfcImportJob(file) {
       );
       setUploadBusy(
         true,
-        `Uploading ${file.name}... ${Math.round((event.loaded / event.total) * 100)}%`,
+        `Uploading ${file.name}...`,
         uploadProgress
       );
     });
@@ -1413,9 +1413,9 @@ document.addEventListener("fullscreenchange", () => {
   graphView?.resize();
 });
 
-setLegendVisible(true);
-setSearchPanelVisible(true);
-setInspectorPanelVisible(true);
+setLegendVisible(false);
+setSearchPanelVisible(false);
+setInspectorPanelVisible(false);
 setUploadBusy(false, DEFAULT_UPLOAD_STATUS, null);
 setInspectorEmptyState(
   true,
