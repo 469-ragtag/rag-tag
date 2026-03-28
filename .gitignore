@@ -22,6 +22,8 @@ output/*.jsonl
 output/*.db
 output/*.log
 output/*_graph_viewer/
+output/_viewer_artifacts/
+output/_viewer_uploads/
 output/metadata/bsdd/*.ttl
 output/metadata/bsdd/*.json
 

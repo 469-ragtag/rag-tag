@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import shutil
+import time
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -23,10 +26,13 @@ from rag_tag.query_service import execute_query, find_sqlite_dbs
 
 from .build import (
     BuildProgressCallback,
+    ViewerArtifactPaths,
     ViewerBuildArtifacts,
     build_viewer_artifacts_from_ifc,
     default_output_dir,
     sanitize_dataset_stem,
+    viewer_artifact_paths,
+    viewer_artifacts_ready,
 )
 from .models import (
     DatasetInfo,
@@ -34,9 +40,12 @@ from .models import (
     ImportIfcJobStatusResponse,
     ImportIfcResponse,
     NodeSummary,
+    RecentIfcEntry,
     SearchClassOption,
     SearchResponse,
 )
+
+_RECENT_IFC_LIMIT = 8
 
 
 def _resolve_context_db(
@@ -103,6 +112,18 @@ def _node_summary(node_id: str, node_data: dict[str, object]) -> NodeSummary:
     )
 
 
+def _current_time_ms() -> int:
+    return int(time.time() * 1000)
+
+
+def _hash_bytes(payload: bytes) -> str:
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _recent_ifc_id(dataset: str, fingerprint_sha256: str) -> str:
+    return f"{dataset}-{fingerprint_sha256[:12]}"
+
+
 @dataclass(slots=True, frozen=True)
 class _SearchNodeRecord:
     summary: NodeSummary
@@ -131,7 +152,34 @@ class _ImportIfcJob:
     graph: GraphSummaryResponse | None = None
     debug_graph_available: bool = False
     webgl_graph_available: bool = False
+    reused_existing_build: bool = False
     error: str | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class _RecentIfcRecord:
+    id: str
+    source_name: str
+    dataset: str
+    upload_path: Path
+    artifact_dir: Path
+    fingerprint_sha256: str
+    size_bytes: int
+    created_at_ms: int
+    last_used_at_ms: int
+
+    def to_manifest_dict(self) -> dict[str, object]:
+        return {
+            "id": self.id,
+            "source_name": self.source_name,
+            "dataset": self.dataset,
+            "upload_path": str(self.upload_path),
+            "artifact_dir": str(self.artifact_dir),
+            "fingerprint_sha256": self.fingerprint_sha256,
+            "size_bytes": self.size_bytes,
+            "created_at_ms": self.created_at_ms,
+            "last_used_at_ms": self.last_used_at_ms,
+        }
 
 
 @dataclass(slots=True)
@@ -146,12 +194,16 @@ class ViewerState:
     debug_graph_html_override: Path | None = None
     webgl_graph_bundle_override: Path | None = None
     source_ifc_path: Path | None = None
+    active_output_dir: Path | None = None
     _search_index: _SearchIndex | None = field(default=None, init=False, repr=False)
     _build_lock: Lock = field(default_factory=Lock, init=False, repr=False)
     _import_jobs: dict[str, _ImportIfcJob] = field(
         default_factory=dict, init=False, repr=False
     )
     _import_jobs_lock: Lock = field(default_factory=Lock, init=False, repr=False)
+    _recent_ifcs: dict[str, _RecentIfcRecord] = field(
+        default_factory=dict, init=False, repr=False
+    )
 
     def __post_init__(self) -> None:
         self.db_paths = _dedupe_paths(self.db_paths)
@@ -174,6 +226,9 @@ class ViewerState:
             )
         if self.source_ifc_path is not None:
             self.source_ifc_path = self.source_ifc_path.expanduser().resolve()
+        if self.active_output_dir is not None:
+            self.active_output_dir = self.active_output_dir.expanduser().resolve()
+        self._recent_ifcs = self._load_recent_ifc_records()
 
     @classmethod
     def default(
@@ -200,6 +255,8 @@ class ViewerState:
 
     def _output_dir_candidates(self) -> list[Path]:
         candidates: list[Path] = []
+        if self.active_output_dir is not None:
+            candidates.append(self.active_output_dir)
         if self.project_root is not None:
             candidates.append(self.project_root / "output")
 
@@ -215,6 +272,190 @@ class ViewerState:
         if self.project_root is None:
             candidates.append(Path.cwd() / "output")
         return _dedupe_paths(candidates)
+
+    def _viewer_artifact_root_dir(self) -> Path:
+        return self._primary_output_dir() / "_viewer_artifacts"
+
+    def _recent_ifc_manifest_path(self) -> Path:
+        return self._viewer_upload_dir() / "recent_ifcs.json"
+
+    def _load_recent_ifc_records(self) -> dict[str, _RecentIfcRecord]:
+        manifest_path = self._recent_ifc_manifest_path()
+        if not manifest_path.is_file():
+            return {}
+        try:
+            payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return {}
+        if not isinstance(payload, list):
+            return {}
+
+        records: dict[str, _RecentIfcRecord] = {}
+        for item in payload:
+            if not isinstance(item, dict):
+                continue
+            try:
+                record = _RecentIfcRecord(
+                    id=str(item["id"]),
+                    source_name=str(item["source_name"]),
+                    dataset=str(item["dataset"]),
+                    upload_path=Path(str(item["upload_path"])).expanduser().resolve(),
+                    artifact_dir=Path(str(item["artifact_dir"])).expanduser().resolve(),
+                    fingerprint_sha256=str(item["fingerprint_sha256"]),
+                    size_bytes=int(item["size_bytes"]),
+                    created_at_ms=int(item["created_at_ms"]),
+                    last_used_at_ms=int(item["last_used_at_ms"]),
+                )
+            except (KeyError, TypeError, ValueError):
+                continue
+            if record.upload_path.suffix.lower() != ".ifc":
+                continue
+            records[record.id] = record
+        return records
+
+    def _save_recent_ifc_records(self) -> None:
+        manifest_path = self._recent_ifc_manifest_path()
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        records = sorted(
+            self._recent_ifcs.values(),
+            key=lambda item: (-item.last_used_at_ms, item.source_name.lower(), item.id),
+        )
+        manifest_path.write_text(
+            json.dumps(
+                [record.to_manifest_dict() for record in records],
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+
+    def _recent_ifc_record_for_path(
+        self,
+        ifc_path: Path | None,
+    ) -> _RecentIfcRecord | None:
+        if ifc_path is None:
+            return None
+        resolved_path = ifc_path.expanduser().resolve()
+        for record in self._recent_ifcs.values():
+            if record.upload_path == resolved_path:
+                return record
+        return None
+
+    def _recent_ifc_record(self, recent_ifc_id: str) -> _RecentIfcRecord:
+        try:
+            return self._recent_ifcs[recent_ifc_id]
+        except KeyError as exc:
+            raise KeyError(recent_ifc_id) from exc
+
+    def _artifact_paths_for_recent_ifc(
+        self,
+        record: _RecentIfcRecord,
+    ) -> ViewerArtifactPaths:
+        return viewer_artifact_paths(record.artifact_dir, record.dataset)
+
+    def _remove_recent_ifc_record(self, record: _RecentIfcRecord) -> None:
+        record.upload_path.unlink(missing_ok=True)
+        self._remove_output_artifact(record.artifact_dir)
+        self._recent_ifcs.pop(record.id, None)
+
+    def _prune_recent_ifc_records(
+        self,
+        preserve_recent_ifc_id: str | None = None,
+    ) -> None:
+        ordered_records = sorted(
+            self._recent_ifcs.values(),
+            key=lambda item: (
+                0 if item.id == preserve_recent_ifc_id else 1,
+                -item.last_used_at_ms,
+                item.source_name.lower(),
+                item.id,
+            ),
+        )
+        kept_ids: set[str] = set()
+        for record in ordered_records:
+            if not record.upload_path.is_file():
+                self._remove_recent_ifc_record(record)
+                continue
+            if len(kept_ids) < _RECENT_IFC_LIMIT or record.id == preserve_recent_ifc_id:
+                kept_ids.add(record.id)
+                continue
+            self._remove_recent_ifc_record(record)
+        self._save_recent_ifc_records()
+
+    def _upsert_recent_ifc_record(
+        self,
+        *,
+        source_name: str,
+        dataset: str,
+        upload_path: Path,
+        fingerprint_sha256: str,
+        size_bytes: int,
+    ) -> _RecentIfcRecord:
+        now_ms = _current_time_ms()
+        recent_ifc_id = _recent_ifc_id(dataset, fingerprint_sha256)
+        existing = self._recent_ifcs.get(recent_ifc_id)
+        record = _RecentIfcRecord(
+            id=recent_ifc_id,
+            source_name=source_name,
+            dataset=dataset,
+            upload_path=upload_path.expanduser().resolve(),
+            artifact_dir=(self._viewer_artifact_root_dir() / recent_ifc_id)
+            .expanduser()
+            .resolve(),
+            fingerprint_sha256=fingerprint_sha256,
+            size_bytes=size_bytes,
+            created_at_ms=existing.created_at_ms if existing is not None else now_ms,
+            last_used_at_ms=now_ms,
+        )
+        self._recent_ifcs[record.id] = record
+        self._prune_recent_ifc_records(preserve_recent_ifc_id=record.id)
+        return record
+
+    def _mark_recent_ifc_used(self, ifc_path: Path | None) -> None:
+        record = self._recent_ifc_record_for_path(ifc_path)
+        if record is None:
+            return
+        updated = _RecentIfcRecord(
+            id=record.id,
+            source_name=record.source_name,
+            dataset=record.dataset,
+            upload_path=record.upload_path,
+            artifact_dir=record.artifact_dir,
+            fingerprint_sha256=record.fingerprint_sha256,
+            size_bytes=record.size_bytes,
+            created_at_ms=record.created_at_ms,
+            last_used_at_ms=_current_time_ms(),
+        )
+        self._recent_ifcs[record.id] = updated
+        self._prune_recent_ifc_records(preserve_recent_ifc_id=record.id)
+
+    def active_recent_ifc_id(self) -> str | None:
+        active_record = self._recent_ifc_record_for_path(self.active_ifc_path())
+        return active_record.id if active_record is not None else None
+
+    def list_recent_ifcs(self) -> list[RecentIfcEntry]:
+        active_recent_ifc_id = self.active_recent_ifc_id()
+        entries: list[RecentIfcEntry] = []
+        for record in sorted(
+            self._recent_ifcs.values(),
+            key=lambda item: (-item.last_used_at_ms, item.source_name.lower(), item.id),
+        ):
+            if not record.upload_path.is_file():
+                continue
+            entries.append(
+                RecentIfcEntry(
+                    id=record.id,
+                    source_name=record.source_name,
+                    dataset=record.dataset,
+                    size_bytes=record.size_bytes,
+                    created_at_ms=record.created_at_ms,
+                    last_used_at_ms=record.last_used_at_ms,
+                    build_ready=viewer_artifacts_ready(
+                        self._artifact_paths_for_recent_ifc(record)
+                    ),
+                    active=record.id == active_recent_ifc_id,
+                )
+            )
+        return entries
 
     def _selected_output_dir(self) -> Path:
         output_dirs = self._output_dir_candidates()
@@ -399,6 +640,9 @@ class ViewerState:
 
     def active_ifc_name(self) -> str | None:
         active_ifc_path = self.active_ifc_path()
+        active_recent_ifc = self._recent_ifc_record_for_path(active_ifc_path)
+        if active_recent_ifc is not None:
+            return active_recent_ifc.source_name
         return active_ifc_path.name if active_ifc_path is not None else None
 
     def active_ifc_cache_key(self) -> str | None:
@@ -442,38 +686,11 @@ class ViewerState:
             return
         resolved.unlink(missing_ok=True)
 
-    def _cleanup_previous_viewer_uploads(
-        self,
-        *,
-        preserve_upload_path: Path | None,
-        preserve_dataset: str,
-    ) -> None:
-        upload_dir = self._viewer_upload_dir()
-        managed_datasets: set[str] = set()
-        preserved_upload = (
-            preserve_upload_path.expanduser().resolve()
-            if preserve_upload_path is not None
-            else None
-        )
-
-        if upload_dir.is_dir():
-            for upload_path in upload_dir.glob("*.ifc"):
-                resolved_upload = upload_path.expanduser().resolve()
-                managed_datasets.add(sanitize_dataset_stem(upload_path.stem))
-                if preserved_upload is not None and resolved_upload == preserved_upload:
-                    continue
-                resolved_upload.unlink(missing_ok=True)
-
-        managed_datasets.discard(preserve_dataset)
-        output_dir = self._primary_output_dir()
-        for dataset in sorted(managed_datasets):
-            for artifact_path in (
-                output_dir / f"{dataset}.jsonl",
-                output_dir / f"{dataset}.db",
-                output_dir / f"{dataset}_graph.html",
-                output_dir / f"{dataset}_graph_viewer",
-            ):
-                self._remove_output_artifact(artifact_path)
+    def _output_dir_for_ifc_path(self, ifc_path: Path) -> Path:
+        recent_ifc = self._recent_ifc_record_for_path(ifc_path)
+        if recent_ifc is not None:
+            return recent_ifc.artifact_dir
+        return self._primary_output_dir()
 
     def execute_user_query(
         self,
@@ -696,6 +913,7 @@ class ViewerState:
         self.context_db = artifacts.db_path
         self.runtime = artifacts.runtime
         self.agent = None
+        self.active_output_dir = artifacts.jsonl_path.parent
         self.debug_graph_html_override = artifacts.debug_graph_html_path
         self.webgl_graph_bundle_override = artifacts.webgl_graph_bundle_path
         self.source_ifc_path = artifacts.ifc_path
@@ -719,6 +937,7 @@ class ViewerState:
             graph=job.graph,
             debug_graph_available=job.debug_graph_available,
             webgl_graph_available=job.webgl_graph_available,
+            reused_existing_build=job.reused_existing_build,
             error=job.error,
         )
 
@@ -745,6 +964,10 @@ class ViewerState:
         job_id: str,
         ifc_path: Path,
     ) -> None:
+        with self._import_jobs_lock:
+            job = self._import_jobs[job_id]
+            source_name = job.source_name
+
         def progress(stage: str, message: str, progress_value: int) -> None:
             self._update_import_job(
                 job_id,
@@ -761,7 +984,11 @@ class ViewerState:
                 "Upload complete. Waiting for the viewer build slot...",
                 12,
             )
-            response = self.import_ifc(ifc_path, progress_callback=progress)
+            response = self.import_ifc(
+                ifc_path,
+                source_name=source_name,
+                progress_callback=progress,
+            )
         except Exception as exc:
             self._update_import_job(
                 job_id,
@@ -782,6 +1009,7 @@ class ViewerState:
             graph=response.graph,
             debug_graph_available=response.debug_graph_available,
             webgl_graph_available=response.webgl_graph_available,
+            reused_existing_build=response.reused_existing_build,
             error=None,
         )
 
@@ -789,8 +1017,10 @@ class ViewerState:
         self,
         ifc_path: Path,
         *,
+        source_name: str | None = None,
         progress_callback: BuildProgressCallback | None = None,
     ) -> ImportIfcResponse:
+        resolved_ifc_path = ifc_path.expanduser().resolve()
         if progress_callback is not None:
             waiting_message = "Waiting for the current viewer build to finish..."
             progress_callback(
@@ -805,26 +1035,40 @@ class ViewerState:
         with self._build_lock:
             if progress_callback is not None:
                 progress_callback("preparing", "Starting IFC conversion...", 14)
+            recent_ifc_record = self._recent_ifc_record_for_path(resolved_ifc_path)
             artifacts = build_viewer_artifacts_from_ifc(
-                ifc_path,
-                output_dir=self._primary_output_dir(),
+                resolved_ifc_path,
+                output_dir=self._output_dir_for_ifc_path(resolved_ifc_path),
                 payload_mode=self.payload_mode,
+                reuse_existing=recent_ifc_record is not None,
                 progress_callback=progress_callback,
             )
             if progress_callback is not None:
-                progress_callback("finalizing", "Loading rebuilt viewer assets...", 98)
-            self._apply_build_artifacts(artifacts)
-            if self._is_viewer_upload_path(artifacts.ifc_path):
-                self._cleanup_previous_viewer_uploads(
-                    preserve_upload_path=artifacts.ifc_path,
-                    preserve_dataset=artifacts.dataset,
+                progress_callback(
+                    "finalizing",
+                    (
+                        "Loading cached viewer assets..."
+                        if artifacts.reused_existing_build
+                        else "Loading rebuilt viewer assets..."
+                    ),
+                    98,
                 )
+            self._apply_build_artifacts(artifacts)
+            self._mark_recent_ifc_used(artifacts.ifc_path)
+            display_name = (
+                source_name or self.active_ifc_name() or artifacts.ifc_path.name
+            )
             return ImportIfcResponse(
                 dataset=artifacts.dataset,
                 graph=self.graph_summary(),
-                message=f"Viewer rebuilt from {artifacts.ifc_path.name}.",
+                message=(
+                    f"Viewer reopened from {display_name} using cached artifacts."
+                    if artifacts.reused_existing_build
+                    else f"Viewer rebuilt from {display_name}."
+                ),
                 debug_graph_available=self.debug_graph_available(),
                 webgl_graph_available=self.webgl_graph_available(),
+                reused_existing_build=artifacts.reused_existing_build,
             )
 
     def import_uploaded_ifc(
@@ -840,11 +1084,20 @@ class ViewerState:
             raise ValueError("Only .ifc uploads are supported.")
 
         dataset = sanitize_dataset_stem(Path(source_name).stem)
+        fingerprint_sha256 = _hash_bytes(payload)
+        recent_ifc_id = _recent_ifc_id(dataset, fingerprint_sha256)
         upload_dir = self._viewer_upload_dir()
         upload_dir.mkdir(parents=True, exist_ok=True)
-        upload_path = upload_dir / f"{dataset}.ifc"
+        upload_path = upload_dir / f"{recent_ifc_id}.ifc"
         upload_path.write_bytes(payload)
-        return self.import_ifc(upload_path)
+        self._upsert_recent_ifc_record(
+            source_name=source_name,
+            dataset=dataset,
+            upload_path=upload_path,
+            fingerprint_sha256=fingerprint_sha256,
+            size_bytes=len(payload),
+        )
+        return self.import_ifc(upload_path, source_name=source_name)
 
     def start_import_uploaded_ifc(
         self,
@@ -859,10 +1112,19 @@ class ViewerState:
             raise ValueError("Only .ifc uploads are supported.")
 
         dataset = sanitize_dataset_stem(Path(source_name).stem)
+        fingerprint_sha256 = _hash_bytes(payload)
+        recent_ifc_id = _recent_ifc_id(dataset, fingerprint_sha256)
         upload_dir = self._viewer_upload_dir()
         upload_dir.mkdir(parents=True, exist_ok=True)
-        upload_path = upload_dir / f"{dataset}.ifc"
+        upload_path = upload_dir / f"{recent_ifc_id}.ifc"
         upload_path.write_bytes(payload)
+        self._upsert_recent_ifc_record(
+            source_name=source_name,
+            dataset=dataset,
+            upload_path=upload_path,
+            fingerprint_sha256=fingerprint_sha256,
+            size_bytes=len(payload),
+        )
 
         job = _ImportIfcJob(
             job_id=uuid4().hex,
@@ -874,6 +1136,28 @@ class ViewerState:
         Thread(
             target=self._run_import_ifc_job,
             args=(job.job_id, upload_path),
+            daemon=True,
+        ).start()
+        return self._serialize_import_job(job)
+
+    def start_activate_recent_ifc(
+        self,
+        recent_ifc_id: str,
+    ) -> ImportIfcJobStatusResponse:
+        record = self._recent_ifc_record(recent_ifc_id)
+        if not record.upload_path.is_file():
+            raise FileNotFoundError(record.upload_path)
+
+        job = _ImportIfcJob(
+            job_id=uuid4().hex,
+            source_name=record.source_name,
+            message=f"Opening recent IFC {record.source_name}...",
+            progress=12,
+        )
+        self._store_import_job(job)
+        Thread(
+            target=self._run_import_ifc_job,
+            args=(job.job_id, record.upload_path),
             daemon=True,
         ).start()
         return self._serialize_import_job(job)

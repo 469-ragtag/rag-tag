@@ -87,6 +87,9 @@ def create_app(state: ViewerState | None = None) -> FastAPI:
             webgl_graph_available=state.webgl_graph_available(),
             model_viewer_url="/model",
             model_ifc_available=state.model_ifc_available(),
+            recent_ifcs=state.list_recent_ifcs(),
+            active_recent_ifc_id=state.active_recent_ifc_id(),
+            active_ifc_name=state.active_ifc_name(),
         )
 
     @app.get("/api/model/bootstrap", response_model=ModelBootstrapResponse)
@@ -107,6 +110,8 @@ def create_app(state: ViewerState | None = None) -> FastAPI:
             model_ifc_url="/api/model/ifc" if model_ifc_available else None,
             model_ifc_name=state.active_ifc_name(),
             model_fragments_cache_key=state.active_ifc_cache_key(),
+            recent_ifcs=state.list_recent_ifcs(),
+            active_recent_ifc_id=state.active_recent_ifc_id(),
         )
 
     @app.get("/api/model/ifc", include_in_schema=False)
@@ -283,6 +288,20 @@ def create_app(state: ViewerState | None = None) -> FastAPI:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
         finally:
             await ifc_file.close()
+
+    @app.post(
+        "/api/recent-ifc/{recent_ifc_id}/activate",
+        response_model=ImportIfcJobStatusResponse,
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+    def activate_recent_ifc(recent_ifc_id: str) -> ImportIfcJobStatusResponse:
+        state = app.state.viewer_state
+        try:
+            return state.start_activate_recent_ifc(recent_ifc_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     @app.get(
         "/api/import-ifc/{job_id}",

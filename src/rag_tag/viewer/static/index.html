@@ -22,6 +22,15 @@
         </div>
       </div>
       <div class="topbar-actions">
+        <div id="recent-ifc-picker" class="recent-ifc-picker" hidden>
+          <label class="visually-hidden" for="recent-ifc-select">Recent IFCs</label>
+          <select id="recent-ifc-select" class="recent-ifc-select">
+            <option value="">Recent IFCs</option>
+          </select>
+          <button id="recent-ifc-open" class="secondary" type="button">
+            Open Recent
+          </button>
+        </div>
         <input
           id="ifc-upload-input"
           class="visually-hidden"
@@ -89,19 +98,19 @@
               <button id="toggle-meshes" class="toggle chip-toggle" type="button">
                 Meshes: Off
               </button>
-              <button id="toggle-legend" class="toggle chip-toggle active" type="button">
+              <button id="toggle-legend" class="toggle chip-toggle" type="button">
                 Legend: On
               </button>
               <button
                 id="toggle-search-panel"
-                class="toggle chip-toggle active"
+                class="toggle chip-toggle"
                 type="button"
               >
                 Explorer: On
               </button>
               <button
                 id="toggle-inspector-panel"
-                class="toggle chip-toggle active"
+                class="toggle chip-toggle"
                 type="button"
               >
                 Inspector: On
@@ -419,5 +428,6 @@ Select a node in the graph or from search to inspect its properties.
   </div>
 
   <script type="module" src="/static/app.js"></script>
+  <script type="module" src="/static/recent-ifc.js"></script>
 </body>
 </html>

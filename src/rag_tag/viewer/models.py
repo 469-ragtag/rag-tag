@@ -73,6 +73,17 @@ class GraphSummaryResponse(BaseModel):
     edge_count: int
 
 
+class RecentIfcEntry(BaseModel):
+    id: str
+    source_name: str
+    dataset: str
+    size_bytes: int
+    created_at_ms: int
+    last_used_at_ms: int
+    build_ready: bool = False
+    active: bool = False
+
+
 class BootstrapResponse(BaseModel):
     datasets: list[DatasetInfo]
     selected_dataset: str | None = None
@@ -83,6 +94,9 @@ class BootstrapResponse(BaseModel):
     webgl_graph_available: bool = False
     model_viewer_url: str | None = None
     model_ifc_available: bool = False
+    recent_ifcs: list[RecentIfcEntry] = Field(default_factory=list)
+    active_recent_ifc_id: str | None = None
+    active_ifc_name: str | None = None
 
 
 class ModelBootstrapResponse(BaseModel):
@@ -94,6 +108,8 @@ class ModelBootstrapResponse(BaseModel):
     model_ifc_url: str | None = None
     model_ifc_name: str | None = None
     model_fragments_cache_key: str | None = None
+    recent_ifcs: list[RecentIfcEntry] = Field(default_factory=list)
+    active_recent_ifc_id: str | None = None
 
 
 class ImportIfcResponse(BaseModel):
@@ -102,6 +118,7 @@ class ImportIfcResponse(BaseModel):
     message: str
     debug_graph_available: bool = False
     webgl_graph_available: bool = False
+    reused_existing_build: bool = False
 
 
 class ImportIfcJobStatusResponse(BaseModel):
@@ -114,4 +131,5 @@ class ImportIfcJobStatusResponse(BaseModel):
     graph: GraphSummaryResponse | None = None
     debug_graph_available: bool = False
     webgl_graph_available: bool = False
+    reused_existing_build: bool = False
     error: str | None = None

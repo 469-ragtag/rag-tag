@@ -25,6 +25,15 @@
         </p>
       </div>
       <div class="topbar-actions">
+        <div id="recent-ifc-picker" class="recent-ifc-picker" hidden>
+          <label class="visually-hidden" for="recent-ifc-select">Recent IFCs</label>
+          <select id="recent-ifc-select" class="recent-ifc-select">
+            <option value="">Recent IFCs</option>
+          </select>
+          <button id="recent-ifc-open" class="secondary" type="button">
+            Open Recent
+          </button>
+        </div>
         <input
           id="ifc-upload-input"
           class="visually-hidden"
@@ -253,8 +262,63 @@ Select an IFC element in the model or from search to inspect its properties.
         </div>
       </aside>
     </main>
+
+    <section id="query-dock" class="bottom-dock panel">
+      <div class="dock-head">
+        <div>
+          <p class="eyebrow">Query Runner</p>
+          <p id="query-status" class="sidebar-section-meta">
+            Dataset: loading... | details:off
+          </p>
+        </div>
+        <div class="dock-actions query-toolbar-actions">
+          <button
+            id="query-tool-fullscreen"
+            class="graph-tool-button"
+            type="button"
+            data-tooltip="Enter or exit query fullscreen"
+            aria-label="Toggle query fullscreen"
+          >
+            <svg viewBox="0 0 16 16" aria-hidden="true">
+              <path
+                d="M6 2.75H2.75V6M10 2.75h3.25V6M13.25 10v3.25H10M2.75 10v3.25H6"
+                fill="none"
+                stroke="currentColor"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="1.4"
+              />
+            </svg>
+          </button>
+          <button
+            id="query-toggle-details"
+            type="button"
+            class="secondary"
+            aria-pressed="false"
+          >
+            Details: Off
+          </button>
+          <button id="query-copy-transcript" type="button" class="secondary">
+            Copy Transcript
+          </button>
+        </div>
+      </div>
+      <div id="query-result" class="dock-result query-empty" aria-live="polite">
+        No query yet.
+      </div>
+      <form id="query-form" class="query-bar">
+        <textarea
+          id="query-input"
+          rows="2"
+          placeholder="Ask a question about the active IFC dataset"
+        ></textarea>
+        <button type="submit">Run Query</button>
+      </form>
+    </section>
   </div>
 
   <script type="module" src="/static/model-viewer.js"></script>
+  <script type="module" src="/static/query-runner.js"></script>
+  <script type="module" src="/static/recent-ifc.js"></script>
 </body>
 </html>
