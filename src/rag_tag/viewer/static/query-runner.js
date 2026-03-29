@@ -264,6 +264,7 @@ function createPendingQueryEntry(question) {
     return entry
   }
   queryResult.classList.remove("query-empty")
+  queryResult.textContent = ""
   const article = document.createElement("article")
   article.className = "query-entry pending"
   article.innerHTML = `
