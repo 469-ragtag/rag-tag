@@ -85,6 +85,8 @@ let queryDetailsVisible = false;
 let lastQueryRoute = "";
 let lastQueryDurationMs = 0;
 let queryTranscriptEntries = [];
+let graphLayoutSyncFrame = null;
+let graphLayoutSyncSettleFrame = null;
 const DEFAULT_UPLOAD_STATUS = "Build the viewer directly from an IFC file.";
 const DEFAULT_QUERY_SUBMIT_LABEL = querySubmitButton.textContent || "Run Query";
 let searchState = {
@@ -496,6 +498,28 @@ function renderLegend(nodeGroups = legendNodeGroups) {
   }
 
   syncLegendPage(activeLegendPage, visibleEdgeCount, nodeEntries.length);
+  scheduleGraphLayoutSync();
+}
+
+function scheduleGraphLayoutSync() {
+  if (!graphView) {
+    return;
+  }
+  if (graphLayoutSyncFrame !== null) {
+    cancelAnimationFrame(graphLayoutSyncFrame);
+    graphLayoutSyncFrame = null;
+  }
+  if (graphLayoutSyncSettleFrame !== null) {
+    cancelAnimationFrame(graphLayoutSyncSettleFrame);
+    graphLayoutSyncSettleFrame = null;
+  }
+  graphLayoutSyncFrame = requestAnimationFrame(() => {
+    graphLayoutSyncFrame = null;
+    graphLayoutSyncSettleFrame = requestAnimationFrame(() => {
+      graphLayoutSyncSettleFrame = null;
+      graphView?.resize();
+    });
+  });
 }
 
 function setLegendVisible(visible) {
@@ -505,6 +529,17 @@ function setLegendVisible(visible) {
   }
   syncPanelToggleButton(toggleLegendButton, visible);
   setChipToggleLabel(toggleLegendButton, "Legend", visible);
+  scheduleGraphLayoutSync();
+}
+
+function syncRightSidebarLayoutState() {
+  if (!rightSidebar) {
+    return;
+  }
+  rightSidebar.classList.toggle(
+    "inspector-only",
+    inspectorPanelVisible && !searchPanelVisible
+  );
 }
 
 function setSearchPanelVisible(visible) {
@@ -517,6 +552,8 @@ function setSearchPanelVisible(visible) {
   if (rightSidebar) {
     rightSidebar.hidden = !(searchPanelVisible || inspectorPanelVisible);
   }
+  syncRightSidebarLayoutState();
+  scheduleGraphLayoutSync();
 }
 
 function setInspectorPanelVisible(visible) {
@@ -529,6 +566,8 @@ function setInspectorPanelVisible(visible) {
   if (rightSidebar) {
     rightSidebar.hidden = !(searchPanelVisible || inspectorPanelVisible);
   }
+  syncRightSidebarLayoutState();
+  scheduleGraphLayoutSync();
 }
 
 function updateFullscreenButton() {
@@ -1410,7 +1449,7 @@ ifcUploadInput?.addEventListener("change", async () => {
 document.addEventListener("fullscreenchange", () => {
   updateFullscreenButton();
   updateQueryFullscreenButton();
-  graphView?.resize();
+  scheduleGraphLayoutSync();
 });
 
 setLegendVisible(false);

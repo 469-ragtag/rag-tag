@@ -415,6 +415,8 @@ export class WebGLGraphView {
     this.onHoverChangeHandler = null;
     this.projectedNodeCache = [];
     this.dragState = null;
+    this.resizeTarget = canvas.parentElement || canvas;
+    this.resizeFrame = null;
     this.viewProjectionMatrix = mat4Multiply(
       mat4Perspective(45 * DEG_TO_RAD, 1, 0.1, 1000),
       mat4LookAt([0, 0, 10], [0, 0, 0], [0, 0, 1])
@@ -438,14 +440,24 @@ export class WebGLGraphView {
   }
 
   _bindEvents() {
-    this.resizeObserver = new ResizeObserver(() => this.resize());
-    this.resizeObserver.observe(this.canvas);
+    this.resizeObserver = new ResizeObserver(() => this._scheduleResize());
+    this.resizeObserver.observe(this.resizeTarget);
     this.canvas.addEventListener("pointerdown", (event) => this._onPointerDown(event));
     this.canvas.addEventListener("pointermove", (event) => this._onPointerMove(event));
     this.canvas.addEventListener("pointerup", (event) => this._onPointerUp(event));
     this.canvas.addEventListener("pointerleave", () => this._clearHover());
     this.canvas.addEventListener("wheel", (event) => this._onWheel(event), {
       passive: false,
+    });
+  }
+
+  _scheduleResize() {
+    if (this.resizeFrame !== null) {
+      return;
+    }
+    this.resizeFrame = requestAnimationFrame(() => {
+      this.resizeFrame = null;
+      this.resize();
     });
   }
 
@@ -1028,19 +1040,24 @@ export class WebGLGraphView {
 
   resize() {
     const devicePixelRatio = window.devicePixelRatio || 1;
-    const rect = this.canvas.getBoundingClientRect();
+    const rect = this.resizeTarget.getBoundingClientRect();
+    if (rect.width < 2 || rect.height < 2) {
+      return false;
+    }
     const width = Math.max(1, Math.floor(rect.width * devicePixelRatio));
     const height = Math.max(1, Math.floor(rect.height * devicePixelRatio));
+    this.overlayCanvas.style.width = `${rect.width}px`;
+    this.overlayCanvas.style.height = `${rect.height}px`;
     if (this.canvas.width !== width || this.canvas.height !== height) {
       this.canvas.width = width;
       this.canvas.height = height;
       this.overlayCanvas.width = width;
       this.overlayCanvas.height = height;
-      this.overlayCanvas.style.width = `${rect.width}px`;
-      this.overlayCanvas.style.height = `${rect.height}px`;
       this.gl.viewport(0, 0, width, height);
       this.requestRender();
+      return true;
     }
+    return false;
   }
 
   requestRender() {

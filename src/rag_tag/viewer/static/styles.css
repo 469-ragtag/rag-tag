@@ -267,6 +267,7 @@ body.guide-page {
 
 .graph-stage {
   flex: 1 1 auto;
+  min-width: 0;
   min-height: 0;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
@@ -436,6 +437,7 @@ body.guide-page {
 
 .graph-shell {
   position: relative;
+  min-width: 0;
   min-height: 0;
   background:
     radial-gradient(circle at top, rgba(125, 168, 255, 0.04), transparent 34%),
@@ -691,10 +693,10 @@ body.guide-page {
 
 .legend-sidebar {
   order: -1;
-  flex: 0 1 auto;
-  width: max-content;
-  min-width: 240px;
-  max-width: min(1200px, 88vw);
+  flex: 0 0 clamp(240px, 20vw, 320px);
+  width: clamp(240px, 20vw, 320px);
+  min-width: 0;
+  max-width: min(320px, 28vw);
   min-height: 0;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
@@ -722,6 +724,7 @@ body.guide-page {
   color: var(--subtext);
   font-size: 11px;
   line-height: 1.4;
+  overflow-wrap: anywhere;
 }
 
 .sidebar-section {
@@ -761,6 +764,15 @@ body.guide-page {
   border: 1px solid rgba(154, 170, 194, 0.05);
   border-radius: var(--radius-md);
   background: rgba(255, 255, 255, 0.012);
+}
+
+.sidebar.inspector-only .sidebar-stack {
+  overflow-y: hidden;
+}
+
+.sidebar.inspector-only .sidebar-inspector-section {
+  flex: 1 1 auto;
+  min-height: 0;
 }
 
 .sidebar-inspector-section.is-empty {
@@ -1022,6 +1034,11 @@ button:disabled {
   padding: var(--space-5);
   font-size: 12px;
   line-height: 1.5;
+}
+
+#inspector.result-box {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .dock-result {
