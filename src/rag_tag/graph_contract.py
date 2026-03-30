@@ -174,6 +174,9 @@ ACTION_DATA_DEFAULTS: dict[str, dict[str, Any]] = {
         "storey_id": None,
         "class": None,
         "elements": [],
+        "evidence": [],
+        **_BOUNDED_LIST_METADATA_DEFAULTS,
+    },
     "resolve_element_set": {
         "query": None,
         "class_filter": None,
@@ -302,7 +305,6 @@ ACTION_DATA_DEFAULTS: dict[str, dict[str, Any]] = {
         "missing_value_count": 0,
         "evidence": [],
     },
-}
 }
 
 ACTION_REQUIRED_DATA_FIELDS: dict[str, tuple[str, ...]] = {

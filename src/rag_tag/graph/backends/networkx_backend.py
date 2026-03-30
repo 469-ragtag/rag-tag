@@ -1279,6 +1279,7 @@ class NetworkXGraphBackend:
                     "contact_area": edge.get("contact_area"),
                     "source": edge_source(edge, current_relation),
                 }
+
         def resolve_graph_node(
             node_ref: str,
         ) -> tuple[str | None, dict[str, Any] | None]:
