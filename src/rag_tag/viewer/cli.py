@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from rag_tag.observability import setup_logfire
 from rag_tag.query_service import find_sqlite_dbs
 
 from .app import create_app
@@ -79,6 +80,12 @@ def main() -> int:
         default="minimal",
         help="Payload mode to use for the graph runtime.",
     )
+    parser.add_argument(
+        "--trace",
+        action="store_true",
+        default=False,
+        help="Enable Logfire observability for PydanticAI queries in the viewer.",
+    )
     args = parser.parse_args()
 
     try:
@@ -90,6 +97,8 @@ def main() -> int:
 
     if args.ifc and args.graph_dataset:
         parser.error("--graph-dataset cannot be used with --ifc.")
+
+    setup_logfire(enabled=args.trace)
 
     if args.ifc:
         state = ViewerState.default(
