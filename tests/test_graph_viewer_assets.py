@@ -62,7 +62,10 @@ def test_export_webgl_graph_assets_writes_manifest_and_binary_files(tmp_path) ->
     assert "contains" not in manifest["relation_names"]
     assert "contained_in" not in manifest["relation_names"]
     assert "hosts" not in manifest["relation_names"]
-    assert manifest["relation_labels"]["contains__contained_in"] == "contains / contained_in"
+    assert (
+        manifest["relation_labels"]["contains__contained_in"]
+        == "contains / contained_in"
+    )
     assert manifest["relation_labels"]["above__below"] == "above / below"
     assert manifest["viewer_modes"]["hierarchy"] == ["contains__contained_in"]
     assert "above__below" in manifest["viewer_modes"]["topology"]

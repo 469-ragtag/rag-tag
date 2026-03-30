@@ -113,12 +113,10 @@ _VIZ_EDGE_RELATION_EXPLANATIONS = {
         "loaded, linking the parent container to the child node."
     ),
     "contained_in": (
-        "Reverse edge emitted alongside contains from the same "
-        "Hierarchy.ParentId link."
+        "Reverse edge emitted alongside contains from the same Hierarchy.ParentId link."
     ),
     "typed_by": (
-        "Read from IfcRelDefinesByType, linking each occurrence to its IFC type "
-        "object."
+        "Read from IfcRelDefinesByType, linking each occurrence to its IFC type object."
     ),
     "connected_to": (
         "Derived from geometry when elements are colocated or OCC verification "
@@ -179,20 +177,17 @@ _VIZ_EDGE_RELATION_EXPLANATIONS = {
         "connection."
     ),
     "space_bounded_by": (
-        "Read from IfcRelSpaceBoundary from the space node to its bounding "
-        "element."
+        "Read from IfcRelSpaceBoundary from the space node to its bounding element."
     ),
     "bounds_space": (
-        "Reverse of space_bounded_by, emitted from the same IfcRelSpaceBoundary "
-        "record."
+        "Reverse of space_bounded_by, emitted from the same IfcRelSpaceBoundary record."
     ),
     "belongs_to_system": (
         "Read from IfcRelAssignsToGroup when the assigned group resolves to an "
         "IfcSystem."
     ),
     "in_zone": (
-        "Read from IfcRelAssignsToGroup when the assigned group resolves to an "
-        "IfcZone."
+        "Read from IfcRelAssignsToGroup when the assigned group resolves to an IfcZone."
     ),
     "classified_as": (
         "Read from IfcRelAssociatesClassification using the exported "
