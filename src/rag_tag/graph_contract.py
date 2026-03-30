@@ -22,6 +22,8 @@ CANONICAL_ACTIONS: tuple[str, ...] = (
     "find_elements_by_class",
     "find_elements_inside_footprint",
     "find_same_storey_elements",
+    "resolve_element_set",
+    "relate_element_set",
     "get_adjacent_elements",
     "get_topology_neighbors",
     "get_intersections_3d",
@@ -172,6 +174,21 @@ ACTION_DATA_DEFAULTS: dict[str, dict[str, Any]] = {
         "storey_id": None,
         "class": None,
         "elements": [],
+    "resolve_element_set": {
+        "query": None,
+        "class_filter": None,
+        "match_mode": None,
+        "matches": [],
+        "evidence": [],
+        **_BOUNDED_LIST_METADATA_DEFAULTS,
+    },
+    "relate_element_set": {
+        "anchor_ids": [],
+        "relation": None,
+        "anchor_count": 0,
+        "matched_anchor_count": 0,
+        "unmatched_anchor_count": 0,
+        "results": [],
         "evidence": [],
         **_BOUNDED_LIST_METADATA_DEFAULTS,
     },
@@ -244,11 +261,13 @@ ACTION_DATA_DEFAULTS: dict[str, dict[str, Any]] = {
         "max_depth": None,
         "results": [],
         "evidence": [],
+        **_BOUNDED_LIST_METADATA_DEFAULTS,
     },
     "find_equipment_serving_space": {
         "space": None,
         "equipment": [],
         "evidence": [],
+        **_BOUNDED_LIST_METADATA_DEFAULTS,
     },
     "find_shortest_path": {
         "start": None,
@@ -261,6 +280,7 @@ ACTION_DATA_DEFAULTS: dict[str, dict[str, Any]] = {
         "classification": None,
         "elements": [],
         "evidence": [],
+        **_BOUNDED_LIST_METADATA_DEFAULTS,
     },
     "aggregate_elements": {
         "metric": None,
@@ -283,6 +303,7 @@ ACTION_DATA_DEFAULTS: dict[str, dict[str, Any]] = {
         "evidence": [],
     },
 }
+}
 
 ACTION_REQUIRED_DATA_FIELDS: dict[str, tuple[str, ...]] = {
     action: tuple(defaults.keys()) for action, defaults in ACTION_DATA_DEFAULTS.items()
@@ -293,6 +314,8 @@ ACTION_EVIDENCE_FIELDS: dict[str, tuple[str, ...]] = {
     "find_elements_by_class": ("elements",),
     "find_elements_inside_footprint": ("elements",),
     "find_same_storey_elements": ("elements",),
+    "resolve_element_set": ("matches",),
+    "relate_element_set": ("results",),
     "get_adjacent_elements": ("adjacent",),
     "get_topology_neighbors": ("neighbors",),
     "get_intersections_3d": ("intersections_3d",),

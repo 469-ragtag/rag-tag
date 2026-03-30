@@ -1712,6 +1712,7 @@ def add_spatial_adjacency(
     *,
     exclude_classes: object = None,
 ) -> float:
+    threshold_positions: list[tuple] = []
     element_nodes: list[str] = []
     positions: list[tuple] = []
     bboxes: list[tuple | None] = []
@@ -1728,10 +1729,6 @@ def add_spatial_adjacency(
             continue
         if not n.startswith("Element::"):
             continue
-        class_name = _normalize_ifc_class_name(d.get("class_"))
-        if class_name in excluded_classes:
-            skipped_by_class[class_name] += 1
-            continue
         centroid = d.get("geometry")
         bbox = d.get("bbox")
         # fall back to bbox center if we don't have a centroid
@@ -1739,6 +1736,12 @@ def add_spatial_adjacency(
             mn, mx = bbox
             centroid = tuple((mn[i] + mx[i]) / 2 for i in range(3))
         if centroid is None:
+            continue
+        threshold_positions.append(centroid)
+
+        class_name = _normalize_ifc_class_name(d.get("class_"))
+        if class_name in excluded_classes:
+            skipped_by_class[class_name] += 1
             continue
         element_nodes.append(n)
         positions.append(centroid)
@@ -1752,7 +1755,7 @@ def add_spatial_adjacency(
             element_refs.append(None)
 
     if threshold is None:
-        threshold = compute_adjacency_threshold(positions)
+        threshold = compute_adjacency_threshold(threshold_positions)
 
     pos = _normalize_positions(positions)
     if pos is None:

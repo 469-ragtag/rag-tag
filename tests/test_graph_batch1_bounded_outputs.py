@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import inspect
 from collections.abc import Callable
+from types import SimpleNamespace
 from typing import Any
 
 import networkx as nx
@@ -71,6 +72,49 @@ def test_traverse_reads_incoming_symmetric_edges_once() -> None:
     assert [item["to"] for item in data["results"]] == ["Element::B"]
     assert [item["relation"] for item in data["results"]] == ["ifc_connected_to"]
     assert data["total_found"] == 1
+
+
+def test_traverse_depth_two_truncation_is_deterministic() -> None:
+    graph = nx.MultiDiGraph()
+    for node_id, label, global_id in [
+        ("Element::A", "Root", "A"),
+        ("Element::B", "Branch B", "B"),
+        ("Element::C", "Branch C", "C"),
+        ("Element::D", "Leaf D", "D"),
+        ("Element::E", "Leaf E", "E"),
+        ("Element::F", "Leaf F", "F"),
+        ("Element::G", "Leaf G", "G"),
+    ]:
+        graph.add_node(node_id, **_make_node(node_id, label, "IfcWall", global_id))
+
+    graph.add_edge("Element::A", "Element::C", relation="hosts", source="ifc")
+    graph.add_edge("Element::A", "Element::B", relation="hosts", source="ifc")
+    graph.add_edge("Element::B", "Element::E", relation="hosts", source="ifc")
+    graph.add_edge("Element::B", "Element::D", relation="hosts", source="ifc")
+    graph.add_edge("Element::C", "Element::G", relation="hosts", source="ifc")
+    graph.add_edge("Element::C", "Element::F", relation="hosts", source="ifc")
+
+    result = query_ifc_graph(
+        graph,
+        "traverse",
+        {"start": "Element::A", "depth": 2, "max_results": 4},
+    )
+
+    assert result["status"] == "ok"
+    data = result["data"]
+    assert not missing_required_action_fields("traverse", data)
+    assert [
+        (item["from"], item["to"], item["relation"]) for item in data["results"]
+    ] == [
+        ("Element::A", "Element::B", "hosts"),
+        ("Element::A", "Element::C", "hosts"),
+        ("Element::B", "Element::D", "hosts"),
+        ("Element::B", "Element::E", "hosts"),
+    ]
+    assert data["total_found"] == 6
+    assert data["returned_count"] == 4
+    assert data["truncated"] is True
+    assert data["truncation_reason"] is not None
 
 
 def test_traverse_keeps_directional_relations_directional() -> None:
@@ -188,6 +232,134 @@ def test_adjacency_and_spatial_results_sort_by_distance() -> None:
     assert nearby["data"]["total_found"] == 3
     assert nearby["data"]["returned_count"] == 2
     assert nearby["data"]["truncated"] is True
+
+
+def test_relate_element_set_deduplicates_union_and_reports_anchor_metadata() -> None:
+    graph = nx.MultiDiGraph()
+    graph.add_node(
+        "Element::cw-1",
+        **_make_node("Element::cw-1", "Curtain Wall A", "IfcCurtainWall", "CW1"),
+    )
+    graph.add_node(
+        "Element::cw-2",
+        **_make_node("Element::cw-2", "Curtain Wall B", "IfcCurtainWall", "CW2"),
+    )
+    graph.add_node(
+        "Element::door-a", **_make_node("Element::door-a", "Door A", "IfcDoor", "DA")
+    )
+    graph.add_node(
+        "Element::door-b", **_make_node("Element::door-b", "Door B", "IfcDoor", "DB")
+    )
+    graph.add_node(
+        "Element::window-a",
+        **_make_node("Element::window-a", "Window A", "IfcWindow", "WA"),
+    )
+    graph.add_edge(
+        "Element::cw-1",
+        "Element::door-a",
+        relation="adjacent_to",
+        source="heuristic",
+        distance=2.0,
+    )
+    graph.add_edge(
+        "Element::cw-1",
+        "Element::window-a",
+        relation="adjacent_to",
+        source="heuristic",
+        distance=3.0,
+    )
+    graph.add_edge(
+        "Element::cw-2",
+        "Element::door-a",
+        relation="adjacent_to",
+        source="heuristic",
+        distance=1.0,
+    )
+    graph.add_edge(
+        "Element::cw-2",
+        "Element::door-b",
+        relation="adjacent_to",
+        source="heuristic",
+        distance=4.0,
+    )
+
+    result = query_ifc_graph(
+        graph,
+        "relate_element_set",
+        {
+            "anchor_ids": ["Element::cw-1", "Element::cw-2"],
+            "relation": "adjacent_to",
+            "max_results": 2,
+        },
+    )
+
+    assert result["status"] == "ok"
+    data = result["data"]
+    assert not missing_required_action_fields("relate_element_set", data)
+    assert data["anchor_count"] == 2
+    assert data["matched_anchor_count"] == 2
+    assert data["unmatched_anchor_count"] == 0
+    assert data["total_found"] == 3
+    assert data["returned_count"] == 2
+    assert data["truncated"] is True
+    assert [item["id"] for item in data["results"]] == [
+        "Element::door-a",
+        "Element::window-a",
+    ]
+    assert data["results"][0]["matched_anchor_ids"] == [
+        "Element::cw-1",
+        "Element::cw-2",
+    ]
+    assert data["results"][0]["matched_anchor_count"] == 2
+    assert data["results"][0]["distance"] == 1.0
+
+
+def test_relate_element_set_tracks_unresolved_and_no_match_anchors() -> None:
+    graph = nx.MultiDiGraph()
+    graph.add_node(
+        "Element::cw-1",
+        **_make_node("Element::cw-1", "Curtain Wall A", "IfcCurtainWall", "CW1"),
+    )
+    graph.add_node(
+        "Element::cw-2",
+        **_make_node("Element::cw-2", "Curtain Wall B", "IfcCurtainWall", "CW2"),
+    )
+    graph.add_node(
+        "Element::door-a", **_make_node("Element::door-a", "Door A", "IfcDoor", "DA")
+    )
+    graph.add_edge(
+        "Element::cw-1",
+        "Element::door-a",
+        relation="adjacent_to",
+        source="heuristic",
+        distance=2.0,
+    )
+
+    result = query_ifc_graph(
+        graph,
+        "relate_element_set",
+        {
+            "anchor_ids": ["Element::cw-1", "Element::cw-2", "missing-anchor"],
+            "relation": "adjacent_to",
+            "max_results": 10,
+        },
+    )
+
+    assert result["status"] == "ok"
+    data = result["data"]
+    assert data["anchor_count"] == 3
+    assert data["resolved_anchor_count"] == 2
+    assert data["matched_anchor_count"] == 1
+    assert data["unmatched_anchor_count"] == 2
+    assert data["unresolved_anchor_count"] == 1
+    assert data["no_relation_match_anchor_count"] == 1
+    assert data["unmatched_anchor_ids"] == ["missing-anchor", "Element::cw-2"]
+    assert data["unresolved_anchor_ids"] == ["missing-anchor"]
+    assert data["no_relation_match_anchor_ids"] == ["Element::cw-2"]
+    assert data["warnings"] == [
+        "1 requested anchor ID(s) were not matched in the graph.",
+        "1 resolved anchor(s) produced no 'adjacent_to' relation matches.",
+    ]
 
 
 def test_topology_and_vertical_helpers_are_bounded_and_sorted_by_metric() -> None:
@@ -346,12 +518,16 @@ def test_graph_tools_expose_batch1_max_results_defaults() -> None:
     register_graph_tools(agent)
 
     scan_defaults = {
+        "fuzzy_find_nodes": 10,
         "find_nodes": 50,
+        "resolve_element_set": 25,
         "spatial_query": 50,
         "get_elements_in_storey": 50,
         "find_elements_by_class": 50,
+        "find_container_elements_excluding": 50,
     }
     neighbor_defaults = {
+        "relate_element_set": 25,
         "traverse": 25,
         "get_adjacent_elements": 25,
         "get_topology_neighbors": 25,
@@ -362,4 +538,88 @@ def test_graph_tools_expose_batch1_max_results_defaults() -> None:
 
     for tool_name, expected_default in {**scan_defaults, **neighbor_defaults}.items():
         signature = inspect.signature(agent.tools[tool_name])
-        assert signature.parameters["max_results"].default == expected_default
+        param_name = "top_k" if tool_name == "fuzzy_find_nodes" else "max_results"
+        assert signature.parameters[param_name].default == expected_default
+
+
+def test_fuzzy_find_nodes_tool_returns_bounded_metadata_and_hard_cap() -> None:
+    class DummyAgent:
+        def __init__(self) -> None:
+            self.tools: dict[str, Callable[..., Any]] = {}
+
+        def tool(self, func: Callable[..., Any]) -> Callable[..., Any]:
+            self.tools[func.__name__] = func
+            return func
+
+    graph = nx.MultiDiGraph()
+    for index in range(30):
+        node_id = f"Element::{index:02d}"
+        graph.add_node(
+            node_id,
+            **_make_node(node_id, "panel", "IfcWall", f"G{index:02d}"),
+        )
+
+    agent = DummyAgent()
+    register_graph_tools(agent)
+
+    result = agent.tools["fuzzy_find_nodes"](
+        SimpleNamespace(deps=graph),
+        query="panel",
+        top_k=999,
+    )
+
+    assert result["status"] == "ok"
+    data = result["data"]
+    assert [item["id"] for item in data["matches"][:3]] == [
+        "Element::00",
+        "Element::01",
+        "Element::02",
+    ]
+    assert data["total"] == 30
+    assert data["total_found"] == 30
+    assert data["returned_count"] == 25
+    assert data["truncated"] is True
+    assert data["truncation_reason"] == (
+        "Results truncated to 25 item(s) to stay bounded."
+    )
+
+
+def test_find_nodes_multi_word_fallback_returns_fuzzy_bounded_metadata() -> None:
+    class DummyAgent:
+        def __init__(self) -> None:
+            self.tools: dict[str, Callable[..., Any]] = {}
+
+        def tool(self, func: Callable[..., Any]) -> Callable[..., Any]:
+            self.tools[func.__name__] = func
+            return func
+
+    graph = nx.MultiDiGraph()
+    for index in range(4):
+        node_id = f"Element::{index:02d}"
+        graph.add_node(
+            node_id,
+            **_make_node(node_id, "plumbing wall", "IfcWall", f"W{index:02d}"),
+        )
+
+    agent = DummyAgent()
+    register_graph_tools(agent)
+
+    result = agent.tools["find_nodes"](
+        SimpleNamespace(deps=graph),
+        class_="plumbing wall",
+        max_results=2,
+    )
+
+    assert result["status"] == "ok"
+    data = result["data"]
+    assert [item["id"] for item in data["matches"]] == [
+        "Element::00",
+        "Element::01",
+    ]
+    assert data["total"] == 4
+    assert data["total_found"] == 4
+    assert data["returned_count"] == 2
+    assert data["truncated"] is True
+    assert data["truncation_reason"] == (
+        "Results truncated to 2 item(s) to stay bounded."
+    )

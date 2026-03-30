@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import networkx as nx
+import pytest
 
 from rag_tag.config import AppConfig
 from rag_tag.graph_contract import EXPLICIT_IFC_RELATIONS, relation_bucket
@@ -931,6 +932,240 @@ def test_overlap_xy_none_mode_preserves_vertical_helpers() -> None:
     assert overlap_stats["mode"] == "none"
     assert overlap_stats["candidate_positive_overlap_pairs"] == 1
     assert overlap_stats["emitted_overlap_pairs"] == 0
+
+
+def test_batch34_spatial_pruning_keeps_unaffected_threshold_and_edges_stable() -> None:
+    def _make_graph() -> nx.MultiDiGraph:
+        graph = nx.MultiDiGraph()
+        for node_id, class_name, x in [
+            ("Element::wall-a", "IfcWall", 0.0),
+            ("Element::member-a", "IfcMember", 0.1),
+            ("Element::wall-b", "IfcWall", 1.1),
+            ("Element::member-b", "IfcMember", 1.2),
+            ("Element::wall-c", "IfcWall", 2.2),
+            ("Element::member-c", "IfcMember", 2.3),
+        ]:
+            graph.add_node(
+                node_id,
+                class_=class_name,
+                bbox=((x, 0.0, 0.0), (x + 0.05, 0.05, 0.05)),
+                geometry=(x + 0.025, 0.025, 0.025),
+                properties={"GlobalId": node_id.removeprefix("Element::")},
+                dataset="single",
+            )
+        return graph
+
+    unaffected_nodes = {"Element::wall-a", "Element::wall-b", "Element::wall-c"}
+    excluded_nodes = {"Element::member-a", "Element::member-b", "Element::member-c"}
+
+    unpruned = _make_graph()
+    unpruned_threshold = add_spatial_adjacency(unpruned)
+
+    pruned = _make_graph()
+    pruned_threshold = add_spatial_adjacency(pruned, exclude_classes={"IfcMember"})
+
+    unpruned_unaffected_edges = {
+        (u, v, attrs["relation"])
+        for u, v, attrs in unpruned.edges(data=True)
+        if attrs.get("source") == "heuristic"
+        and u in unaffected_nodes
+        and v in unaffected_nodes
+    }
+    pruned_unaffected_edges = {
+        (u, v, attrs["relation"])
+        for u, v, attrs in pruned.edges(data=True)
+        if attrs.get("source") == "heuristic"
+        and u in unaffected_nodes
+        and v in unaffected_nodes
+    }
+
+    assert unpruned_threshold == pytest.approx(pruned_threshold)
+    assert unpruned_threshold == pytest.approx(0.5)
+    assert pruned_unaffected_edges == unpruned_unaffected_edges
+    assert pruned_unaffected_edges == set()
+    assert not any(
+        attrs.get("source") == "heuristic" and ({u, v} & excluded_nodes)
+        for u, v, attrs in pruned.edges(data=True)
+    )
+
+
+def test_batch3_bigbuilding_facade_snapshot_keeps_threshold_and_semantics_stable(
+    tmp_path: Path,
+) -> None:
+    jsonl_path = tmp_path / "bigbuilding-facade-snapshot.jsonl"
+
+    def _facade_element(
+        global_id: str,
+        ifc_type: str,
+        *,
+        x_min: float,
+        x_max: float,
+        typed_by: str | None = None,
+    ) -> dict:
+        record = {
+            "GlobalId": global_id,
+            "IfcType": ifc_type,
+            "Name": global_id,
+            "Hierarchy": {"ParentId": "storey"},
+            "Geometry": {
+                "BoundingBox": {
+                    "min": [x_min, -0.7211000014551636, 0.0],
+                    "max": [x_max, -0.5711000014551637, 1.2650000000000001],
+                },
+                "Centroid": [
+                    (x_min + x_max) / 2,
+                    -0.6461000014551636,
+                    0.6325000000000001,
+                ],
+            },
+        }
+        if typed_by is not None:
+            record["Relationships"] = {
+                **empty_relation_block(),
+                "typed_by": [typed_by],
+            }
+        return record
+
+    _write_jsonl(
+        jsonl_path,
+        [
+            {
+                "GlobalId": "proj",
+                "IfcType": "IfcProject",
+                "Name": "Project",
+            },
+            {
+                "GlobalId": "bldg",
+                "IfcType": "IfcBuilding",
+                "Name": "Building",
+                "Hierarchy": {"ParentId": "proj"},
+            },
+            {
+                "GlobalId": "storey",
+                "IfcType": "IfcBuildingStorey",
+                "Name": "01 - Entry Level",
+                "Hierarchy": {"ParentId": "bldg"},
+            },
+            _facade_element(
+                "member-a",
+                "IfcMember",
+                x_min=0.37970000225259104,
+                x_max=0.4297000022525911,
+                typed_by="member-type",
+            ),
+            _facade_element(
+                "panel-a",
+                "IfcPlate",
+                x_min=0.4297000022525914,
+                x_max=2.3797000022525916,
+                typed_by="panel-type",
+            ),
+            _facade_element(
+                "member-b",
+                "IfcMember",
+                x_min=2.379700002252591,
+                x_max=2.429700002252591,
+                typed_by="member-type",
+            ),
+            _facade_element(
+                "member-c",
+                "IfcMember",
+                x_min=4.379700002252591,
+                x_max=4.429700002252591,
+                typed_by="member-type",
+            ),
+            _facade_element(
+                "panel-b",
+                "IfcPlate",
+                x_min=4.4297000022525905,
+                x_max=6.379700002252591,
+                typed_by="panel-type",
+            ),
+            _facade_element(
+                "member-d",
+                "IfcMember",
+                x_min=6.379700002252591,
+                x_max=6.429700002252591,
+                typed_by="member-type",
+            ),
+            {
+                "GlobalId": "member-type",
+                "IfcType": "IfcMemberType",
+                "Name": "Rectangular Mullion:50 x 150mm",
+            },
+            {
+                "GlobalId": "panel-type",
+                "IfcType": "IfcPlateType",
+                "Name": "Facade Panel Type",
+            },
+        ],
+    )
+
+    unaffected_nodes = {"Element::panel-a", "Element::panel-b"}
+    excluded_nodes = {
+        "Element::member-a",
+        "Element::member-b",
+        "Element::member-c",
+        "Element::member-d",
+    }
+
+    unpruned = build_graph_from_jsonl([jsonl_path])
+    unpruned_threshold = add_spatial_adjacency(unpruned)
+    add_topology_facts(unpruned)
+
+    pruned = build_graph_from_jsonl([jsonl_path])
+    pruned_threshold = add_spatial_adjacency(pruned, exclude_classes={"IfcMember"})
+    add_topology_facts(pruned, exclude_classes={"IfcMember"})
+
+    unpruned_unaffected_edges = {
+        (u, v, attrs["relation"])
+        for u, v, attrs in unpruned.edges(data=True)
+        if attrs.get("source") == "heuristic"
+        and u in unaffected_nodes
+        and v in unaffected_nodes
+    }
+    pruned_unaffected_edges = {
+        (u, v, attrs["relation"])
+        for u, v, attrs in pruned.edges(data=True)
+        if attrs.get("source") == "heuristic"
+        and u in unaffected_nodes
+        and v in unaffected_nodes
+    }
+
+    assert unpruned_threshold == pytest.approx(pruned_threshold)
+    assert pruned_threshold == pytest.approx(1.5)
+    assert pruned.graph["graph_build"]["derived_edge_pruning"]["phases"][
+        "spatial_adjacency"
+    ]["threshold"] == pytest.approx(1.5)
+    assert pruned_unaffected_edges == unpruned_unaffected_edges
+    assert pruned_unaffected_edges == set()
+    assert any(
+        attrs.get("source") in {"heuristic", "topology"} and ({u, v} & excluded_nodes)
+        for u, v, attrs in unpruned.edges(data=True)
+    )
+    assert not any(
+        attrs.get("source") in {"heuristic", "topology"} and ({u, v} & excluded_nodes)
+        for u, v, attrs in pruned.edges(data=True)
+    )
+
+    assert pruned.has_edge("Storey::storey", "Element::panel-a")
+    assert pruned.has_edge("Storey::storey", "Element::member-a")
+
+    panel_type_edges = (
+        pruned.get_edge_data("Element::panel-a", "Element::panel-type") or {}
+    )
+    assert any(
+        attrs.get("relation") == "typed_by" and attrs.get("source") == "ifc"
+        for attrs in panel_type_edges.values()
+    )
+
+    member_type_edges = (
+        pruned.get_edge_data("Element::member-a", "Element::member-type") or {}
+    )
+    assert any(
+        attrs.get("relation") == "typed_by" and attrs.get("source") == "ifc"
+        for attrs in member_type_edges.values()
+    )
 
 
 def test_batch3_build_graph_honors_config_and_explicit_opt_out(
