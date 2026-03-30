@@ -523,13 +523,23 @@ def test_uploaded_ifc_is_available_to_graph_and_model_views(
         *,
         output_dir: Path,
         payload_mode: str = "minimal",
+        reuse_existing: bool = False,
         progress_callback=None,
     ) -> ViewerBuildArtifacts:
-        del payload_mode, progress_callback
+        del payload_mode, reuse_existing, progress_callback
+        output_dir.mkdir(parents=True, exist_ok=True)
         jsonl_path = output_dir / f"{uploaded_dataset}.jsonl"
         jsonl_path.write_text('{"type": "element"}\n', encoding="utf-8")
         db_path = output_dir / f"{uploaded_dataset}.db"
         db_path.write_text("", encoding="utf-8")
+        bundle_dir = output_dir / f"{uploaded_dataset}_graph_viewer"
+        bundle_dir.mkdir(parents=True, exist_ok=True)
+        (bundle_dir / "manifest.json").write_text("{}", encoding="utf-8")
+        debug_graph_html = output_dir / f"{uploaded_dataset}_graph.html"
+        debug_graph_html.write_text(
+            "<html><body>uploaded graph</body></html>",
+            encoding="utf-8",
+        )
         return ViewerBuildArtifacts(
             dataset=uploaded_dataset,
             ifc_path=ifc_path.expanduser().resolve(),
@@ -559,7 +569,7 @@ def test_uploaded_ifc_is_available_to_graph_and_model_views(
     assert state.graph_dataset == uploaded_dataset
     assert state.webgl_graph_available() is True
     assert state.model_ifc_available() is True
-    assert state.active_ifc_name() == f"{uploaded_dataset}.ifc"
+    assert state.active_ifc_name() == "Uploaded Model.ifc"
 
     client = TestClient(create_app(state))
 
@@ -573,7 +583,7 @@ def test_uploaded_ifc_is_available_to_graph_and_model_views(
     assert graph_bootstrap.json()["model_ifc_available"] is True
     assert model_bootstrap.json()["selected_dataset"] == uploaded_dataset
     assert model_bootstrap.json()["model_ifc_available"] is True
-    assert model_bootstrap.json()["model_ifc_name"] == f"{uploaded_dataset}.ifc"
+    assert model_bootstrap.json()["model_ifc_name"] == "Uploaded Model.ifc"
 
 
 def test_uploaded_ifc_job_reports_intermediate_jsonl_progress(
@@ -600,13 +610,23 @@ def test_uploaded_ifc_job_reports_intermediate_jsonl_progress(
         *,
         output_dir: Path,
         payload_mode: str = "minimal",
+        reuse_existing: bool = False,
         progress_callback=None,
     ) -> ViewerBuildArtifacts:
-        del payload_mode
+        del payload_mode, reuse_existing
+        output_dir.mkdir(parents=True, exist_ok=True)
         jsonl_path = output_dir / f"{uploaded_dataset}.jsonl"
         jsonl_path.write_text('{"type": "element"}\n', encoding="utf-8")
         db_path = output_dir / f"{uploaded_dataset}.db"
         db_path.write_text("", encoding="utf-8")
+        bundle_dir = output_dir / f"{uploaded_dataset}_graph_viewer"
+        bundle_dir.mkdir(parents=True, exist_ok=True)
+        (bundle_dir / "manifest.json").write_text("{}", encoding="utf-8")
+        debug_graph_html = output_dir / f"{uploaded_dataset}_graph.html"
+        debug_graph_html.write_text(
+            "<html><body>uploaded graph</body></html>",
+            encoding="utf-8",
+        )
         if progress_callback is not None:
             progress_callback(
                 "jsonl",

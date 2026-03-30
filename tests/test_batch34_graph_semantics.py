@@ -1318,25 +1318,37 @@ def test_plot_interactive_graph_legend_includes_edge_counts(tmp_path: Path) -> N
     assert "Edge: contains / contained_in" in legend_html
     assert (
         "containment hierarchy; source-&gt;target = contains, "
-        "target-&gt;source = contained_in; contains=2, contained_in=0"
-        in legend_html
+        "target-&gt;source = contained_in; contains=2, contained_in=0" in legend_html
     )
     assert re.search(
-        r"Edge: aggregates</span>"
-        r"<span class='legend-item-sub'>hierarchy decomposition</span>"
-        r"</span><span class='legend-count' title='Edge count'>1</span>",
+        (
+            r"Edge: aggregates</span>"
+            r"<span class='legend-item-sub'>Added during graph build for the "
+            r"top-level IFC breakdown: "
+            r"Project -&gt; Building and Building -&gt; Storey\.</span>"
+            r"</span><span class='legend-count' title='Edge count'>1</span>"
+        ),
         legend_html,
     )
     assert re.search(
-        r"Edge: adjacent_to</span>"
-        r"<span class='legend-item-sub'>spatially near within threshold</span>"
-        r"</span><span class='legend-count' title='Edge count'>1</span>",
+        (
+            r"Edge: adjacent_to</span>"
+            r"<span class='legend-item-sub'>Derived from geometry when "
+            r"elements fall within the "
+            r"distance threshold but are not verified as touching or "
+            r"intersecting\.</span>"
+            r"</span><span class='legend-count' title='Edge count'>1</span>"
+        ),
         legend_html,
     )
     assert re.search(
-        r"Edge: same_storey_as</span>"
-        r"<span class='legend-item-sub'>same-storey scope relation</span>"
-        r"</span><span class='legend-count' title='Edge count'>2</span>",
+        (
+            r"Edge: same_storey_as</span>"
+            r"<span class='legend-item-sub'>Visualization overlay connecting "
+            r"nodes that resolve to the same "
+            r"IfcBuildingStorey\.</span>"
+            r"</span><span class='legend-count' title='Edge count'>2</span>"
+        ),
         legend_html,
     )
 
@@ -1510,11 +1522,20 @@ def test_plot_interactive_graph_includes_derived_relations_as_edges(
     assert "toggle-helper-overlays" not in html_text
     assert "Total edges shown: 8" in legend_html
     assert "Edge: aligned_with" in legend_html
-    assert "orientation-aligned in plan" in legend_html
+    assert (
+        "Visualization overlay for eligible linear elements with similar plan "
+        "direction and small lateral offset." in legend_html
+    )
     assert "Edge: inside_footprint_of" in legend_html
-    assert "footprint containment in plan" in legend_html
+    assert (
+        "Visualization overlay when an IfcSpace centroid falls inside another "
+        "element&#x27;s 2D footprint on the same storey." in legend_html
+    )
     assert "Edge: same_storey_as" in legend_html
-    assert "same-storey scope relation" in legend_html
+    assert (
+        "Visualization overlay connecting nodes that resolve to the same "
+        "IfcBuildingStorey." in legend_html
+    )
     assert "Overlay: aligned_with" not in html_text
     assert re.search(
         r"Edge: aligned_with</span>.*?"
