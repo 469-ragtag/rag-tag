@@ -161,9 +161,7 @@ def test_build_runs_rows_includes_case_and_failure_records(tmp_path: Path) -> No
                     "expected_route": "sql",
                     "expected_answer": "There are 4 doors.",
                 },
-                expected_output={
-                    "answer": {"canonical": "There are 4 doors."}
-                },
+                expected_output={"answer": {"canonical": "There are 4 doors."}},
                 error_message="task crashed",
                 error_stacktrace="traceback",
                 source_case_name="q002",
