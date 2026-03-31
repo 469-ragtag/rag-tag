@@ -42,6 +42,35 @@ def _runtime_graph() -> nx.MultiDiGraph:
     return graph
 
 
+def _building_runtime_graph() -> nx.MultiDiGraph:
+    graph = nx.MultiDiGraph()
+    graph.graph["datasets"] = ["model-a"]
+    graph.graph["_payload_mode"] = "minimal"
+    graph.add_node(
+        "IfcBuilding",
+        label="Main Building",
+        class_="IfcBuilding",
+        properties={"Name": "Main Building", "GlobalId": "building-root"},
+        payload={
+            "Name": "Main Building",
+            "IfcType": "IfcBuilding",
+            "ClassRaw": "IfcBuilding",
+        },
+    )
+    graph.add_node(
+        "Element::building-proxy",
+        label="building",
+        class_="IfcBuildingElementProxy",
+        properties={"Name": "building", "GlobalId": "building-proxy"},
+        payload={
+            "Name": "building",
+            "IfcType": "IfcBuildingElementProxy",
+            "ClassRaw": "IfcBuildingElementProxy",
+        },
+    )
+    return graph
+
+
 def test_query_ifc_graph_keeps_raw_networkx_compatibility() -> None:
     graph = nx.MultiDiGraph()
     graph.add_node("Element::A", label="A", class_="IfcWall", properties={})
@@ -159,6 +188,22 @@ def test_graph_agent_deps_and_tool_helpers_use_graph_runtime(
         "source_tool": "fuzzy_find_nodes",
         "match_reason": "fuzzy_score=100.0",
     }
+
+
+def test_graph_runtime_fuzzy_search_prefers_canonical_building_anchor() -> None:
+    runtime = wrap_networkx_graph(_building_runtime_graph())
+
+    fuzzy = _fuzzy_find_nodes_impl(runtime, "building")
+
+    assert fuzzy["status"] == "ok"
+    assert fuzzy["data"]["matches"][0]["id"] == "IfcBuilding"
+    evidence = fuzzy["data"]["evidence"][0]
+    assert evidence["global_id"] == "building-root"
+    assert evidence["id"] == "IfcBuilding"
+    assert evidence["label"] == "Main Building"
+    assert evidence["class_"] == "IfcBuilding"
+    assert evidence["source_tool"] == "fuzzy_find_nodes"
+    assert str(evidence["match_reason"]).startswith("fuzzy_score=")
 
 
 def test_ensure_graph_context_can_create_langgraph_agent(

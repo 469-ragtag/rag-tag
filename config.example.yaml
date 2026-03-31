@@ -47,6 +47,31 @@ graph_orchestration:
   specialist_step_cap: null
   fallback_to_graph_agent: true
 
+graph_build:
+  # graph_build: parser-time graph construction controls.
+  derived_edge_pruning:
+    # When enabled, skip selected classes during derived spatial/topology
+    # edge generation only. Nodes and explicit/hierarchy/type edges remain.
+    enabled: true
+    exclude_classes:
+      - IfcMember
+      - IfcPlate
+  overlap_xy:
+    # Controls whether raw overlaps_xy edges are emitted after overlap is
+    # computed internally for vertical topology.
+    # Default is none so dense models do not materialize raw overlap edges
+    # unless explicitly requested.
+    # Modes:
+    # - full: emit every positive overlap pair
+    # - threshold: emit only pairs whose overlap ratio >= min_ratio
+    # - top_k: emit each node's strongest K overlap pairs (symmetric union)
+    # - none: do not emit overlaps_xy edges at all
+    mode: none
+    # Used only in threshold mode. Ratio = overlap_area / min(footprint areas).
+    min_ratio: 0.20
+    # Used only in top_k mode.
+    top_k: 5
+
 providers:
   # providers: named provider connection presets reused by profiles.
   databricks:

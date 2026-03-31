@@ -63,7 +63,7 @@ def _effective_max_concurrency(requested_max_concurrency: int | None) -> int | N
     """
 
     if requested_max_concurrency is None:
-        return None
+        return 1
     return min(requested_max_concurrency, 1)
 
 
@@ -170,7 +170,8 @@ async def _run_case_with_state(
     experiment: BenchmarkExperimentConfig,
     state: dict[str, object | None] | None,
 ) -> BenchmarkTaskResult:
-    bundle = run_benchmark_case(
+    bundle = await asyncio.to_thread(
+        run_benchmark_case,
         case,
         db_paths=experiment.db_paths,
         runtime=state["runtime"] if state is not None else None,

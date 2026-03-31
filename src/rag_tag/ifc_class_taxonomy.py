@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 
 _CANONICAL_CLASS_BY_LOWER: dict[str, str] = {
     "ifcwall": "IfcWall",
     "ifcwallstandardcase": "IfcWallStandardCase",
     "ifcwallelementedcase": "IfcWallElementedCase",
+    "ifccurtainwall": "IfcCurtainWall",
     "ifcslab": "IfcSlab",
     "ifcslabelementedcase": "IfcSlabElementedCase",
     "ifcdoor": "IfcDoor",
@@ -59,6 +61,8 @@ def normalize_ifc_class(value: str) -> str:
 _RAW_CLASS_ALIASES: dict[str, str] = {
     "wall": "IfcWall",
     "walls": "IfcWall",
+    "curtain wall": "IfcCurtainWall",
+    "curtain walls": "IfcCurtainWall",
     "door": "IfcDoor",
     "doors": "IfcDoor",
     "window": "IfcWindow",
@@ -121,6 +125,7 @@ CLASS_ALIASES: dict[str, str] = {
 
 _RAW_CLASS_HIERARCHY: dict[str, tuple[str, ...]] = {
     "IfcWall": ("IfcWall", "IfcWallStandardCase", "IfcWallElementedCase"),
+    "IfcCurtainWall": ("IfcCurtainWall",),
     "IfcSlab": ("IfcSlab", "IfcSlabElementedCase"),
     "IfcDoor": ("IfcDoor", "IfcDoorStandardCase"),
     "IfcWindow": ("IfcWindow", "IfcWindowStandardCase"),
@@ -170,6 +175,13 @@ CLASS_HIERARCHY: dict[str, tuple[str, ...]] = {
     for base, class_names in _RAW_CLASS_HIERARCHY.items()
 }
 
+_CLASS_ALIAS_PATTERNS: tuple[tuple[str, str], ...] = tuple(
+    sorted(
+        CLASS_ALIASES.items(),
+        key=lambda item: (-len(item[0]), item[0]),
+    )
+)
+
 
 def expand_ifc_class_filter(base_class: str | None) -> tuple[str, ...]:
     if base_class is None:
@@ -178,3 +190,46 @@ def expand_ifc_class_filter(base_class: str | None) -> tuple[str, ...]:
     if not normalized:
         return ()
     return CLASS_HIERARCHY.get(normalized, (normalized,))
+
+
+def find_class_alias_matches(
+    question_lower: str,
+    *,
+    ignored_spans: list[tuple[int, int]] | None = None,
+) -> list[tuple[int, int, str]]:
+    candidates: list[tuple[int, int, str]] = []
+    for term, ifc_class in _CLASS_ALIAS_PATTERNS:
+        for match in re.finditer(rf"\b{re.escape(term)}\b", question_lower):
+            span = match.span()
+            if _span_is_contained(span, ignored_spans):
+                continue
+            candidates.append((span[0], span[1], ifc_class))
+
+    selected: list[tuple[int, int, str]] = []
+    for start, end, ifc_class in candidates:
+        if any(
+            _spans_overlap((start, end), (sel_start, sel_end))
+            for sel_start, sel_end, _ in selected
+        ):
+            continue
+        selected.append((start, end, ifc_class))
+
+    selected.sort(key=lambda item: item[0])
+    return selected
+
+
+def _span_is_contained(
+    span: tuple[int, int],
+    ignored_spans: list[tuple[int, int]] | None,
+) -> bool:
+    if not ignored_spans:
+        return False
+    start, end = span
+    return any(
+        ignore_start <= start and end <= ignore_end
+        for ignore_start, ignore_end in ignored_spans
+    )
+
+
+def _spans_overlap(left: tuple[int, int], right: tuple[int, int]) -> bool:
+    return left[0] < right[1] and right[0] < left[1]

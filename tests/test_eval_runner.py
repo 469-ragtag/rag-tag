@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 from pydantic_ai.models.openai import OpenAIChatModel
@@ -282,6 +283,7 @@ def test_evaluate_benchmark_dataset_runs_cases_and_repeats(
     )
 
     calls: list[tuple[str, object | None, object | None]] = []
+    loop_visibility: list[bool] = []
 
     def fake_run_benchmark_case(
         case: BenchmarkCase,
@@ -315,6 +317,12 @@ def test_evaluate_benchmark_dataset_runs_cases_and_repeats(
             graph_max_steps,
             debug_llm_io,
         )
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            loop_visibility.append(False)
+        else:
+            loop_visibility.append(True)
         calls.append((case.id, runtime, agent))
         next_runtime = runtime or object()
         next_agent = agent or object()
@@ -396,6 +404,7 @@ def test_evaluate_benchmark_dataset_runs_cases_and_repeats(
     assert calls[2][0] == "q002"
     assert calls[3][0] == "q002"
     assert closed_runtimes == [calls[-1][1]]
+    assert loop_visibility == [False, False, False, False]
     assert sleep_calls == [20.0, 20.0, 20.0, 20.0]
 
 

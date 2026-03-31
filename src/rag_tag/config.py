@@ -6,7 +6,7 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -28,6 +28,10 @@ ROUTER_PROFILE_ENV_VAR = "ROUTER_PROFILE"
 AGENT_PROFILE_ENV_VAR = "AGENT_PROFILE"
 DEFAULT_GRAPH_MAX_STEPS = 20
 DEFAULT_GRAPH_OUTPUT_RETRIES = 5
+DEFAULT_DERIVED_EDGE_PRUNE_CLASSES = ("IfcMember", "IfcPlate")
+DEFAULT_OVERLAP_XY_MODE = "none"
+DEFAULT_OVERLAP_XY_MIN_RATIO = 0.2
+DEFAULT_OVERLAP_XY_TOP_K = 5
 
 
 class ProviderConfig(BaseModel):
@@ -132,6 +136,38 @@ class GraphOrchestrationConfig(BaseModel):
     fallback_to_graph_agent: bool = True
 
 
+class OverlapXYConfig(BaseModel):
+    """Controls whether raw ``overlaps_xy`` edges are materialized."""
+
+    model_config = ConfigDict(extra="allow")
+
+    mode: Literal["full", "threshold", "top_k", "none"] = DEFAULT_OVERLAP_XY_MODE
+    min_ratio: float = Field(default=DEFAULT_OVERLAP_XY_MIN_RATIO, ge=0.0, le=1.0)
+    top_k: int = Field(default=DEFAULT_OVERLAP_XY_TOP_K, ge=1)
+
+
+class DerivedEdgePruningConfig(BaseModel):
+    """Controls pruning of high-fanout derived graph edges during graph build."""
+
+    model_config = ConfigDict(extra="allow")
+
+    enabled: bool = True
+    exclude_classes: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_DERIVED_EDGE_PRUNE_CLASSES)
+    )
+
+
+class GraphBuildConfig(BaseModel):
+    """Graph build defaults for parser-time edge generation."""
+
+    model_config = ConfigDict(extra="allow")
+
+    derived_edge_pruning: DerivedEdgePruningConfig = Field(
+        default_factory=DerivedEdgePruningConfig
+    )
+    overlap_xy: OverlapXYConfig = Field(default_factory=OverlapXYConfig)
+
+
 class AppConfig(BaseModel):
     """Top-level checked-in application configuration."""
 
@@ -141,6 +177,7 @@ class AppConfig(BaseModel):
     graph_orchestration: GraphOrchestrationConfig = Field(
         default_factory=GraphOrchestrationConfig
     )
+    graph_build: GraphBuildConfig = Field(default_factory=GraphBuildConfig)
     providers: dict[str, ProviderConfig] = Field(default_factory=dict)
     profiles: dict[str, ProfileConfig] = Field(default_factory=dict)
     experiments: dict[str, ExperimentConfig] = Field(default_factory=dict)

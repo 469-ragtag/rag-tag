@@ -2,15 +2,24 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 from pathlib import Path
 
 import pytest
 import yaml
+from pydantic import ValidationError
 
 from rag_tag.config import (
     CONFIG_PATH_ENV_VAR,
+    DEFAULT_DERIVED_EDGE_PRUNE_CLASSES,
+    DEFAULT_OVERLAP_XY_MIN_RATIO,
+    DEFAULT_OVERLAP_XY_MODE,
+    DEFAULT_OVERLAP_XY_TOP_K,
     AppConfig,
+    DerivedEdgePruningConfig,
+    GraphBuildConfig,
     GraphOrchestrationConfig,
+    OverlapXYConfig,
     discover_project_config,
     load_project_config,
     load_project_env,
@@ -95,6 +104,15 @@ def test_load_project_config_parses_yaml_structure(tmp_path: Path) -> None:
         "  reserved_orchestration_steps: 2\n"
         "  specialist_step_cap: 5\n"
         "  fallback_to_graph_agent: false\n"
+        "graph_build:\n"
+        "  derived_edge_pruning:\n"
+        "    enabled: false\n"
+        "    exclude_classes:\n"
+        "      - IfcFastener\n"
+        "  overlap_xy:\n"
+        "    mode: threshold\n"
+        "    min_ratio: 0.35\n"
+        "    top_k: 7\n"
         "providers:\n"
         "  databricks:\n"
         "    type: databricks\n"
@@ -144,6 +162,13 @@ def test_load_project_config_parses_yaml_structure(tmp_path: Path) -> None:
         reserved_orchestration_steps=2,
         specialist_step_cap=5,
         fallback_to_graph_agent=False,
+    )
+    assert loaded.config.graph_build == GraphBuildConfig(
+        derived_edge_pruning=DerivedEdgePruningConfig(
+            enabled=False,
+            exclude_classes=["IfcFastener"],
+        ),
+        overlap_xy=OverlapXYConfig(mode="threshold", min_ratio=0.35, top_k=7),
     )
     assert loaded.config.defaults.graph_max_steps == 12
     assert loaded.config.defaults.graph_output_retries == 4
@@ -246,6 +271,7 @@ def test_app_config_defaults_graph_orchestration_when_omitted() -> None:
 
     assert config.defaults.graph_orchestrator is None
     assert config.graph_orchestration == GraphOrchestrationConfig()
+    assert config.graph_build == GraphBuildConfig()
 
 
 def test_app_config_accepts_custom_graph_orchestration_values() -> None:
@@ -270,6 +296,73 @@ def test_app_config_accepts_custom_graph_orchestration_values() -> None:
         specialist_step_cap=7,
         fallback_to_graph_agent=False,
     )
+
+
+def test_app_config_defaults_graph_build_pruning() -> None:
+    config = AppConfig.model_validate({})
+
+    assert config.graph_build == GraphBuildConfig(
+        derived_edge_pruning=DerivedEdgePruningConfig(
+            enabled=True,
+            exclude_classes=list(DEFAULT_DERIVED_EDGE_PRUNE_CLASSES),
+        ),
+        overlap_xy=OverlapXYConfig(
+            mode=DEFAULT_OVERLAP_XY_MODE,
+            min_ratio=DEFAULT_OVERLAP_XY_MIN_RATIO,
+            top_k=DEFAULT_OVERLAP_XY_TOP_K,
+        ),
+    )
+
+
+def test_app_config_accepts_custom_graph_build_pruning() -> None:
+    config = AppConfig.model_validate(
+        {
+            "graph_build": {
+                "derived_edge_pruning": {
+                    "enabled": False,
+                    "exclude_classes": ["IfcFastener", "IfcReinforcingBar"],
+                },
+                "overlap_xy": {
+                    "mode": "top_k",
+                    "min_ratio": 0.45,
+                    "top_k": 9,
+                },
+            }
+        }
+    )
+
+    assert config.graph_build == GraphBuildConfig(
+        derived_edge_pruning=DerivedEdgePruningConfig(
+            enabled=False,
+            exclude_classes=["IfcFastener", "IfcReinforcingBar"],
+        ),
+        overlap_xy=OverlapXYConfig(mode="top_k", min_ratio=0.45, top_k=9),
+    )
+
+
+def test_app_config_accepts_each_overlap_xy_mode() -> None:
+    for mode in ("full", "threshold", "top_k", "none"):
+        config = AppConfig.model_validate(
+            {"graph_build": {"overlap_xy": {"mode": mode}}}
+        )
+        assert config.graph_build.overlap_xy.mode == mode
+
+
+def test_app_config_rejects_invalid_overlap_xy_mode() -> None:
+    with pytest.raises(ValidationError):
+        AppConfig.model_validate({"graph_build": {"overlap_xy": {"mode": "partial"}}})
+
+
+def test_app_config_rejects_invalid_overlap_xy_ratio_and_top_k() -> None:
+    with pytest.raises(ValidationError):
+        AppConfig.model_validate(
+            {"graph_build": {"overlap_xy": {"mode": "threshold", "min_ratio": 1.1}}}
+        )
+
+    with pytest.raises(ValidationError):
+        AppConfig.model_validate(
+            {"graph_build": {"overlap_xy": {"mode": "top_k", "top_k": 0}}}
+        )
 
 
 def test_checked_in_config_example_matches_app_config_schema() -> None:
@@ -338,12 +431,30 @@ def test_checked_in_config_example_matches_app_config_schema() -> None:
     assert benchmark_experiment.tags == ["sql", "graph"]
 
 
-def test_repo_does_not_require_checked_in_runtime_config_yaml() -> None:
-    config_path = Path(__file__).resolve().parents[1] / "config.yaml"
+def test_repo_keeps_runtime_config_yaml_untracked() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    config_path = repo_root / "config.yaml"
 
     if config_path.exists():
         pytest.skip("local runtime config.yaml is present in this workspace")
 
+    tracked_example = subprocess.run(
+        ["git", "ls-files", "--error-unmatch", "config.example.yaml"],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    tracked_runtime = subprocess.run(
+        ["git", "ls-files", "--error-unmatch", "config.yaml"],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert tracked_example.returncode == 0
+    assert tracked_runtime.returncode != 0
     assert not config_path.exists()
 
 

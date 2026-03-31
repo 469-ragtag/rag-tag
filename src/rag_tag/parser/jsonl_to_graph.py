@@ -24,12 +24,13 @@
 from __future__ import annotations
 
 import argparse
+import colorsys
 import html
 import json
 import logging
 import math
 import os
-from collections import defaultdict
+from collections import Counter, defaultdict, deque
 from dataclasses import dataclass
 from itertools import product
 from pathlib import Path
@@ -39,9 +40,219 @@ import numpy as np
 import plotly.graph_objects as go
 import plotly.io as pio
 
+from rag_tag.config import (
+    DEFAULT_OVERLAP_XY_MODE,
+    load_project_config,
+)
+from rag_tag.graph_contract import (
+    canonicalize_undirected_edge_endpoints,
+    is_symmetric_relation,
+)
 from rag_tag.paths import find_project_root
 
 LOG = logging.getLogger(__name__)
+_MODULE_DIR = Path(__file__).resolve().parent
+
+_VIZ_ALIGNED_WITH_ALLOWED_CLASSES = frozenset(
+    {"IfcWall", "IfcBeam", "IfcMember", "IfcCurtainWall", "IfcRailing"}
+)
+_VIZ_ALIGNED_WITH_MAX_PER_NODE = 8
+_VIZ_CONTAINER_CLASSES = frozenset(
+    {
+        "IfcProject",
+        "IfcSite",
+        "IfcBuilding",
+        "IfcBuildingStorey",
+        "IfcSpace",
+        "IfcZone",
+        "IfcSpatialZone",
+        "IfcTypeObject",
+    }
+)
+_VIZ_NODE_COLOR_MAP = {
+    "IfcProject": "#7c3aed",
+    "IfcBuilding": "#2563eb",
+    "IfcBuildingStorey": "#f97316",
+    "IfcSystem": "#0891b2",
+    "IfcZone": "#16a34a",
+}
+_VIZ_EDGE_COLOR_MAP = {
+    "aggregates": "#6b7280",
+    "contains": "#1d4ed8",
+    "contained_in": "#2563eb",
+    "typed_by": "#ca8a04",
+    "connected_to": "#ef4444",
+    "adjacent_to": "#059669",
+    "intersects_bbox": "#f59e0b",
+    "aligned_with": "#0f766e",
+    "inside_footprint_of": "#c2410c",
+    "overlaps_xy": "#0ea5e9",
+    "intersects_3d": "#b91c1c",
+    "touches_surface": "#9333ea",
+    "above": "#7c3aed",
+    "below": "#9333ea",
+    "same_storey_as": "#1d4ed8",
+    "shares_boundary_with": "#be185d",
+    "hosts": "#b91c1c",
+    "hosted_by": "#dc2626",
+    "ifc_connected_to": "#0f766e",
+    "path_connected_to": "#0b6e4f",
+    "space_bounded_by": "#be123c",
+    "bounds_space": "#9f1239",
+    "belongs_to_system": "#0369a1",
+    "in_zone": "#15803d",
+    "classified_as": "#4f46e5",
+}
+_VIZ_EDGE_RELATION_EXPLANATIONS = {
+    "aggregates": (
+        "Added during graph build for the top-level IFC breakdown: "
+        "Project -> Building and Building -> Storey."
+    ),
+    "contains": (
+        "Added from each record's exported Hierarchy.ParentId after all nodes are "
+        "loaded, linking the parent container to the child node."
+    ),
+    "contained_in": (
+        "Reverse edge emitted alongside contains from the same Hierarchy.ParentId link."
+    ),
+    "typed_by": (
+        "Read from IfcRelDefinesByType, linking each occurrence to its IFC type object."
+    ),
+    "connected_to": (
+        "Derived from geometry when elements are colocated or OCC verification "
+        "finds intersection volume or contact area."
+    ),
+    "adjacent_to": (
+        "Derived from geometry when elements fall within the distance threshold "
+        "but are not verified as touching or intersecting."
+    ),
+    "intersects_bbox": (
+        "Derived from axis-aligned 3D bounding boxes when the two boxes overlap."
+    ),
+    "aligned_with": (
+        "Visualization overlay for eligible linear elements with similar plan "
+        "direction and small lateral offset."
+    ),
+    "inside_footprint_of": (
+        "Visualization overlay when an IfcSpace centroid falls inside another "
+        "element's 2D footprint on the same storey."
+    ),
+    "overlaps_xy": (
+        "Derived from 2D footprint intersection area, then filtered by the active "
+        "overlap mode, ratio threshold, and top-k settings."
+    ),
+    "intersects_3d": (
+        "Derived from OCC or mesh intersection checks when solids overlap with "
+        "non-trivial intersection volume."
+    ),
+    "touches_surface": (
+        "Derived from OCC or mesh contact checks when solids touch with contact "
+        "area but negligible overlap volume."
+    ),
+    "above": (
+        "Derived from vertical bbox ordering when two elements overlap in plan and "
+        "one sits above the other."
+    ),
+    "below": "Reverse of above, emitted from the same vertical bbox ordering test.",
+    "same_storey_as": (
+        "Visualization overlay connecting nodes that resolve to the same "
+        "IfcBuildingStorey."
+    ),
+    "shares_boundary_with": (
+        "Derived from IfcRelSpaceBoundary by linking spaces that reference the "
+        "same boundary element."
+    ),
+    "hosts": (
+        "Read from IFC hosting relations such as IfcRelVoidsElement and "
+        "IfcRelFillsElement."
+    ),
+    "hosted_by": (
+        "Reverse hosting edge created from the same IFC hosting relations as hosts."
+    ),
+    "ifc_connected_to": (
+        "Read directly from explicit IFC element connection relationships."
+    ),
+    "path_connected_to": (
+        "Read directly from IfcRelConnectsPathElements as a bidirectional path "
+        "connection."
+    ),
+    "space_bounded_by": (
+        "Read from IfcRelSpaceBoundary from the space node to its bounding element."
+    ),
+    "bounds_space": (
+        "Reverse of space_bounded_by, emitted from the same IfcRelSpaceBoundary record."
+    ),
+    "belongs_to_system": (
+        "Read from IfcRelAssignsToGroup when the assigned group resolves to an "
+        "IfcSystem."
+    ),
+    "in_zone": (
+        "Read from IfcRelAssignsToGroup when the assigned group resolves to an IfcZone."
+    ),
+    "classified_as": (
+        "Read from IfcRelAssociatesClassification using the exported "
+        "classification label."
+    ),
+}
+_VIZ_STORAGE_RELATIONS: dict[str, tuple[str, ...]] = {
+    "hierarchy": ("aggregates", "contains", "contained_in"),
+    "spatial": (
+        "adjacent_to",
+        "connected_to",
+        "inside_footprint_of",
+        "same_storey_as",
+    ),
+    "topology": (
+        "aligned_with",
+        "intersects_bbox",
+        "overlaps_xy",
+        "above",
+        "below",
+        "intersects_3d",
+        "touches_surface",
+        "shares_boundary_with",
+    ),
+    "explicit": (
+        "hosts",
+        "hosted_by",
+        "ifc_connected_to",
+        "typed_by",
+        "path_connected_to",
+        "space_bounded_by",
+        "bounds_space",
+        "belongs_to_system",
+        "in_zone",
+        "classified_as",
+    ),
+}
+_VIZ_DEFAULT_RENDER_MODES = (
+    "all",
+    "nodes",
+    "edges",
+    "hierarchy",
+    "spatial",
+    "topology",
+    "explicit",
+)
+_VIZ_DEFAULT_BUNDLE_NAME = "ifc_graph_viewer"
+_VIZ_DISTINCT_RELATION_PALETTE: tuple[str, ...] = (
+    "#3b82f6",
+    "#ef4444",
+    "#22c55e",
+    "#f59e0b",
+    "#a855f7",
+    "#06b6d4",
+    "#f97316",
+    "#84cc16",
+    "#ec4899",
+    "#14b8a6",
+    "#e11d48",
+    "#8b5cf6",
+    "#10b981",
+    "#f43f5e",
+    "#38bdf8",
+    "#d946ef",
+)
 
 try:
     import ifcopenshell
@@ -754,6 +965,73 @@ def _context_node_id(
     return f"{kind}::{label}"
 
 
+def _iter_relation_edge_attrs_between(
+    G: nx.DiGraph | nx.MultiDiGraph,
+    u: str,
+    v: str,
+):
+    edge_data = G.get_edge_data(u, v)
+    if edge_data is None:
+        return
+    if G.is_multigraph():
+        for attrs in edge_data.values():
+            if isinstance(attrs, dict):
+                yield attrs
+        return
+    if isinstance(edge_data, dict):
+        yield edge_data
+
+
+def _has_relation(
+    G: nx.DiGraph | nx.MultiDiGraph,
+    u: str,
+    v: str,
+    relation: str,
+    *,
+    source: str | None = None,
+) -> bool:
+    normalized_relation = str(relation).strip().lower()
+    normalized_source = str(source).strip().lower() if source is not None else None
+    for attrs in _iter_relation_edge_attrs_between(G, u, v) or ():
+        if str(attrs.get("relation", "")).strip().lower() != normalized_relation:
+            continue
+        if normalized_source is None:
+            return True
+        if str(attrs.get("source", "")).strip().lower() == normalized_source:
+            return True
+    return False
+
+
+def _add_edge_once(
+    G: nx.DiGraph | nx.MultiDiGraph,
+    u: str,
+    v: str,
+    **edge_attrs: object,
+) -> bool:
+    relation_value = edge_attrs.get("relation")
+    if relation_value is None:
+        return False
+    relation = str(relation_value).strip().lower()
+    if not relation:
+        return False
+    source_value = edge_attrs.get("source")
+    source = str(source_value).strip().lower() if source_value is not None else None
+    if _has_relation(G, u, v, relation, source=source):
+        return False
+    G.add_edge(u, v, **edge_attrs)
+    return True
+
+
+def _add_symmetric_edge_once(
+    G: nx.DiGraph | nx.MultiDiGraph,
+    u: str,
+    v: str,
+    **edge_attrs: object,
+) -> bool:
+    canonical_u, canonical_v = canonicalize_undirected_edge_endpoints(u, v)
+    return _add_edge_once(G, canonical_u, canonical_v, **edge_attrs)
+
+
 def _add_explicit_relationships(
     G: nx.DiGraph | nx.MultiDiGraph,
     node_id: str,
@@ -771,7 +1049,7 @@ def _add_explicit_relationships(
     Relationship semantics
     ----------------------
     hosts / hosted_by  â€” element-to-element directed; target resolved via GlobalId.
-    ifc_connected_to   â€” undirected IFC connectivity; both directions added.
+    ifc_connected_to   â€” undirected IFC connectivity; stored once per pair.
     belongs_to_system  â€” element â†’ System context node (created on demand).
     in_zone            â€” element â†’ Zone context node (created on demand).
     classified_as      â€” element â†’ Classification context node (created on demand).
@@ -782,26 +1060,12 @@ def _add_explicit_relationships(
         return
     dataset_label = dataset_key if isinstance(dataset_key, str) else ""
 
-    def _iter_edge_attrs_between(u: str, v: str):
-        edge_data = G.get_edge_data(u, v)
-        if edge_data is None:
-            return
-        if G.is_multigraph():
-            for attrs in edge_data.values():
-                if isinstance(attrs, dict):
-                    yield attrs
-            return
-        if isinstance(edge_data, dict):
-            yield edge_data
-
     def _add_ifc_edge_once(u: str, v: str, relation: str) -> None:
-        for attrs in _iter_edge_attrs_between(u, v) or ():
-            if (
-                str(attrs.get("relation", "")).strip().lower() == relation
-                and str(attrs.get("source", "")).strip().lower() == "ifc"
-            ):
-                return
-        G.add_edge(u, v, relation=relation, source="ifc")
+        edge_attrs = {"relation": relation, "source": "ifc"}
+        if is_symmetric_relation(relation):
+            _add_symmetric_edge_once(G, u, v, **edge_attrs)
+            return
+        _add_edge_once(G, u, v, **edge_attrs)
 
     # --- element-to-element: hosts ---
     for target_gid in rels.get("hosts") or []:
@@ -820,7 +1084,6 @@ def _add_explicit_relationships(
         target = node_id_by_gid.get(target_gid)
         if target and target in G and target != node_id:
             _add_ifc_edge_once(node_id, target, "ifc_connected_to")
-            _add_ifc_edge_once(target, node_id, "ifc_connected_to")
 
     # --- element-to-type: typed_by ---
     for target_gid in rels.get("typed_by") or []:
@@ -833,7 +1096,6 @@ def _add_explicit_relationships(
         target = node_id_by_gid.get(target_gid)
         if target and target in G and target != node_id:
             _add_ifc_edge_once(node_id, target, "path_connected_to")
-            _add_ifc_edge_once(target, node_id, "path_connected_to")
 
     # --- space boundary relations ---
     for target_gid in rels.get("space_bounded_by") or []:
@@ -912,6 +1174,53 @@ def _add_explicit_relationships(
         _add_ifc_edge_once(node_id, cls_nid, "classified_as")
 
 
+def _add_shared_space_boundary_edges(
+    G: nx.DiGraph | nx.MultiDiGraph,
+) -> int:
+    """Connect spaces that share one or more explicit IFC boundary elements."""
+
+    boundary_to_spaces: dict[str, set[str]] = defaultdict(set)
+    for space_id, space_data in G.nodes(data=True):
+        if _normalize_ifc_class_name(space_data.get("class_")) != "IfcSpace":
+            continue
+        for boundary_id in G.successors(space_id):
+            if boundary_id not in G or boundary_id == space_id:
+                continue
+            if _normalize_ifc_class_name(G.nodes[boundary_id].get("class_")) == (
+                "IfcOpeningElement"
+            ):
+                continue
+            has_space_boundary = any(
+                str(attrs.get("relation", "")).strip().lower() == "space_bounded_by"
+                and str(attrs.get("source", "")).strip().lower() == "ifc"
+                for attrs in _iter_relation_edge_attrs_between(G, space_id, boundary_id)
+                or ()
+            )
+            if has_space_boundary:
+                boundary_to_spaces[boundary_id].add(space_id)
+
+    pair_to_boundaries: dict[tuple[str, str], set[str]] = defaultdict(set)
+    for boundary_id, space_ids in boundary_to_spaces.items():
+        ordered_spaces = sorted(space_ids)
+        for index, source_id in enumerate(ordered_spaces):
+            for target_id in ordered_spaces[index + 1 :]:
+                pair_to_boundaries[(source_id, target_id)].add(boundary_id)
+
+    edges_added = 0
+    for (source_id, target_id), shared_boundary_elements in sorted(
+        pair_to_boundaries.items()
+    ):
+        edge_attrs = {
+            "relation": "shares_boundary_with",
+            "source": "ifc",
+            "derived_from": "space_bounded_by",
+            "shared_boundary_elements": sorted(shared_boundary_elements),
+        }
+        if _add_symmetric_edge_once(G, source_id, target_id, **edge_attrs):
+            edges_added += 1
+    return edges_added
+
+
 # --- graph construction ---
 
 
@@ -924,6 +1233,233 @@ def _add_containment_edge(
         return
     G.add_edge(parent_id, child_id, relation="contains")
     G.add_edge(child_id, parent_id, relation="contained_in")
+
+
+@dataclass(frozen=True)
+class DerivedEdgePruningPolicy:
+    """Resolved policy for pruning selected classes from derived edge phases."""
+
+    enabled: bool
+    exclude_classes: frozenset[str]
+
+
+@dataclass(frozen=True)
+class OverlapXYPolicy:
+    """Resolved policy controlling raw ``overlaps_xy`` edge emission."""
+
+    mode: str
+    min_ratio: float
+    top_k: int
+
+
+@dataclass(frozen=True)
+class _OverlapXYCandidate:
+    """Positive-overlap candidate between two elements."""
+
+    source_id: str
+    target_id: str
+    overlap_area_xy: float
+    overlap_ratio: float
+
+
+def _normalize_ifc_class_name(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if not text.lower().startswith("ifc"):
+        text = f"Ifc{text}"
+    return text
+
+
+def _normalize_excluded_classes(values: object) -> frozenset[str]:
+    if values is None:
+        return frozenset()
+    if isinstance(values, str):
+        values = [values]
+    normalized = {
+        class_name
+        for value in values
+        if (class_name := _normalize_ifc_class_name(value)) is not None
+    }
+    return frozenset(sorted(normalized))
+
+
+def _resolve_derived_edge_pruning_policy(
+    *,
+    enabled: bool | None = None,
+    exclude_classes: object = None,
+) -> DerivedEdgePruningPolicy:
+    configured = load_project_config(
+        _MODULE_DIR
+    ).config.graph_build.derived_edge_pruning
+    resolved_enabled = configured.enabled if enabled is None else enabled
+    configured_classes = (
+        configured.exclude_classes if exclude_classes is None else exclude_classes
+    )
+    resolved_classes = _normalize_excluded_classes(configured_classes)
+    if not resolved_enabled:
+        resolved_classes = frozenset()
+    return DerivedEdgePruningPolicy(
+        enabled=resolved_enabled,
+        exclude_classes=resolved_classes,
+    )
+
+
+def _normalize_overlap_xy_mode(value: object | None) -> str:
+    if value is None:
+        return DEFAULT_OVERLAP_XY_MODE
+    normalized = str(value).strip().lower()
+    if normalized not in {"full", "threshold", "top_k", "none"}:
+        raise ValueError("overlap_xy mode must be one of: full, threshold, top_k, none")
+    return normalized
+
+
+def _resolve_overlap_xy_policy(
+    *,
+    mode: object | None = None,
+    min_ratio: object | None = None,
+    top_k: object | None = None,
+) -> OverlapXYPolicy:
+    configured = load_project_config(_MODULE_DIR).config.graph_build.overlap_xy
+    resolved_mode = _normalize_overlap_xy_mode(
+        configured.mode if mode is None else mode
+    )
+    resolved_min_ratio = configured.min_ratio if min_ratio is None else float(min_ratio)
+    resolved_top_k = configured.top_k if top_k is None else int(top_k)
+    if not 0.0 <= resolved_min_ratio <= 1.0:
+        raise ValueError("overlap_xy min_ratio must be between 0.0 and 1.0")
+    if resolved_top_k < 1:
+        raise ValueError("overlap_xy top_k must be >= 1")
+    return OverlapXYPolicy(
+        mode=resolved_mode,
+        min_ratio=resolved_min_ratio,
+        top_k=resolved_top_k,
+    )
+
+
+def _footprint_area_xy(
+    footprint: list[tuple[float, float]] | None, bbox: tuple
+) -> float:
+    if footprint is not None:
+        area = _polygon_area_xy(footprint)
+        if area > 0.0:
+            return area
+    min_x, min_y, _min_z = bbox[0]
+    max_x, max_y, _max_z = bbox[1]
+    return max(0.0, float(max_x) - float(min_x)) * max(0.0, float(max_y) - float(min_y))
+
+
+def _select_emitted_overlap_xy_candidates(
+    candidates: list[_OverlapXYCandidate],
+    *,
+    policy: OverlapXYPolicy,
+) -> tuple[set[tuple[str, str]], int, int]:
+    if not candidates or policy.mode == "none":
+        return set(), 0, 0
+    if policy.mode == "full":
+        emitted = {(item.source_id, item.target_id) for item in candidates}
+        return emitted, 0, 0
+    if policy.mode == "threshold":
+        emitted = {
+            (item.source_id, item.target_id)
+            for item in candidates
+            if item.overlap_ratio >= policy.min_ratio
+        }
+        return emitted, len(candidates) - len(emitted), 0
+
+    ranked_by_node: dict[str, list[_OverlapXYCandidate]] = defaultdict(list)
+    for item in candidates:
+        ranked_by_node[item.source_id].append(item)
+        ranked_by_node[item.target_id].append(item)
+
+    kept_pairs: set[tuple[str, str]] = set()
+    for node_id, node_candidates in ranked_by_node.items():
+        ordered = sorted(
+            node_candidates,
+            key=lambda item: (
+                -item.overlap_area_xy,
+                item.source_id if item.source_id != node_id else item.target_id,
+                item.target_id if item.source_id != node_id else item.source_id,
+            ),
+        )
+        for item in ordered[: policy.top_k]:
+            kept_pairs.add((item.source_id, item.target_id))
+
+    emitted = {
+        (item.source_id, item.target_id)
+        for item in candidates
+        if (item.source_id, item.target_id) in kept_pairs
+    }
+    return emitted, 0, len(candidates) - len(emitted)
+
+
+def _record_derived_edge_phase_stats(
+    G: nx.DiGraph | nx.MultiDiGraph,
+    phase: str,
+    *,
+    excluded_classes: frozenset[str],
+    eligible_nodes: int,
+    skipped_by_class: dict[str, int],
+    edges_added: int,
+    threshold: float | None = None,
+) -> None:
+    graph_build = G.graph.setdefault("graph_build", {})
+    pruning = graph_build.setdefault("derived_edge_pruning", {})
+    phases = pruning.setdefault("phases", {})
+    stats: dict[str, object] = {
+        "excluded_classes": sorted(excluded_classes),
+        "eligible_nodes": eligible_nodes,
+        "skipped_nodes": sum(skipped_by_class.values()),
+        "skipped_by_class": dict(sorted(skipped_by_class.items())),
+        "edges_added": edges_added,
+    }
+    if threshold is not None:
+        stats["threshold"] = threshold
+    phases[phase] = stats
+
+    LOG.info(
+        "%s: eligible=%d skipped=%d edges_added=%d excluded=%s",
+        phase,
+        eligible_nodes,
+        sum(skipped_by_class.values()),
+        edges_added,
+        ", ".join(sorted(excluded_classes)) if excluded_classes else "<none>",
+    )
+
+
+def _record_overlap_xy_stats(
+    G: nx.DiGraph | nx.MultiDiGraph,
+    *,
+    policy: OverlapXYPolicy,
+    candidate_pairs: int,
+    emitted_pairs: int,
+    rejected_by_threshold: int,
+    rejected_by_top_k: int,
+) -> None:
+    graph_build = G.graph.setdefault("graph_build", {})
+    graph_build["overlap_xy"] = {
+        "mode": policy.mode,
+        "min_ratio": policy.min_ratio,
+        "top_k": policy.top_k,
+        "candidate_positive_overlap_pairs": candidate_pairs,
+        "emitted_overlap_pairs": emitted_pairs,
+        "emitted_overlap_edges": emitted_pairs * 2,
+        "rejected_by_threshold": rejected_by_threshold,
+        "rejected_by_top_k": rejected_by_top_k,
+    }
+    LOG.info(
+        "overlap_xy: mode=%s candidate_pairs=%d emitted_pairs=%d "
+        "rejected_by_threshold=%d rejected_by_top_k=%d min_ratio=%.3f top_k=%d",
+        policy.mode,
+        candidate_pairs,
+        emitted_pairs,
+        rejected_by_threshold,
+        rejected_by_top_k,
+        policy.min_ratio,
+        policy.top_k,
+    )
 
 
 def build_graph_from_jsonl(
@@ -940,6 +1476,7 @@ def build_graph_from_jsonl(
         "hierarchy": ["aggregates", "contains", "contained_in"],
         "spatial": ["adjacent_to", "connected_to"],
         "topology": [
+            "aligned_with",
             "intersects_bbox",
             "overlaps_xy",
             "above",
@@ -948,6 +1485,7 @@ def build_graph_from_jsonl(
             "touches_surface",
             "space_bounded_by",
             "bounds_space",
+            "shares_boundary_with",
             "path_connected_to",
         ],
         # explicit IFC relationships extracted from the Relationships block (Batch 0+)
@@ -1032,6 +1570,11 @@ def build_graph_from_jsonl(
                         properties=_flat_properties(rec),
                         geometry=centroid,
                         bbox=bbox,
+                        footprint_bbox_2d=(
+                            (bbox[0][0], bbox[0][1], bbox[1][0], bbox[1][1])
+                            if bbox
+                            else None
+                        ),
                         footprint_polygon=footprint_poly,
                         obb=obb,
                         local_placement_matrix=placement,
@@ -1047,6 +1590,11 @@ def build_graph_from_jsonl(
                         geometry=centroid,
                         bbox=bbox,
                         mesh=mesh,
+                        footprint_bbox_2d=(
+                            (bbox[0][0], bbox[0][1], bbox[1][0], bbox[1][1])
+                            if bbox
+                            else None
+                        ),
                         footprint_polygon=footprint_poly,
                         obb=obb,
                         local_placement_matrix=placement,
@@ -1066,6 +1614,11 @@ def build_graph_from_jsonl(
                         geometry=centroid,
                         bbox=bbox,
                         mesh=mesh,
+                        footprint_bbox_2d=(
+                            (bbox[0][0], bbox[0][1], bbox[1][0], bbox[1][1])
+                            if bbox
+                            else None
+                        ),
                         footprint_polygon=footprint_poly,
                         obb=obb,
                         local_placement_matrix=placement,
@@ -1138,6 +1691,12 @@ def build_graph_from_jsonl(
     explicit_edge_count = G.number_of_edges() - _before
     if explicit_edge_count:
         LOG.info("Added %d explicit IFC relationship edge(s)", explicit_edge_count)
+    shared_boundary_edge_count = _add_shared_space_boundary_edges(G)
+    if shared_boundary_edge_count:
+        LOG.info(
+            "Added %d shared space boundary edge(s)",
+            shared_boundary_edge_count,
+        )
 
     G.graph["datasets"] = sorted(set(dataset_keys))
 
@@ -1148,8 +1707,12 @@ def build_graph_from_jsonl(
 
 
 def add_spatial_adjacency(
-    G: nx.DiGraph | nx.MultiDiGraph, threshold: float | None = None
+    G: nx.DiGraph | nx.MultiDiGraph,
+    threshold: float | None = None,
+    *,
+    exclude_classes: object = None,
 ) -> float:
+    threshold_positions: list[tuple] = []
     element_nodes: list[str] = []
     positions: list[tuple] = []
     bboxes: list[tuple | None] = []
@@ -1157,6 +1720,9 @@ def add_spatial_adjacency(
         tuple[list[tuple[float, float, float]], list[tuple[int, int, int]]] | None
     ] = []
     element_refs: list[tuple[str, str, str] | None] = []
+    excluded_classes = _normalize_excluded_classes(exclude_classes)
+    skipped_by_class: defaultdict[str, int] = defaultdict(int)
+    edges_before = G.number_of_edges()
 
     for n, d in G.nodes(data=True):
         if d.get("class_") in {"IfcBuilding", "IfcProject", "IfcBuildingStorey"}:
@@ -1171,6 +1737,12 @@ def add_spatial_adjacency(
             centroid = tuple((mn[i] + mx[i]) / 2 for i in range(3))
         if centroid is None:
             continue
+        threshold_positions.append(centroid)
+
+        class_name = _normalize_ifc_class_name(d.get("class_"))
+        if class_name in excluded_classes:
+            skipped_by_class[class_name] += 1
+            continue
         element_nodes.append(n)
         positions.append(centroid)
         bboxes.append(bbox)
@@ -1183,10 +1755,19 @@ def add_spatial_adjacency(
             element_refs.append(None)
 
     if threshold is None:
-        threshold = compute_adjacency_threshold(positions)
+        threshold = compute_adjacency_threshold(threshold_positions)
 
     pos = _normalize_positions(positions)
     if pos is None:
+        _record_derived_edge_phase_stats(
+            G,
+            "spatial_adjacency",
+            excluded_classes=excluded_classes,
+            eligible_nodes=len(element_nodes),
+            skipped_by_class=dict(skipped_by_class),
+            edges_added=G.number_of_edges() - edges_before,
+            threshold=threshold,
+        )
         return threshold
 
     candidate_pairs = _candidate_pairs_kdtree(pos, float(threshold))
@@ -1286,34 +1867,63 @@ def add_spatial_adjacency(
             else:
                 edge_attrs["verified"] = False
 
-            G.add_edge(
+            _add_symmetric_edge_once(
+                G,
                 node_a,
                 node_b,
-                relation=relation,
-                **edge_attrs,
-            )
-            G.add_edge(
-                node_b,
-                node_a,
                 relation=relation,
                 **edge_attrs,
             )
 
+    _record_derived_edge_phase_stats(
+        G,
+        "spatial_adjacency",
+        excluded_classes=excluded_classes,
+        eligible_nodes=len(element_nodes),
+        skipped_by_class=dict(skipped_by_class),
+        edges_added=G.number_of_edges() - edges_before,
+        threshold=threshold,
+    )
     return threshold
 
 
-def add_topology_facts(G: nx.DiGraph | nx.MultiDiGraph) -> None:
+def add_topology_facts(
+    G: nx.DiGraph | nx.MultiDiGraph,
+    *,
+    exclude_classes: object = None,
+    overlap_xy_mode: object | None = None,
+    overlap_xy_min_ratio: object | None = None,
+    overlap_xy_top_k: object | None = None,
+) -> None:
     def _add_topology_edge(u: str, v: str, **attrs: object) -> None:
         """Add topology edge with explicit topology source semantics."""
-        G.add_edge(u, v, source="topology", **attrs)
+        relation = attrs.get("relation")
+        edge_attrs = {"source": "topology", **attrs}
+        if is_symmetric_relation(relation):
+            _add_symmetric_edge_once(G, u, v, **edge_attrs)
+            return
+        _add_edge_once(G, u, v, **edge_attrs)
 
     element_nodes: list[str] = []
     element_bboxes: list[tuple] = []
     element_refs: list[tuple[str, str, str]] = []
     element_footprints: list[list[tuple[float, float]] | None] = []
+    excluded_classes = _normalize_excluded_classes(exclude_classes)
+    overlap_xy_policy = _resolve_overlap_xy_policy(
+        mode=overlap_xy_mode,
+        min_ratio=overlap_xy_min_ratio,
+        top_k=overlap_xy_top_k,
+    )
+    skipped_by_class: defaultdict[str, int] = defaultdict(int)
+    edges_before = G.number_of_edges()
+    overlap_candidates: list[_OverlapXYCandidate] = []
 
     for n, d in G.nodes(data=True):
         if not str(n).startswith("Element::"):
+            continue
+        class_name = _normalize_ifc_class_name(d.get("class_"))
+        if class_name in excluded_classes:
+            skipped_by_class[class_name] += 1
             continue
         bbox = d.get("bbox")
         if bbox is None:
@@ -1362,17 +1972,18 @@ def add_topology_facts(G: nx.DiGraph | nx.MultiDiGraph) -> None:
             else:
                 overlap_area = _bbox_xy_overlap_area(bbox_a, bbox_b)
             if overlap_area > 0.0:
-                _add_topology_edge(
-                    a,
-                    b,
-                    relation="overlaps_xy",
-                    overlap_area_xy=overlap_area,
+                min_area = min(
+                    _footprint_area_xy(footprint_a, bbox_a),
+                    _footprint_area_xy(footprint_b, bbox_b),
                 )
-                _add_topology_edge(
-                    b,
-                    a,
-                    relation="overlaps_xy",
-                    overlap_area_xy=overlap_area,
+                overlap_ratio = overlap_area / min_area if min_area > 0.0 else 0.0
+                overlap_candidates.append(
+                    _OverlapXYCandidate(
+                        source_id=a,
+                        target_id=b,
+                        overlap_area_xy=overlap_area,
+                        overlap_ratio=overlap_ratio,
+                    )
                 )
 
             # Prefer exact OCC mesh boolean metrics when available.
@@ -1426,150 +2037,890 @@ def add_topology_facts(G: nx.DiGraph | nx.MultiDiGraph) -> None:
                 _add_topology_edge(b, a, relation="above", vertical_gap=gap)
                 _add_topology_edge(a, b, relation="below", vertical_gap=gap)
 
-
-def plot_interactive_graph(G: nx.DiGraph | nx.MultiDiGraph, out_html: Path) -> None:
-    # Build positions from node geometry where available.
-    pos: dict[str, tuple[float, float, float] | None] = {}
-    for n, d in G.nodes(data=True):
-        geom = d.get("geometry")
-        if geom is not None:
-            pos[n] = tuple(float(v) for v in geom)
-        else:
-            pos[n] = None
-
-    # Place nodes without geometry at centroid of their children, else origin.
-    for n in G.nodes:
-        if pos.get(n) is not None:
+    emitted_overlap_pairs, rejected_by_threshold, rejected_by_top_k = (
+        _select_emitted_overlap_xy_candidates(
+            overlap_candidates,
+            policy=overlap_xy_policy,
+        )
+    )
+    for candidate in overlap_candidates:
+        if (candidate.source_id, candidate.target_id) not in emitted_overlap_pairs:
             continue
-        child_positions = [pos[c] for c in G.successors(n) if pos.get(c) is not None]
+        _add_topology_edge(
+            candidate.source_id,
+            candidate.target_id,
+            relation="overlaps_xy",
+            overlap_area_xy=candidate.overlap_area_xy,
+            overlap_ratio_xy=candidate.overlap_ratio,
+        )
+        _add_topology_edge(
+            candidate.target_id,
+            candidate.source_id,
+            relation="overlaps_xy",
+            overlap_area_xy=candidate.overlap_area_xy,
+            overlap_ratio_xy=candidate.overlap_ratio,
+        )
+
+    _record_overlap_xy_stats(
+        G,
+        policy=overlap_xy_policy,
+        candidate_pairs=len(overlap_candidates),
+        emitted_pairs=len(emitted_overlap_pairs),
+        rejected_by_threshold=rejected_by_threshold,
+        rejected_by_top_k=rejected_by_top_k,
+    )
+
+    _record_derived_edge_phase_stats(
+        G,
+        "topology",
+        excluded_classes=excluded_classes,
+        eligible_nodes=len(element_nodes),
+        skipped_by_class=dict(skipped_by_class),
+        edges_added=G.number_of_edges() - edges_before,
+    )
+
+
+def _iter_edge_attrs_between(
+    G: nx.DiGraph | nx.MultiDiGraph,
+    source_id: str,
+    target_id: str,
+) -> list[dict[str, object]]:
+    if not G.has_edge(source_id, target_id):
+        return []
+    edge_data = G.get_edge_data(source_id, target_id)
+    if isinstance(edge_data, dict):
+        relation = edge_data.get("relation")
+        if isinstance(relation, str):
+            return [edge_data]
+        return [
+            attrs
+            for attrs in edge_data.values()
+            if isinstance(attrs, dict) and isinstance(attrs.get("relation"), str)
+        ]
+    return []
+
+
+def _viz_node_class_name(node_data: dict[str, object]) -> str | None:
+    return _normalize_ifc_class_name(node_data.get("class_"))
+
+
+def _viz_node_dataset(node_data: dict[str, object]) -> str | None:
+    dataset = node_data.get("dataset")
+    return dataset if isinstance(dataset, str) and dataset else None
+
+
+def _viz_node_is_container(node_data: dict[str, object]) -> bool:
+    class_name = _viz_node_class_name(node_data)
+    return class_name in _VIZ_CONTAINER_CLASSES
+
+
+def _viz_normalize_text(value: str) -> str:
+    return " ".join(value.lower().split())
+
+
+def _viz_non_container_descendants(
+    G: nx.DiGraph | nx.MultiDiGraph,
+    root_id: str,
+) -> list[str]:
+    descendants: set[str] = set()
+    queue: deque[str] = deque([root_id])
+    visited = {root_id}
+
+    while queue:
+        current = queue.popleft()
+        for child_id in G.successors(current):
+            child_text = str(child_id)
+            if child_text in visited:
+                continue
+            if not any(
+                str(attrs.get("relation", "")).strip().lower() == "contains"
+                for attrs in _iter_edge_attrs_between(G, current, child_text)
+            ):
+                continue
+            visited.add(child_text)
+            child_data = G.nodes[child_text]
+            if _viz_node_is_container(child_data):
+                queue.append(child_text)
+            else:
+                descendants.add(child_text)
+    return sorted(descendants)
+
+
+def _viz_resolve_storey_for_node(
+    G: nx.DiGraph | nx.MultiDiGraph,
+    node_id: str,
+) -> tuple[str | None, str | None]:
+    node_data = G.nodes[node_id]
+    if _viz_node_class_name(node_data) == "IfcBuildingStorey":
+        return node_id, "self"
+
+    queue: deque[str] = deque([node_id])
+    visited = {node_id}
+    while queue:
+        current = queue.popleft()
+        for parent_id in G.successors(current):
+            parent_text = str(parent_id)
+            if parent_text in visited:
+                continue
+            if not any(
+                str(attrs.get("relation", "")).strip().lower() == "contained_in"
+                for attrs in _iter_edge_attrs_between(G, current, parent_text)
+            ):
+                continue
+            if _viz_node_class_name(G.nodes[parent_text]) == "IfcBuildingStorey":
+                return parent_text, "contained_in"
+            visited.add(parent_text)
+            queue.append(parent_text)
+
+        for parent_id in G.predecessors(current):
+            parent_text = str(parent_id)
+            if parent_text in visited:
+                continue
+            if not any(
+                str(attrs.get("relation", "")).strip().lower() == "contains"
+                for attrs in _iter_edge_attrs_between(G, parent_text, current)
+            ):
+                continue
+            if _viz_node_class_name(G.nodes[parent_text]) == "IfcBuildingStorey":
+                return parent_text, "contains"
+            visited.add(parent_text)
+            queue.append(parent_text)
+
+    props = node_data.get("properties") or {}
+    if not isinstance(props, dict):
+        return None, None
+    level_value = props.get("Level")
+    if not isinstance(level_value, str) or not level_value.strip():
+        return None, None
+
+    normalized_level = _viz_normalize_text(level_value)
+    dataset_key = _viz_node_dataset(node_data)
+    matches = [
+        candidate_id
+        for candidate_id, candidate_data in G.nodes(data=True)
+        if _viz_node_class_name(candidate_data) == "IfcBuildingStorey"
+        and (dataset_key is None or _viz_node_dataset(candidate_data) == dataset_key)
+        and _viz_normalize_text(str(candidate_data.get("label", "")))
+        == normalized_level
+    ]
+    if len(matches) == 1:
+        return str(matches[0]), "level"
+    return None, None
+
+
+def _viz_node_plan_point(
+    node_data: dict[str, object],
+) -> tuple[tuple[float, float] | None, str | None]:
+    geometry = node_data.get("geometry")
+    if isinstance(geometry, (list, tuple)) and len(geometry) >= 2:
+        try:
+            return (float(geometry[0]), float(geometry[1])), "centroid"
+        except (TypeError, ValueError):
+            pass
+
+    bbox = node_data.get("bbox")
+    if (
+        isinstance(bbox, (list, tuple))
+        and len(bbox) == 2
+        and isinstance(bbox[0], (list, tuple))
+        and isinstance(bbox[1], (list, tuple))
+        and len(bbox[0]) >= 2
+        and len(bbox[1]) >= 2
+    ):
+        try:
+            return (
+                (
+                    (float(bbox[0][0]) + float(bbox[1][0])) * 0.5,
+                    (float(bbox[0][1]) + float(bbox[1][1])) * 0.5,
+                ),
+                "bbox_center_fallback",
+            )
+        except (TypeError, ValueError):
+            return None, None
+    return None, None
+
+
+def _viz_point_in_polygon_xy(
+    point: tuple[float, float],
+    polygon: list[tuple[float, float]],
+) -> bool:
+    x, y = point
+    inside = False
+    epsilon = 1e-9
+
+    for index, (x1, y1) in enumerate(polygon):
+        x2, y2 = polygon[(index + 1) % len(polygon)]
+        dx = x2 - x1
+        dy = y2 - y1
+        cross = (x - x1) * dy - (y - y1) * dx
+        if abs(cross) <= epsilon:
+            dot = (x - x1) * (x - x2) + (y - y1) * (y - y2)
+            if dot <= epsilon:
+                return True
+
+        intersects = ((y1 > y) != (y2 > y)) and (
+            x <= ((x2 - x1) * (y - y1) / ((y2 - y1) or epsilon)) + x1 + epsilon
+        )
+        if intersects:
+            inside = not inside
+    return inside
+
+
+def _viz_point_in_bbox_2d(
+    point: tuple[float, float],
+    bbox_2d: tuple[float, float, float, float],
+) -> bool:
+    x, y = point
+    min_x, min_y, max_x, max_y = bbox_2d
+    epsilon = 1e-9
+    return (
+        min_x - epsilon <= x <= max_x + epsilon
+        and min_y - epsilon <= y <= max_y + epsilon
+    )
+
+
+def _viz_node_footprint_geometry(
+    node_data: dict[str, object],
+) -> tuple[list[tuple[float, float]] | None, tuple[float, float, float, float] | None]:
+    footprint = node_data.get("footprint_polygon")
+    if isinstance(footprint, list) and len(footprint) >= 3:
+        polygon: list[tuple[float, float]] = []
+        for point in footprint:
+            if isinstance(point, (list, tuple)) and len(point) == 2:
+                polygon.append((float(point[0]), float(point[1])))
+        if len(polygon) >= 3:
+            return polygon, None
+
+    bbox_2d = node_data.get("footprint_bbox_2d")
+    if isinstance(bbox_2d, (list, tuple)) and len(bbox_2d) == 4:
+        try:
+            return None, tuple(float(value) for value in bbox_2d)
+        except (TypeError, ValueError):
+            return None, None
+    return None, None
+
+
+def _viz_aligned_signature(node_data: dict[str, object]) -> dict[str, object] | None:
+    if _viz_node_class_name(node_data) not in _VIZ_ALIGNED_WITH_ALLOWED_CLASSES:
+        return None
+
+    obb = node_data.get("obb")
+    if not isinstance(obb, dict):
+        return None
+    axes = obb.get("axes")
+    extents = obb.get("extents")
+    center = obb.get("center")
+    if (
+        not isinstance(axes, (list, tuple))
+        or len(axes) < 2
+        or not isinstance(extents, (list, tuple))
+        or len(extents) < 2
+        or not isinstance(center, (list, tuple))
+        or len(center) < 2
+    ):
+        return None
+
+    axis_candidates: list[tuple[float, tuple[float, float], float]] = []
+    short_extents: list[float] = []
+    for raw_axis, raw_extent in zip(axes[:2], extents[:2], strict=False):
+        if not isinstance(raw_axis, (list, tuple)) or len(raw_axis) < 2:
+            return None
+        try:
+            axis_x = float(raw_axis[0])
+            axis_y = float(raw_axis[1])
+            extent = abs(float(raw_extent))
+        except (TypeError, ValueError):
+            return None
+        axis_len = math.hypot(axis_x, axis_y)
+        if axis_len <= 1e-9 or extent <= 1e-9:
+            continue
+        normalized_axis = (axis_x / axis_len, axis_y / axis_len)
+        axis_candidates.append((extent * axis_len, normalized_axis, extent))
+        short_extents.append(extent)
+
+    if len(axis_candidates) < 2:
+        return None
+
+    axis_candidates.sort(key=lambda item: item[0], reverse=True)
+    try:
+        center_xy = (float(center[0]), float(center[1]))
+    except (TypeError, ValueError):
+        return None
+
+    return {
+        "axis": axis_candidates[0][1],
+        "center_xy": center_xy,
+        "short_extent": min(short_extents),
+    }
+
+
+def _viz_collect_overlay_edges(
+    G: nx.DiGraph | nx.MultiDiGraph,
+) -> dict[str, list[tuple[str, str, dict[str, object]]]]:
+    overlays: dict[str, list[tuple[str, str, dict[str, object]]]] = {
+        "aligned_with": [],
+        "inside_footprint_of": [],
+        "same_storey_as": [],
+    }
+
+    aligned_by_dataset: dict[str | None, list[tuple[str, dict[str, object]]]] = (
+        defaultdict(list)
+    )
+    for node_id, node_data in G.nodes(data=True):
+        node_text = str(node_id)
+        if not node_text.startswith("Element::"):
+            continue
+        signature = _viz_aligned_signature(node_data)
+        if signature is None:
+            continue
+        aligned_by_dataset[_viz_node_dataset(node_data)].append((node_text, signature))
+
+    for dataset_items in aligned_by_dataset.values():
+        dataset_items.sort(key=lambda item: item[0])
+        for index, (source_id, source_signature) in enumerate(dataset_items):
+            source_storey_id, _ = _viz_resolve_storey_for_node(G, source_id)
+            source_axis_x, source_axis_y = source_signature["axis"]  # type: ignore[index]
+            source_center_x, source_center_y = source_signature["center_xy"]  # type: ignore[index]
+            source_short_extent = float(source_signature["short_extent"])  # type: ignore[arg-type]
+            selected_edges: list[
+                tuple[tuple[int, float, float, str], str, dict[str, object]]
+            ] = []
+            for target_id, target_signature in dataset_items[index + 1 :]:
+                target_axis_x, target_axis_y = target_signature["axis"]  # type: ignore[index]
+                dot = source_axis_x * target_axis_x + source_axis_y * target_axis_y
+                if dot < 0.0:
+                    target_axis_x *= -1.0
+                    target_axis_y *= -1.0
+                    dot *= -1.0
+                dot = max(-1.0, min(1.0, dot))
+                angle_deg = math.degrees(math.acos(dot))
+                if angle_deg > 10.0:
+                    continue
+
+                blend_x = source_axis_x + target_axis_x
+                blend_y = source_axis_y + target_axis_y
+                blend_len = math.hypot(blend_x, blend_y)
+                if blend_len <= 1e-9:
+                    ref_axis_x, ref_axis_y = source_axis_x, source_axis_y
+                else:
+                    ref_axis_x = blend_x / blend_len
+                    ref_axis_y = blend_y / blend_len
+
+                target_center_x, target_center_y = target_signature["center_xy"]  # type: ignore[index]
+                perp_x, perp_y = -ref_axis_y, ref_axis_x
+                lateral_offset_xy = abs(
+                    (target_center_x - source_center_x) * perp_x
+                    + (target_center_y - source_center_y) * perp_y
+                )
+                target_short_extent = float(target_signature["short_extent"])  # type: ignore[arg-type]
+                offset_limit = max(0.25, min(source_short_extent, target_short_extent))
+                if lateral_offset_xy > offset_limit:
+                    continue
+
+                target_storey_id, _ = _viz_resolve_storey_for_node(G, target_id)
+                same_storey = (
+                    source_storey_id is not None
+                    and source_storey_id == target_storey_id
+                )
+                selected_edges.append(
+                    (
+                        (
+                            0 if same_storey else 1,
+                            round(angle_deg, 6),
+                            round(lateral_offset_xy, 6),
+                            target_id,
+                        ),
+                        target_id,
+                        {
+                            "relation": "aligned_with",
+                            "source": "visualization_overlay",
+                            "angle_deg": round(angle_deg, 6),
+                            "lateral_offset_xy": round(lateral_offset_xy, 6),
+                            "same_storey": same_storey,
+                        },
+                    )
+                )
+                selected_edges.sort(key=lambda item: item[0])
+                if len(selected_edges) > _VIZ_ALIGNED_WITH_MAX_PER_NODE:
+                    selected_edges.pop()
+
+            for _sort_key, target_id, attrs in selected_edges:
+                overlays["aligned_with"].append((source_id, target_id, attrs))
+
+    for node_id, node_data in G.nodes(data=True):
+        node_text = str(node_id)
+        if _viz_node_class_name(node_data) != "IfcSpace":
+            continue
+        footprint_polygon, footprint_bbox_2d = _viz_node_footprint_geometry(node_data)
+        if footprint_polygon is None and footprint_bbox_2d is None:
+            continue
+
+        for candidate_id in _viz_non_container_descendants(G, node_text):
+            if candidate_id == node_text:
+                continue
+            candidate_data = G.nodes[candidate_id]
+            point_xy, inside_method = _viz_node_plan_point(candidate_data)
+            if point_xy is None or inside_method is None:
+                continue
+            is_inside = (
+                _viz_point_in_polygon_xy(point_xy, footprint_polygon)
+                if footprint_polygon is not None
+                else _viz_point_in_bbox_2d(point_xy, footprint_bbox_2d)
+            )
+            if not is_inside:
+                continue
+            storey_id, _ = _viz_resolve_storey_for_node(G, candidate_id)
+            overlays["inside_footprint_of"].append(
+                (
+                    node_text,
+                    candidate_id,
+                    {
+                        "relation": "inside_footprint_of",
+                        "source": "visualization_overlay",
+                        "inside_method": inside_method,
+                        "storey_id": storey_id,
+                    },
+                )
+            )
+
+    for node_id, node_data in G.nodes(data=True):
+        node_text = str(node_id)
+        if _viz_node_class_name(node_data) != "IfcBuildingStorey":
+            continue
+        for candidate_id in _viz_non_container_descendants(G, node_text):
+            if candidate_id == node_text:
+                continue
+            overlays["same_storey_as"].append(
+                (
+                    node_text,
+                    candidate_id,
+                    {
+                        "relation": "same_storey_as",
+                        "source": "visualization_overlay",
+                        "storey_id": node_text,
+                    },
+                )
+            )
+
+    return {relation: edges for relation, edges in overlays.items() if edges}
+
+
+def _viz_relation_count_key(
+    source_id: str,
+    target_id: str,
+    relation: str,
+) -> tuple[str, str]:
+    if is_symmetric_relation(relation):
+        return canonicalize_undirected_edge_endpoints(source_id, target_id)
+    return str(source_id), str(target_id)
+
+
+def _viz_relation_counts(
+    edge_items: list[tuple[str, str, dict[str, object]]],
+) -> Counter[str]:
+    counts: Counter[str] = Counter()
+    seen_by_relation: dict[str, set[tuple[str, str]]] = defaultdict(set)
+    for source_id, target_id, attrs in edge_items:
+        relation = str(attrs.get("relation", "related_to"))
+        count_key = _viz_relation_count_key(source_id, target_id, relation)
+        if count_key in seen_by_relation[relation]:
+            continue
+        seen_by_relation[relation].add(count_key)
+        counts[relation] += 1
+    return counts
+
+
+@dataclass(frozen=True)
+class _VizInverseLegendPair:
+    forward_relation: str
+    reverse_relation: str
+    label: str
+    summary: str
+
+
+@dataclass(frozen=True)
+class _VizLegendEntry:
+    label: str
+    subtitle: str
+    count: int
+    swatch: str
+    relation_id: str | None = None
+    member_relations: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class _VizVisualRelation:
+    relation_id: str
+    label: str
+    subtitle: str
+    swatch: str
+    color: str
+    count: int
+    member_relations: tuple[str, ...]
+
+
+_VIZ_INVERSE_LEGEND_PAIRS: tuple[_VizInverseLegendPair, ...] = (
+    _VizInverseLegendPair(
+        forward_relation="above",
+        reverse_relation="below",
+        label="above / below",
+        summary="vertical ordering",
+    ),
+    _VizInverseLegendPair(
+        forward_relation="contains",
+        reverse_relation="contained_in",
+        label="contains / contained_in",
+        summary="containment hierarchy",
+    ),
+    _VizInverseLegendPair(
+        forward_relation="hosts",
+        reverse_relation="hosted_by",
+        label="hosts / hosted_by",
+        summary="explicit IFC host relationship",
+    ),
+    _VizInverseLegendPair(
+        forward_relation="space_bounded_by",
+        reverse_relation="bounds_space",
+        label="space_bounded_by / bounds_space",
+        summary="IFC space boundary",
+    ),
+)
+
+
+_VIZ_INVERSE_LEGEND_PAIR_BY_RELATION: dict[str, _VizInverseLegendPair] = {
+    relation: spec
+    for spec in _VIZ_INVERSE_LEGEND_PAIRS
+    for relation in (spec.forward_relation, spec.reverse_relation)
+}
+
+
+def _viz_inverse_pair_count(
+    edge_items: list[tuple[str, str, dict[str, object]]],
+    forward_relation: str,
+    reverse_relation: str,
+) -> int:
+    pair_keys: set[tuple[str, str]] = set()
+    relations = {forward_relation, reverse_relation}
+    for source_id, target_id, attrs in edge_items:
+        relation = str(attrs.get("relation", "related_to"))
+        if relation not in relations:
+            continue
+        pair_keys.add(canonicalize_undirected_edge_endpoints(source_id, target_id))
+    return len(pair_keys)
+
+
+def _viz_build_legend_entries(
+    edge_items: list[tuple[str, str, dict[str, object]]],
+    *,
+    edge_color_map: dict[str, str],
+    edge_relation_explanations: dict[str, str],
+) -> tuple[list[_VizLegendEntry], int]:
+    relation_counts = _viz_relation_counts(edge_items)
+    entries: list[_VizLegendEntry] = []
+    consumed_relations: set[str] = set()
+
+    for spec in _VIZ_INVERSE_LEGEND_PAIRS:
+        forward_count = relation_counts.get(spec.forward_relation, 0)
+        reverse_count = relation_counts.get(spec.reverse_relation, 0)
+        if forward_count == 0 and reverse_count == 0:
+            continue
+        consumed_relations.update({spec.forward_relation, spec.reverse_relation})
+        pair_count = _viz_inverse_pair_count(
+            edge_items,
+            spec.forward_relation,
+            spec.reverse_relation,
+        )
+        forward_color = edge_color_map.get(spec.forward_relation, "#4b5563")
+        reverse_color = edge_color_map.get(spec.reverse_relation, forward_color)
+        swatch = (
+            forward_color
+            if forward_color == reverse_color
+            else (
+                "linear-gradient(90deg, "
+                f"{forward_color} 0 50%, "
+                f"{reverse_color} 50% 100%)"
+            )
+        )
+        subtitle = (
+            f"{spec.summary}; "
+            f"source->target = {spec.forward_relation}, "
+            f"target->source = {spec.reverse_relation}; "
+            f"{spec.forward_relation}={forward_count}, "
+            f"{spec.reverse_relation}={reverse_count}"
+        )
+        entries.append(
+            _VizLegendEntry(
+                label=spec.label,
+                subtitle=subtitle,
+                count=pair_count,
+                swatch=swatch,
+                relation_id=_viz_visual_relation_id(spec.forward_relation),
+                member_relations=(spec.forward_relation, spec.reverse_relation),
+            )
+        )
+
+    for relation, count in relation_counts.items():
+        if relation in consumed_relations:
+            continue
+        entries.append(
+            _VizLegendEntry(
+                label=relation,
+                subtitle=edge_relation_explanations.get(relation, "graph relation"),
+                count=count,
+                swatch=edge_color_map.get(relation, "#4b5563"),
+                relation_id=_viz_visual_relation_id(relation),
+                member_relations=(relation,),
+            )
+        )
+
+    entries.sort(key=lambda item: (-item.count, item.label))
+    return entries, sum(item.count for item in entries)
+
+
+def _viz_render_legend_entries(
+    entries: list[_VizLegendEntry],
+    *,
+    prefix: str,
+    count_title: str,
+) -> str:
+    escaped_prefix = html.escape(prefix)
+    escaped_count_title = html.escape(count_title)
+    rendered: list[str] = []
+    for entry in entries:
+        rendered.append(
+            "<div class='legend-item'>"
+            f"<span class='swatch line' style='--swatch:{entry.swatch}'></span>"
+            "<span class='legend-item-text'>"
+            "<span class='legend-item-main'>"
+            f"{escaped_prefix}: {html.escape(entry.label)}"
+            "</span>"
+            f"<span class='legend-item-sub'>{html.escape(entry.subtitle)}</span>"
+            "</span>"
+            "<span class='legend-count' "
+            f"title='{escaped_count_title}'>{entry.count}</span>"
+            "</div>"
+        )
+    return "".join(rendered)
+
+
+def _viz_inverse_relation_spec(
+    relation: str,
+) -> _VizInverseLegendPair | None:
+    return _VIZ_INVERSE_LEGEND_PAIR_BY_RELATION.get(relation)
+
+
+def _viz_visual_relation_id(relation: str) -> str:
+    spec = _viz_inverse_relation_spec(relation)
+    if spec is None:
+        return relation
+    return f"{spec.forward_relation}__{spec.reverse_relation}"
+
+
+def _viz_distinct_relation_color(index: int) -> str:
+    if index < len(_VIZ_DISTINCT_RELATION_PALETTE):
+        return _VIZ_DISTINCT_RELATION_PALETTE[index]
+    hue = (index * 137.508) % 360
+    red, green, blue = colorsys.hls_to_rgb(hue / 360.0, 0.58, 0.74)
+    red_channel = int(round(red * 255))
+    green_channel = int(round(green * 255))
+    blue_channel = int(round(blue * 255))
+    return f"#{red_channel:02x}{green_channel:02x}{blue_channel:02x}"
+
+
+def _viz_assign_visual_relation_colors(
+    visual_relations: list[_VizVisualRelation],
+) -> dict[str, str]:
+    ordered_relations = sorted(
+        visual_relations,
+        key=lambda relation: relation.relation_id.casefold(),
+    )
+    return {
+        relation.relation_id: _viz_distinct_relation_color(index)
+        for index, relation in enumerate(ordered_relations)
+    }
+
+
+def _viz_visual_relation_count_key(
+    source_id: str,
+    target_id: str,
+    relation: str,
+) -> tuple[str, str]:
+    spec = _viz_inverse_relation_spec(relation)
+    if spec is not None or is_symmetric_relation(relation):
+        return canonicalize_undirected_edge_endpoints(source_id, target_id)
+    return str(source_id), str(target_id)
+
+
+def _viz_build_visual_relations(
+    edge_items: list[tuple[str, str, dict[str, object]]],
+    *,
+    edge_color_map: dict[str, str],
+    edge_relation_explanations: dict[str, str],
+) -> tuple[list[tuple[str, str, dict[str, object]]], list[_VizVisualRelation]]:
+    relation_counts = _viz_relation_counts(edge_items)
+    seen_by_visual_relation: dict[str, set[tuple[str, str]]] = defaultdict(set)
+    visual_edge_items: list[tuple[str, str, dict[str, object]]] = []
+    visual_relation_map: dict[str, _VizVisualRelation] = {}
+
+    for spec in _VIZ_INVERSE_LEGEND_PAIRS:
+        forward_count = relation_counts.get(spec.forward_relation, 0)
+        reverse_count = relation_counts.get(spec.reverse_relation, 0)
+        if forward_count == 0 and reverse_count == 0:
+            continue
+        forward_color = edge_color_map.get(spec.forward_relation, "#4b5563")
+        reverse_color = edge_color_map.get(spec.reverse_relation, forward_color)
+        swatch = (
+            forward_color
+            if forward_color == reverse_color
+            else (
+                "linear-gradient(90deg, "
+                f"{forward_color} 0 50%, "
+                f"{reverse_color} 50% 100%)"
+            )
+        )
+        visual_relation_map[_viz_visual_relation_id(spec.forward_relation)] = (
+            _VizVisualRelation(
+                relation_id=_viz_visual_relation_id(spec.forward_relation),
+                label=spec.label,
+                subtitle=(
+                    f"{spec.summary}; "
+                    f"source->target = {spec.forward_relation}, "
+                    f"target->source = {spec.reverse_relation}; "
+                    f"{spec.forward_relation}={forward_count}, "
+                    f"{spec.reverse_relation}={reverse_count}"
+                ),
+                swatch=swatch,
+                color=forward_color,
+                count=_viz_inverse_pair_count(
+                    edge_items,
+                    spec.forward_relation,
+                    spec.reverse_relation,
+                ),
+                member_relations=(spec.forward_relation, spec.reverse_relation),
+            )
+        )
+
+    for relation, count in relation_counts.items():
+        visual_relation_id = _viz_visual_relation_id(relation)
+        if visual_relation_id in visual_relation_map:
+            continue
+        visual_relation_map[visual_relation_id] = _VizVisualRelation(
+            relation_id=visual_relation_id,
+            label=relation,
+            subtitle=edge_relation_explanations.get(relation, "graph relation"),
+            swatch=edge_color_map.get(relation, "#4b5563"),
+            color=edge_color_map.get(relation, "#4b5563"),
+            count=count,
+            member_relations=(relation,),
+        )
+
+    for source_id, target_id, attrs in edge_items:
+        relation = str(attrs.get("relation", "related_to"))
+        visual_relation_id = _viz_visual_relation_id(relation)
+        visual_key = _viz_visual_relation_count_key(source_id, target_id, relation)
+        if visual_key in seen_by_visual_relation[visual_relation_id]:
+            continue
+        seen_by_visual_relation[visual_relation_id].add(visual_key)
+        canonical_source_id, canonical_target_id = (
+            canonicalize_undirected_edge_endpoints(source_id, target_id)
+            if visual_key != (str(source_id), str(target_id))
+            else (str(source_id), str(target_id))
+        )
+        visual_attrs = dict(attrs)
+        visual_attrs["relation"] = visual_relation_id
+        visual_attrs["raw_relation"] = relation
+        visual_edge_items.append(
+            (canonical_source_id, canonical_target_id, visual_attrs)
+        )
+
+    visual_relations = sorted(
+        visual_relation_map.values(),
+        key=lambda item: (-item.count, item.label),
+    )
+    return visual_edge_items, visual_relations
+
+
+def _viz_compute_positions(
+    G: nx.DiGraph | nx.MultiDiGraph,
+) -> dict[str, tuple[float, float, float]]:
+    pos: dict[str, tuple[float, float, float] | None] = {}
+    for node_id, node_data in G.nodes(data=True):
+        geom = node_data.get("geometry")
+        if geom is not None:
+            pos[str(node_id)] = tuple(float(v) for v in geom)
+        else:
+            pos[str(node_id)] = None
+
+    for node_id in G.nodes:
+        node_key = str(node_id)
+        if pos.get(node_key) is not None:
+            continue
+        child_positions = [
+            pos[str(child_id)]
+            for child_id in G.successors(node_id)
+            if pos.get(str(child_id)) is not None
+        ]
         if child_positions:
             arr = np.array(child_positions, dtype=float)
-            pos[n] = tuple(float(v) for v in arr.mean(axis=0))
+            pos[node_key] = tuple(float(v) for v in arr.mean(axis=0))
         else:
-            pos[n] = (0.0, 0.0, 0.0)
+            pos[node_key] = (0.0, 0.0, 0.0)
+    return {node_id: coords or (0.0, 0.0, 0.0) for node_id, coords in pos.items()}
 
-    node_color_map = {
-        "IfcProject": "#7c3aed",
-        "IfcBuilding": "#2563eb",
-        "IfcBuildingStorey": "#f97316",
-        "IfcSystem": "#0891b2",
-        "IfcZone": "#16a34a",
-    }
-    edge_color_map = {
-        "aggregates": "#6b7280",
-        "contains": "#1d4ed8",
-        "contained_in": "#2563eb",
-        "typed_by": "#ca8a04",
-        "connected_to": "#ef4444",
-        "adjacent_to": "#059669",
-        "intersects_bbox": "#f59e0b",
-        "overlaps_xy": "#0ea5e9",
-        "intersects_3d": "#b91c1c",
-        "touches_surface": "#9333ea",
-        "above": "#7c3aed",
-        "below": "#9333ea",
-        "hosts": "#b91c1c",
-        "hosted_by": "#dc2626",
-        "ifc_connected_to": "#0f766e",
-        "path_connected_to": "#0b6e4f",
-        "space_bounded_by": "#be123c",
-        "bounds_space": "#9f1239",
-        "belongs_to_system": "#0369a1",
-        "in_zone": "#15803d",
-        "classified_as": "#4f46e5",
-    }
-    edge_relation_explanations = {
-        "aggregates": "hierarchy decomposition",
-        "contains": "container to child",
-        "contained_in": "child to container",
-        "typed_by": "instance classified by type",
-        "connected_to": "bbox intersects or touches",
-        "adjacent_to": "spatially near within threshold",
-        "intersects_bbox": "3D bbox overlap",
-        "overlaps_xy": "2D footprint overlap",
-        "intersects_3d": "mesh-informed 3D intersection",
-        "touches_surface": "mesh-informed surface contact",
-        "above": "vertical ordering above",
-        "below": "vertical ordering below",
-        "hosts": "explicit IFC host relationship",
-        "hosted_by": "explicit IFC hosted-by relationship",
-        "ifc_connected_to": "explicit IFC connectivity",
-        "path_connected_to": "explicit IFC path connectivity",
-        "space_bounded_by": "IFC space boundary (space to element)",
-        "bounds_space": "IFC space boundary (element to space)",
-        "belongs_to_system": "assigned to IFC system",
-        "in_zone": "assigned to IFC zone",
-        "classified_as": "assigned IFC classification",
+
+def _viz_display_edge_items(
+    G: nx.DiGraph | nx.MultiDiGraph,
+) -> list[tuple[str, str, dict[str, object]]]:
+    graph_edge_items = [(str(u), str(v), d) for u, v, d in G.edges(data=True)]
+    overlay_edges = _viz_collect_overlay_edges(G)
+    derived_edge_items = [
+        (source_id, target_id, attrs)
+        for overlay_items in overlay_edges.values()
+        for source_id, target_id, attrs in overlay_items
+    ]
+    return graph_edge_items + derived_edge_items
+
+
+def _viz_mode_relations(
+    G: nx.DiGraph | nx.MultiDiGraph,
+) -> dict[str, set[str]]:
+    edge_categories = G.graph.get("edge_categories", {})
+    hierarchy_rels = set(edge_categories.get("hierarchy", []))
+    spatial_rels = set(edge_categories.get("spatial", []))
+    topology_rels = set(edge_categories.get("topology", []))
+    explicit_rels = set(edge_categories.get("explicit", []))
+    spatial_rels.update({"inside_footprint_of", "same_storey_as"})
+    topology_rels.add("aligned_with")
+    return {
+        "hierarchy": hierarchy_rels,
+        "spatial": spatial_rels,
+        "topology": topology_rels,
+        "explicit": explicit_rels,
     }
 
-    node_groups: dict[str, dict[str, list]] = {}
-    node_group_colors: dict[str, str] = {}
-    node_group_labels: dict[str, str] = {}
-    for n, d in G.nodes(data=True):
-        x, y, z = pos[n] or (0.0, 0.0, 0.0)
-        cls = str(d.get("class_") or "Unknown")
-        group = node_groups.setdefault(cls, {"x": [], "y": [], "z": [], "hover": []})
-        if cls not in node_group_colors:
-            node_group_colors[cls] = node_color_map.get(cls, "#22c55e")
-            node_group_labels[cls] = f"Node: {cls}"
 
-        props = d.get("properties", {}) or {}
-        hover_props = "<br>".join(
-            f"<b>{k}</b>: {v}" for k, v in props.items() if v not in ("", None)
-        )
-        group["x"].append(x)
-        group["y"].append(y)
-        group["z"].append(z)
-        group["hover"].append(
-            f"<b>{d.get('label', n)}</b><br>Class: {cls}<br>{hover_props}"
-        )
+def _viz_relation_storage_category(relation: str) -> str:
+    for category, relations in _VIZ_STORAGE_RELATIONS.items():
+        if relation in relations:
+            return category
+    return "topology"
 
-    edge_groups: dict[str, dict[str, list]] = {}
-    for u, v, d in G.edges(data=True):
-        rel = str(d.get("relation", "related_to"))
-        group = edge_groups.setdefault(
-            rel,
-            {
-                "x": [],
-                "y": [],
-                "z": [],
-                "mid_x": [],
-                "mid_y": [],
-                "mid_z": [],
-                "label_x": [],
-                "label_y": [],
-                "label_z": [],
-                "hover": [],
-            },
-        )
-        x0, y0, z0 = pos.get(u) or (0.0, 0.0, 0.0)
-        x1, y1, z1 = pos.get(v) or (0.0, 0.0, 0.0)
-        group["x"] += [x0, x1, None]
-        group["y"] += [y0, y1, None]
-        group["z"] += [z0, z1, None]
-        mx = (x0 + x1) / 2.0
-        my = (y0 + y1) / 2.0
-        mz = (z0 + z1) / 2.0
-        group["mid_x"].append(mx)
-        group["mid_y"].append(my)
-        group["mid_z"].append(mz)
-        group["label_x"].append(mx)
-        group["label_y"].append(my)
-        group["label_z"].append(mz)
 
-        source = d.get("source")
-        dist = d.get("distance")
-        meaning = edge_relation_explanations.get(rel, "graph relation")
-        msg = f"Relation: {rel}<br>Meaning: {meaning}"
-        if source is not None:
-            msg += f"<br>Source: {source}"
-        if dist is not None:
-            msg += f"<br>Distance: {float(dist):.3f}"
-        group["hover"].append(msg)
+def _viz_bundle_name(G: nx.DiGraph | nx.MultiDiGraph) -> str:
+    datasets = [
+        str(item)
+        for item in G.graph.get("datasets", [])
+        if isinstance(item, str) and item.strip()
+    ]
+    if len(datasets) == 1:
+        return f"{datasets[0]}_graph_viewer"
+    return _VIZ_DEFAULT_BUNDLE_NAME
 
-    bbox_x: list[float | None] = []
-    bbox_y: list[float | None] = []
-    bbox_z: list[float | None] = []
+
+def _viz_collect_bbox_vertices(
+    G: nx.DiGraph | nx.MultiDiGraph,
+) -> list[float]:
+    bbox_vertices: list[float] = []
     bbox_edges = (
         (0, 1),
         (1, 2),
@@ -1603,12 +2954,437 @@ def plot_interactive_graph(G: nx.DiGraph | nx.MultiDiGraph, out_html: Path) -> N
             (x1, y1, z1),
             (x0, y1, z1),
         ]
-        for a, b in bbox_edges:
-            ax, ay, az = corners[a]
-            bx, by, bz = corners[b]
-            bbox_x += [ax, bx, None]
-            bbox_y += [ay, by, None]
-            bbox_z += [az, bz, None]
+        for start_idx, end_idx in bbox_edges:
+            start = corners[start_idx]
+            end = corners[end_idx]
+            bbox_vertices.extend((*start, *end))
+    return bbox_vertices
+
+
+def _viz_collect_mesh_wireframe_vertices(
+    G: nx.DiGraph | nx.MultiDiGraph,
+) -> list[float]:
+    mesh_vertices: list[float] = []
+    for node_id, node_data in G.nodes(data=True):
+        if not str(node_id).startswith("Element::"):
+            continue
+        mesh = node_data.get("mesh")
+        if mesh is None:
+            continue
+        vertices, faces = mesh
+        if not vertices or not faces:
+            continue
+        unique_edges: set[tuple[int, int]] = set()
+        for a, b, c in faces:
+            for start_idx, end_idx in ((a, b), (b, c), (c, a)):
+                edge_key = tuple(sorted((int(start_idx), int(end_idx))))
+                unique_edges.add(edge_key)
+        for start_idx, end_idx in sorted(unique_edges):
+            start = vertices[start_idx]
+            end = vertices[end_idx]
+            mesh_vertices.extend(
+                (
+                    float(start[0]),
+                    float(start[1]),
+                    float(start[2]),
+                    float(end[0]),
+                    float(end[1]),
+                    float(end[2]),
+                )
+            )
+    return mesh_vertices
+
+
+def export_webgl_graph_assets(
+    G: nx.DiGraph | nx.MultiDiGraph,
+    out_dir: Path,
+) -> Path:
+    bundle_dir = out_dir / _viz_bundle_name(G)
+    bundle_dir.mkdir(parents=True, exist_ok=True)
+
+    node_positions = _viz_compute_positions(G)
+    display_edge_items = _viz_display_edge_items(G)
+    visual_edge_items, visual_relations = _viz_build_visual_relations(
+        display_edge_items,
+        edge_color_map=_VIZ_EDGE_COLOR_MAP,
+        edge_relation_explanations=_VIZ_EDGE_RELATION_EXPLANATIONS,
+    )
+    mode_relations = _viz_mode_relations(G)
+    node_ids = sorted((str(node_id) for node_id in G.nodes), key=str.lower)
+    node_index = {node_id: idx for idx, node_id in enumerate(node_ids)}
+
+    positions_array = np.asarray(
+        [node_positions[node_id] for node_id in node_ids],
+        dtype=np.float32,
+    )
+    positions_array.tofile(bundle_dir / "nodes.bin")
+
+    node_meta: list[dict[str, object]] = []
+    node_groups: Counter[str] = Counter()
+    for node_id in node_ids:
+        node_data = dict(G.nodes[node_id])
+        class_name = str(node_data.get("class_") or "Unknown")
+        node_groups[class_name] += 1
+        node_meta.append(
+            {
+                "id": node_id,
+                "label": str(node_data.get("label") or node_id),
+                "class_name": class_name,
+                "dataset": (
+                    str(node_data.get("dataset"))
+                    if node_data.get("dataset") is not None
+                    else None
+                ),
+                "geometry": [float(value) for value in node_positions[node_id]],
+            }
+        )
+    (bundle_dir / "nodes_meta.json").write_text(
+        json.dumps(node_meta, indent=2),
+        encoding="utf-8",
+    )
+
+    relation_names = sorted(
+        {
+            str(attrs.get("relation", "related_to"))
+            for _source_id, _target_id, attrs in visual_edge_items
+        }
+    )
+    relation_index = {relation: idx for idx, relation in enumerate(relation_names)}
+    source_kinds = sorted(
+        {
+            (str(attrs.get("source")) if attrs.get("source") is not None else "unknown")
+            for _source_id, _target_id, attrs in visual_edge_items
+        }
+    )
+    source_kind_index = {
+        source_kind: idx for idx, source_kind in enumerate(source_kinds)
+    }
+    edge_dtype = np.dtype(
+        [
+            ("source", "<u4"),
+            ("target", "<u4"),
+            ("relation", "<u2"),
+            ("source_kind", "u1"),
+            ("flags", "u1"),
+        ]
+    )
+
+    edges_by_category: dict[str, list[tuple[int, int, int, int]]] = {
+        category: [] for category in _VIZ_STORAGE_RELATIONS
+    }
+    for source_id, target_id, attrs in visual_edge_items:
+        relation = str(attrs.get("relation", "related_to"))
+        raw_relation = str(attrs.get("raw_relation", relation))
+        storage_category = _viz_relation_storage_category(raw_relation)
+        source_kind = (
+            str(attrs.get("source")) if attrs.get("source") is not None else "unknown"
+        )
+        edges_by_category[storage_category].append(
+            (
+                node_index[source_id],
+                node_index[target_id],
+                relation_index[relation],
+                source_kind_index[source_kind],
+            )
+        )
+
+    edge_files: dict[str, dict[str, object]] = {}
+    for category, edge_rows in edges_by_category.items():
+        edge_array = np.zeros(len(edge_rows), dtype=edge_dtype)
+        if edge_rows:
+            edge_array["source"] = [row[0] for row in edge_rows]
+            edge_array["target"] = [row[1] for row in edge_rows]
+            edge_array["relation"] = [row[2] for row in edge_rows]
+            edge_array["source_kind"] = [row[3] for row in edge_rows]
+        edge_filename = f"edges_{category}.bin"
+        edge_array.tofile(bundle_dir / edge_filename)
+        edge_files[category] = {
+            "path": edge_filename,
+            "count": len(edge_rows),
+            "stride_bytes": int(edge_dtype.itemsize),
+            "relations": list(_VIZ_STORAGE_RELATIONS.get(category, ())),
+            "schema": {
+                "source": "uint32",
+                "target": "uint32",
+                "relation": "uint16",
+                "source_kind": "uint8",
+                "flags": "uint8",
+            },
+        }
+
+    bbox_vertices = np.asarray(_viz_collect_bbox_vertices(G), dtype=np.float32)
+    bbox_path = bundle_dir / "overlays_bbox.bin"
+    if bbox_vertices.size:
+        bbox_vertices.tofile(bbox_path)
+
+    mesh_vertices = np.asarray(
+        _viz_collect_mesh_wireframe_vertices(G),
+        dtype=np.float32,
+    )
+    mesh_bin_path = bundle_dir / "overlays_mesh.bin"
+    if mesh_vertices.size:
+        mesh_vertices.tofile(mesh_bin_path)
+    mesh_manifest = {
+        "available": bool(mesh_vertices.size),
+        "path": mesh_bin_path.name if mesh_vertices.size else None,
+        "vertex_count": int(mesh_vertices.size // 3),
+        "segment_count": int(mesh_vertices.size // 6),
+        "format": "float32x3",
+    }
+    (bundle_dir / "overlays_mesh_manifest.json").write_text(
+        json.dumps(mesh_manifest, indent=2),
+        encoding="utf-8",
+    )
+
+    visual_relation_lookup = {
+        relation.relation_id: relation for relation in visual_relations
+    }
+    relation_colors = _viz_assign_visual_relation_colors(visual_relations)
+    relation_labels = {
+        relation.relation_id: relation.label for relation in visual_relations
+    }
+    relation_explanations = {
+        relation.relation_id: relation.subtitle for relation in visual_relations
+    }
+    visual_mode_relations = {
+        mode: sorted(
+            {
+                _viz_visual_relation_id(relation)
+                for relation in relations
+                if _viz_visual_relation_id(relation) in visual_relation_lookup
+            },
+            key=str.lower,
+        )
+        for mode, relations in mode_relations.items()
+    }
+    bounds_min = (
+        positions_array.min(axis=0).tolist() if len(positions_array) else [0, 0, 0]
+    )
+    bounds_max = (
+        positions_array.max(axis=0).tolist() if len(positions_array) else [0, 0, 0]
+    )
+    graph_datasets = G.graph.get("datasets")
+    manifest = {
+        "dataset": (
+            graph_datasets[0]
+            if isinstance(graph_datasets, list) and len(graph_datasets) == 1
+            else None
+        ),
+        "datasets": G.graph.get("datasets", []),
+        "bundle_name": bundle_dir.name,
+        "node_count": len(node_ids),
+        "edge_count": len(visual_edge_items),
+        "bounds": {"min": bounds_min, "max": bounds_max},
+        "files": {
+            "nodes": {
+                "path": "nodes.bin",
+                "count": len(node_ids),
+                "stride_bytes": 12,
+                "format": "float32x3",
+            },
+            "node_meta": {"path": "nodes_meta.json", "count": len(node_meta)},
+            "edges": edge_files,
+            "overlays": {
+                "bbox": {
+                    "available": bool(bbox_vertices.size),
+                    "path": bbox_path.name if bbox_vertices.size else None,
+                    "vertex_count": int(bbox_vertices.size // 3),
+                    "segment_count": int(bbox_vertices.size // 6),
+                    "format": "float32x3",
+                },
+                "mesh": {
+                    "available": mesh_manifest["available"],
+                    "manifest_path": "overlays_mesh_manifest.json",
+                },
+            },
+        },
+        "render_defaults": {
+            "nodes": True,
+            "edges": True,
+            "edge_labels": False,
+            "bboxes": False,
+            "meshes": False,
+            "mode": "all",
+        },
+        "viewer_modes": visual_mode_relations | {"all": relation_names},
+        "relation_storage_categories": {
+            relation: _viz_relation_storage_category(
+                visual_relation_lookup[relation].member_relations[0]
+            )
+            for relation in relation_names
+        },
+        "relation_colors": relation_colors,
+        "relation_labels": relation_labels,
+        "relation_explanations": relation_explanations,
+        "storage_categories": {
+            category: list(relations)
+            for category, relations in _VIZ_STORAGE_RELATIONS.items()
+        },
+        "relation_names": relation_names,
+        "source_kinds": source_kinds,
+        "legend": {
+            "total_edges": sum(relation.count for relation in visual_relations),
+            "entries": [
+                {
+                    "relation_id": relation.relation_id,
+                    "label": relation.label,
+                    "subtitle": relation.subtitle,
+                    "count": relation.count,
+                    "swatch": relation_colors.get(
+                        relation.relation_id, relation.swatch
+                    ),
+                    "member_relations": list(relation.member_relations),
+                }
+                for relation in visual_relations
+            ],
+        },
+        "node_groups": {
+            class_name: {
+                "count": count,
+                "color": _VIZ_NODE_COLOR_MAP.get(class_name, "#22c55e"),
+                "label": f"Node: {class_name}",
+            }
+            for class_name, count in sorted(node_groups.items())
+        },
+    }
+    (bundle_dir / "manifest.json").write_text(
+        json.dumps(manifest, indent=2),
+        encoding="utf-8",
+    )
+    LOG.info("WebGL graph assets saved to %s", bundle_dir)
+    return bundle_dir
+
+
+def plot_interactive_graph(G: nx.DiGraph | nx.MultiDiGraph, out_html: Path) -> None:
+    pos = _viz_compute_positions(G)
+    node_color_map = _VIZ_NODE_COLOR_MAP
+    edge_color_map = _VIZ_EDGE_COLOR_MAP
+    edge_relation_explanations = _VIZ_EDGE_RELATION_EXPLANATIONS
+
+    node_groups: dict[str, dict[str, list]] = {}
+    node_group_colors: dict[str, str] = {}
+    node_group_labels: dict[str, str] = {}
+    for n, d in G.nodes(data=True):
+        x, y, z = pos[n] or (0.0, 0.0, 0.0)
+        cls = str(d.get("class_") or "Unknown")
+        group = node_groups.setdefault(cls, {"x": [], "y": [], "z": [], "hover": []})
+        if cls not in node_group_colors:
+            node_group_colors[cls] = node_color_map.get(cls, "#22c55e")
+            node_group_labels[cls] = f"Node: {cls}"
+
+        props = d.get("properties", {}) or {}
+        hover_props = "<br>".join(
+            f"<b>{k}</b>: {v}" for k, v in props.items() if v not in ("", None)
+        )
+        group["x"].append(x)
+        group["y"].append(y)
+        group["z"].append(z)
+        group["hover"].append(
+            f"<b>{d.get('label', n)}</b><br>Class: {cls}<br>{hover_props}"
+        )
+
+    def _new_edge_group() -> dict[str, list]:
+        return {
+            "x": [],
+            "y": [],
+            "z": [],
+            "mid_x": [],
+            "mid_y": [],
+            "mid_z": [],
+            "label_x": [],
+            "label_y": [],
+            "label_z": [],
+            "hover": [],
+        }
+
+    def _edge_hover_message(rel: str, attrs: dict[str, object]) -> str:
+        meaning = edge_relation_explanations.get(rel, "graph relation")
+        message = f"Relation: {rel}<br>Meaning: {meaning}"
+        source = attrs.get("source")
+        if source is not None:
+            message += f"<br>Source: {html.escape(str(source))}"
+        distance = attrs.get("distance")
+        try:
+            if distance is not None:
+                message += f"<br>Distance: {float(distance):.3f}"
+        except (TypeError, ValueError):
+            pass
+        for key, label in (
+            ("angle_deg", "Angle"),
+            ("lateral_offset_xy", "Lateral offset XY"),
+            ("overlap_area_xy", "Overlap area XY"),
+            ("overlap_ratio_xy", "Overlap ratio XY"),
+            ("vertical_gap", "Vertical gap"),
+            ("intersection_volume", "Intersection volume"),
+            ("contact_area", "Contact area"),
+        ):
+            value = attrs.get(key)
+            try:
+                if value is not None:
+                    message += f"<br>{label}: {float(value):.6f}"
+            except (TypeError, ValueError):
+                continue
+        for key, label in (
+            ("inside_method", "Inside method"),
+            ("storey_id", "Storey"),
+            ("derived_from", "Derived from"),
+        ):
+            value = attrs.get(key)
+            if value is not None:
+                message += f"<br>{label}: {html.escape(str(value))}"
+        same_storey = attrs.get("same_storey")
+        if same_storey is not None:
+            message += (
+                "<br>Same storey: true"
+                if bool(same_storey)
+                else "<br>Same storey: false"
+            )
+        shared_boundary_elements = attrs.get("shared_boundary_elements")
+        if isinstance(shared_boundary_elements, list) and shared_boundary_elements:
+            joined = ", ".join(
+                html.escape(str(item)) for item in shared_boundary_elements
+            )
+            message += f"<br>Shared boundaries: {joined}"
+        return message
+
+    def _append_edge_group(
+        groups: dict[str, dict[str, list]],
+        source_id: str,
+        target_id: str,
+        attrs: dict[str, object],
+    ) -> None:
+        rel = str(attrs.get("relation", "related_to"))
+        group = groups.setdefault(rel, _new_edge_group())
+        x0, y0, z0 = pos.get(source_id) or (0.0, 0.0, 0.0)
+        x1, y1, z1 = pos.get(target_id) or (0.0, 0.0, 0.0)
+        group["x"] += [x0, x1, None]
+        group["y"] += [y0, y1, None]
+        group["z"] += [z0, z1, None]
+        mx = (x0 + x1) / 2.0
+        my = (y0 + y1) / 2.0
+        mz = (z0 + z1) / 2.0
+        group["mid_x"].append(mx)
+        group["mid_y"].append(my)
+        group["mid_z"].append(mz)
+        group["label_x"].append(mx)
+        group["label_y"].append(my)
+        group["label_z"].append(mz)
+        group["hover"].append(_edge_hover_message(rel, attrs))
+
+    display_edge_items = _viz_display_edge_items(G)
+
+    edge_groups: dict[str, dict[str, list]] = {}
+    for source_id, target_id, attrs in display_edge_items:
+        _append_edge_group(edge_groups, source_id, target_id, attrs)
+
+    bbox_x: list[float | None] = []
+    bbox_y: list[float | None] = []
+    bbox_z: list[float | None] = []
+    bbox_vertices = _viz_collect_bbox_vertices(G)
+    for idx in range(0, len(bbox_vertices), 6):
+        bbox_x += [bbox_vertices[idx], bbox_vertices[idx + 3], None]
+        bbox_y += [bbox_vertices[idx + 1], bbox_vertices[idx + 4], None]
+        bbox_z += [bbox_vertices[idx + 2], bbox_vertices[idx + 5], None]
 
     traces: list[go.BaseTraceType] = []
     trace_meta: list[tuple[str, str]] = []
@@ -1754,11 +3530,11 @@ def plot_interactive_graph(G: nx.DiGraph | nx.MultiDiGraph, out_html: Path) -> N
         show_bboxes: bool = False,
         show_meshes: bool = False,
     ) -> list[bool]:
-        edge_categories = G.graph.get("edge_categories", {})
-        hierarchy_rels = set(edge_categories.get("hierarchy", []))
-        spatial_rels = set(edge_categories.get("spatial", []))
-        topology_rels = set(edge_categories.get("topology", []))
-        explicit_rels = set(edge_categories.get("explicit", []))
+        mode_relations = _viz_mode_relations(G)
+        hierarchy_rels = mode_relations["hierarchy"]
+        spatial_rels = mode_relations["spatial"]
+        topology_rels = mode_relations["topology"]
+        explicit_rels = mode_relations["explicit"]
         visible: list[bool] = []
         for kind, name in trace_meta:
             if kind == "bbox":
@@ -1820,85 +3596,38 @@ def plot_interactive_graph(G: nx.DiGraph | nx.MultiDiGraph, out_html: Path) -> N
                 visible.append(kind != "edge_label" or show_edge_annotations)
         return visible
 
+    def _mask_variants(mode: str) -> dict[str, list[bool]]:
+        variants: dict[str, list[bool]] = {}
+        for show_edge_annotations in (False, True):
+            for show_bboxes in (False, True):
+                for show_meshes in (False, True):
+                    parts = []
+                    if show_edge_annotations:
+                        parts.append("annotations")
+                    if show_bboxes:
+                        parts.append("bboxes")
+                    if show_meshes:
+                        parts.append("meshes")
+                    key = f"with_{'_and_'.join(parts)}" if parts else "base"
+                    variants[key] = _mask(
+                        mode,
+                        show_edge_annotations,
+                        show_bboxes,
+                        show_meshes,
+                    )
+        return variants
+
     filter_masks = {
-        "all": {
-            "base": _mask("all", False, False),
-            "with_annotations": _mask("all", True, False),
-            "with_bboxes": _mask("all", False, True),
-            "with_annotations_and_bboxes": _mask("all", True, True),
-            "with_meshes": _mask("all", False, False, True),
-            "with_annotations_and_meshes": _mask("all", True, False, True),
-            "with_bboxes_and_meshes": _mask("all", False, True, True),
-            "with_annotations_and_bboxes_and_meshes": _mask("all", True, True, True),
-        },
-        "nodes": {
-            "base": _mask("nodes", False, False),
-            "with_annotations": _mask("nodes", True, False),
-            "with_bboxes": _mask("nodes", False, True),
-            "with_annotations_and_bboxes": _mask("nodes", True, True),
-            "with_meshes": _mask("nodes", False, False, True),
-            "with_annotations_and_meshes": _mask("nodes", True, False, True),
-            "with_bboxes_and_meshes": _mask("nodes", False, True, True),
-            "with_annotations_and_bboxes_and_meshes": _mask("nodes", True, True, True),
-        },
-        "edges": {
-            "base": _mask("edges", False, False),
-            "with_annotations": _mask("edges", True, False),
-            "with_bboxes": _mask("edges", False, True),
-            "with_annotations_and_bboxes": _mask("edges", True, True),
-            "with_meshes": _mask("edges", False, False, True),
-            "with_annotations_and_meshes": _mask("edges", True, False, True),
-            "with_bboxes_and_meshes": _mask("edges", False, True, True),
-            "with_annotations_and_bboxes_and_meshes": _mask("edges", True, True, True),
-        },
-        "hierarchy": {
-            "base": _mask("hierarchy", False, False),
-            "with_annotations": _mask("hierarchy", True, False),
-            "with_bboxes": _mask("hierarchy", False, True),
-            "with_annotations_and_bboxes": _mask("hierarchy", True, True),
-            "with_meshes": _mask("hierarchy", False, False, True),
-            "with_annotations_and_meshes": _mask("hierarchy", True, False, True),
-            "with_bboxes_and_meshes": _mask("hierarchy", False, True, True),
-            "with_annotations_and_bboxes_and_meshes": _mask(
-                "hierarchy", True, True, True
-            ),
-        },
-        "spatial": {
-            "base": _mask("spatial", False, False),
-            "with_annotations": _mask("spatial", True, False),
-            "with_bboxes": _mask("spatial", False, True),
-            "with_annotations_and_bboxes": _mask("spatial", True, True),
-            "with_meshes": _mask("spatial", False, False, True),
-            "with_annotations_and_meshes": _mask("spatial", True, False, True),
-            "with_bboxes_and_meshes": _mask("spatial", False, True, True),
-            "with_annotations_and_bboxes_and_meshes": _mask(
-                "spatial", True, True, True
-            ),
-        },
-        "topology": {
-            "base": _mask("topology", False, False),
-            "with_annotations": _mask("topology", True, False),
-            "with_bboxes": _mask("topology", False, True),
-            "with_annotations_and_bboxes": _mask("topology", True, True),
-            "with_meshes": _mask("topology", False, False, True),
-            "with_annotations_and_meshes": _mask("topology", True, False, True),
-            "with_bboxes_and_meshes": _mask("topology", False, True, True),
-            "with_annotations_and_bboxes_and_meshes": _mask(
-                "topology", True, True, True
-            ),
-        },
-        "explicit": {
-            "base": _mask("explicit", False, False),
-            "with_annotations": _mask("explicit", True, False),
-            "with_bboxes": _mask("explicit", False, True),
-            "with_annotations_and_bboxes": _mask("explicit", True, True),
-            "with_meshes": _mask("explicit", False, False, True),
-            "with_annotations_and_meshes": _mask("explicit", True, False, True),
-            "with_bboxes_and_meshes": _mask("explicit", False, True, True),
-            "with_annotations_and_bboxes_and_meshes": _mask(
-                "explicit", True, True, True
-            ),
-        },
+        mode: _mask_variants(mode)
+        for mode in (
+            "all",
+            "nodes",
+            "edges",
+            "hierarchy",
+            "spatial",
+            "topology",
+            "explicit",
+        )
     }
 
     fig = go.Figure(data=traces)
@@ -1916,16 +3645,17 @@ def plot_interactive_graph(G: nx.DiGraph | nx.MultiDiGraph, out_html: Path) -> N
         plot_bgcolor="#f7f9fc",
     )
 
-    edge_items = []
-    for rel in sorted(edge_groups):
-        rel_expl = edge_relation_explanations.get(rel, "graph relation")
-        edge_color = edge_color_map.get(rel, "#4b5563")
-        edge_items.append(
-            "<div class='legend-item'>"
-            f"<span class='swatch line' style='--swatch:{edge_color}'></span>"
-            f"<span>Edge: {html.escape(rel)} - {html.escape(rel_expl)}</span>"
-            "</div>"
-        )
+    edge_entries, total_edges = _viz_build_legend_entries(
+        display_edge_items,
+        edge_color_map=edge_color_map,
+        edge_relation_explanations=edge_relation_explanations,
+    )
+
+    edge_items = _viz_render_legend_entries(
+        edge_entries,
+        prefix="Edge",
+        count_title="Edge count",
+    )
 
     node_items = []
     for group_key in sorted(node_groups):
@@ -2056,12 +3786,43 @@ def plot_interactive_graph(G: nx.DiGraph | nx.MultiDiGraph, out_html: Path) -> N
       margin: 10px 0 6px;
       font-weight: 700;
     }}
+    .legend .section-meta {{
+      margin: -2px 0 8px;
+      color: #51657f;
+      font-size: 12px;
+    }}
     .legend-item {{
       display: flex;
       align-items: center;
       gap: 8px;
       margin: 6px 0;
       line-height: 1.3;
+    }}
+    .legend-item-text {{
+      min-width: 0;
+      flex: 1 1 auto;
+      display: flex;
+      flex-direction: column;
+      gap: 1px;
+    }}
+    .legend-item-main {{
+      font-weight: 600;
+    }}
+    .legend-item-sub {{
+      color: #51657f;
+      font-size: 12px;
+    }}
+    .legend-count {{
+      flex: 0 0 auto;
+      min-width: 38px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: #e7eef8;
+      border: 1px solid #c5d3e6;
+      color: #1f3552;
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+      font-weight: 700;
     }}
     .swatch {{
       flex: 0 0 auto;
@@ -2120,6 +3881,7 @@ def plot_interactive_graph(G: nx.DiGraph | nx.MultiDiGraph, out_html: Path) -> N
       <aside class="legend" aria-label="Graph legend">
         <h3>Legend</h3>
         <div class="section-title">Edges</div>
+        <div class="section-meta">Total edges shown: {total_edges}</div>
         {"".join(edge_items)}
         <div class="section-title">Nodes</div>
         {"".join(node_items)}
@@ -2220,10 +3982,916 @@ def plot_interactive_graph(G: nx.DiGraph | nx.MultiDiGraph, out_html: Path) -> N
     LOG.info("Visualization saved to %s", out_html)
 
 
+def plot_interactive_graph_overlap_modes(
+    graphs_by_mode: dict[str, nx.DiGraph | nx.MultiDiGraph],
+    out_html: Path,
+) -> None:
+    if not graphs_by_mode:
+        raise ValueError("At least one graph is required to render overlap modes.")
+
+    preferred_order = ["full", "threshold", "top_k", "none"]
+    ordered_modes = [
+        mode for mode in preferred_order if mode in graphs_by_mode
+    ] + sorted(mode for mode in graphs_by_mode if mode not in preferred_order)
+    base_mode = ordered_modes[0]
+    base_graph = graphs_by_mode[base_mode]
+
+    pos: dict[str, tuple[float, float, float] | None] = {}
+    for n, d in base_graph.nodes(data=True):
+        geom = d.get("geometry")
+        if geom is not None:
+            pos[n] = tuple(float(v) for v in geom)
+        else:
+            pos[n] = None
+
+    for n in base_graph.nodes:
+        if pos.get(n) is not None:
+            continue
+        child_positions = [
+            pos[c] for c in base_graph.successors(n) if pos.get(c) is not None
+        ]
+        if child_positions:
+            arr = np.array(child_positions, dtype=float)
+            pos[n] = tuple(float(v) for v in arr.mean(axis=0))
+        else:
+            pos[n] = (0.0, 0.0, 0.0)
+
+    node_color_map = {
+        "IfcProject": "#7c3aed",
+        "IfcBuilding": "#2563eb",
+        "IfcBuildingStorey": "#f97316",
+        "IfcSystem": "#0891b2",
+        "IfcZone": "#16a34a",
+    }
+    edge_color_map = {
+        "aggregates": "#6b7280",
+        "contains": "#1d4ed8",
+        "contained_in": "#2563eb",
+        "typed_by": "#ca8a04",
+        "connected_to": "#ef4444",
+        "adjacent_to": "#059669",
+        "intersects_bbox": "#f59e0b",
+        "overlaps_xy": "#0ea5e9",
+        "intersects_3d": "#b91c1c",
+        "touches_surface": "#9333ea",
+        "above": "#7c3aed",
+        "below": "#9333ea",
+        "hosts": "#b91c1c",
+        "hosted_by": "#dc2626",
+        "ifc_connected_to": "#0f766e",
+        "path_connected_to": "#0b6e4f",
+        "space_bounded_by": "#be123c",
+        "bounds_space": "#9f1239",
+        "belongs_to_system": "#0369a1",
+        "in_zone": "#15803d",
+        "classified_as": "#4f46e5",
+    }
+    edge_relation_explanations = _VIZ_EDGE_RELATION_EXPLANATIONS
+
+    node_groups: dict[str, dict[str, list]] = {}
+    node_group_colors: dict[str, str] = {}
+    node_group_labels: dict[str, str] = {}
+    for n, d in base_graph.nodes(data=True):
+        x, y, z = pos[n] or (0.0, 0.0, 0.0)
+        cls = str(d.get("class_") or "Unknown")
+        group = node_groups.setdefault(cls, {"x": [], "y": [], "z": [], "hover": []})
+        if cls not in node_group_colors:
+            node_group_colors[cls] = node_color_map.get(cls, "#22c55e")
+            node_group_labels[cls] = f"Node: {cls}"
+        props = d.get("properties", {}) or {}
+        hover_props = "<br>".join(
+            f"<b>{k}</b>: {v}" for k, v in props.items() if v not in ("", None)
+        )
+        group["x"].append(x)
+        group["y"].append(y)
+        group["z"].append(z)
+        group["hover"].append(
+            f"<b>{d.get('label', n)}</b><br>Class: {cls}<br>{hover_props}"
+        )
+
+    def _collect_edge_groups(
+        graph: nx.DiGraph | nx.MultiDiGraph,
+        *,
+        only_relation: str | None = None,
+        exclude_relation: str | None = None,
+    ) -> dict[str, dict[str, list]]:
+        edge_groups: dict[str, dict[str, list]] = {}
+        for u, v, d in graph.edges(data=True):
+            rel = str(d.get("relation", "related_to"))
+            if only_relation is not None and rel != only_relation:
+                continue
+            if exclude_relation is not None and rel == exclude_relation:
+                continue
+            group = edge_groups.setdefault(
+                rel,
+                {
+                    "x": [],
+                    "y": [],
+                    "z": [],
+                    "mid_x": [],
+                    "mid_y": [],
+                    "mid_z": [],
+                    "label_x": [],
+                    "label_y": [],
+                    "label_z": [],
+                    "hover": [],
+                },
+            )
+            x0, y0, z0 = pos.get(u) or (0.0, 0.0, 0.0)
+            x1, y1, z1 = pos.get(v) or (0.0, 0.0, 0.0)
+            group["x"] += [x0, x1, None]
+            group["y"] += [y0, y1, None]
+            group["z"] += [z0, z1, None]
+            mx = (x0 + x1) / 2.0
+            my = (y0 + y1) / 2.0
+            mz = (z0 + z1) / 2.0
+            group["mid_x"].append(mx)
+            group["mid_y"].append(my)
+            group["mid_z"].append(mz)
+            group["label_x"].append(mx)
+            group["label_y"].append(my)
+            group["label_z"].append(mz)
+
+            source = d.get("source")
+            dist = d.get("distance")
+            meaning = edge_relation_explanations.get(rel, "graph relation")
+            msg = f"Relation: {rel}<br>Meaning: {meaning}"
+            if source is not None:
+                msg += f"<br>Source: {source}"
+            if dist is not None:
+                msg += f"<br>Distance: {float(dist):.3f}"
+            overlap_ratio = d.get("overlap_ratio_xy")
+            if overlap_ratio is not None:
+                msg += f"<br>Overlap ratio: {float(overlap_ratio):.3f}"
+            overlap_area = d.get("overlap_area_xy")
+            if overlap_area is not None:
+                msg += f"<br>Overlap area XY: {float(overlap_area):.3f}"
+            group["hover"].append(msg)
+        return edge_groups
+
+    base_edge_groups = _collect_edge_groups(base_graph, exclude_relation="overlaps_xy")
+    overlap_edge_groups_by_mode = {
+        mode: _collect_edge_groups(graph, only_relation="overlaps_xy")
+        for mode, graph in graphs_by_mode.items()
+    }
+
+    bbox_x: list[float | None] = []
+    bbox_y: list[float | None] = []
+    bbox_z: list[float | None] = []
+    bbox_edges = (
+        (0, 1),
+        (1, 2),
+        (2, 3),
+        (3, 0),
+        (4, 5),
+        (5, 6),
+        (6, 7),
+        (7, 4),
+        (0, 4),
+        (1, 5),
+        (2, 6),
+        (3, 7),
+    )
+    for node_id, node_data in base_graph.nodes(data=True):
+        if not str(node_id).startswith("Element::"):
+            continue
+        bbox = node_data.get("bbox")
+        if bbox is None:
+            continue
+        min_xyz, max_xyz = bbox
+        x0, y0, z0 = (float(min_xyz[0]), float(min_xyz[1]), float(min_xyz[2]))
+        x1, y1, z1 = (float(max_xyz[0]), float(max_xyz[1]), float(max_xyz[2]))
+        corners = [
+            (x0, y0, z0),
+            (x1, y0, z0),
+            (x1, y1, z0),
+            (x0, y1, z0),
+            (x0, y0, z1),
+            (x1, y0, z1),
+            (x1, y1, z1),
+            (x0, y1, z1),
+        ]
+        for a, b in bbox_edges:
+            ax, ay, az = corners[a]
+            bx, by, bz = corners[b]
+            bbox_x += [ax, bx, None]
+            bbox_y += [ay, by, None]
+            bbox_z += [az, bz, None]
+
+    traces: list[go.BaseTraceType] = []
+    trace_meta: list[tuple[str, str, str | None]] = []
+
+    if bbox_x:
+        traces.append(
+            go.Scatter3d(
+                x=bbox_x,
+                y=bbox_y,
+                z=bbox_z,
+                mode="lines",
+                line={"width": 2, "color": "#f59e0b"},
+                opacity=0.45,
+                hoverinfo="none",
+                name="BBox wireframe",
+                legendgroup="bbox",
+                showlegend=True,
+                visible=False,
+            )
+        )
+        trace_meta.append(("bbox", "bbox", None))
+
+    mesh_groups: dict[str, dict[str, list[int | float]]] = {}
+    for node_id, node_data in base_graph.nodes(data=True):
+        if not str(node_id).startswith("Element::"):
+            continue
+        mesh = node_data.get("mesh")
+        if mesh is None:
+            continue
+        vertices, faces = mesh
+        if not vertices or not faces:
+            continue
+        cls = str(node_data.get("class_") or "Element")
+        group = mesh_groups.setdefault(
+            cls, {"x": [], "y": [], "z": [], "i": [], "j": [], "k": []}
+        )
+        base = len(group["x"])
+        for vx, vy, vz in vertices:
+            group["x"].append(float(vx))
+            group["y"].append(float(vy))
+            group["z"].append(float(vz))
+        for a, b, c in faces:
+            group["i"].append(int(a) + base)
+            group["j"].append(int(b) + base)
+            group["k"].append(int(c) + base)
+
+    for idx, cls in enumerate(sorted(mesh_groups)):
+        mesh = mesh_groups[cls]
+        traces.append(
+            go.Mesh3d(
+                x=mesh["x"],
+                y=mesh["y"],
+                z=mesh["z"],
+                i=mesh["i"],
+                j=mesh["j"],
+                k=mesh["k"],
+                opacity=0.16,
+                color="#0ea5e9",
+                name=f"Mesh surface: {cls}",
+                legendgroup="mesh",
+                showlegend=idx == 0,
+                hoverinfo="skip",
+                flatshading=True,
+                visible=False,
+            )
+        )
+        trace_meta.append(("mesh", cls, None))
+
+    def _append_edge_group_traces(
+        edge_groups: dict[str, dict[str, list]],
+        *,
+        variant: str | None,
+    ) -> None:
+        for rel in sorted(edge_groups):
+            edge = edge_groups[rel]
+            edge_color = edge_color_map.get(rel, "#4b5563")
+            rel_expl = edge_relation_explanations.get(rel, "graph relation")
+            traces.append(
+                go.Scatter3d(
+                    x=edge["x"],
+                    y=edge["y"],
+                    z=edge["z"],
+                    mode="lines",
+                    line={"width": 3, "color": edge_color},
+                    hoverinfo="none",
+                    name=f"Edge: {rel} - {rel_expl}",
+                    legendgroup=f"edge::{variant or 'shared'}::{rel}",
+                    showlegend=True,
+                )
+            )
+            trace_meta.append(("edge", rel, variant))
+
+            traces.append(
+                go.Scatter3d(
+                    x=edge["mid_x"],
+                    y=edge["mid_y"],
+                    z=edge["mid_z"],
+                    mode="markers",
+                    marker={"size": 2, "color": edge_color, "opacity": 0.0},
+                    hoverinfo="text",
+                    hovertext=edge["hover"],
+                    showlegend=False,
+                    legendgroup=f"edge::{variant or 'shared'}::{rel}",
+                )
+            )
+            trace_meta.append(("edge_hover", rel, variant))
+
+            traces.append(
+                go.Scatter3d(
+                    x=edge["label_x"],
+                    y=edge["label_y"],
+                    z=edge["label_z"],
+                    mode="text",
+                    text=[rel] * len(edge["label_x"]),
+                    textposition="middle center",
+                    textfont={"size": 10, "color": edge_color},
+                    hoverinfo="none",
+                    showlegend=False,
+                    legendgroup=f"edge::{variant or 'shared'}::{rel}",
+                    visible=False,
+                )
+            )
+            trace_meta.append(("edge_label", rel, variant))
+
+    _append_edge_group_traces(base_edge_groups, variant=None)
+    for mode in ordered_modes:
+        _append_edge_group_traces(
+            overlap_edge_groups_by_mode.get(mode, {}),
+            variant=mode,
+        )
+
+    for group_key in sorted(node_groups):
+        node = node_groups[group_key]
+        node_color = node_group_colors.get(group_key, "#22c55e")
+        label = node_group_labels.get(group_key, f"Node: {group_key}")
+        traces.append(
+            go.Scatter3d(
+                x=node["x"],
+                y=node["y"],
+                z=node["z"],
+                mode="markers",
+                marker={"size": 6, "color": node_color},
+                hoverinfo="text",
+                hovertext=node["hover"],
+                name=label,
+                legendgroup=f"node::{group_key}",
+                showlegend=True,
+            )
+        )
+        trace_meta.append(("node", group_key, None))
+
+    def _mask(
+        filter_mode: str,
+        overlap_mode: str,
+        *,
+        show_edge_annotations: bool = False,
+        show_bboxes: bool = False,
+        show_meshes: bool = False,
+    ) -> list[bool]:
+        edge_categories = base_graph.graph.get("edge_categories", {})
+        hierarchy_rels = set(edge_categories.get("hierarchy", []))
+        spatial_rels = set(edge_categories.get("spatial", []))
+        topology_rels = set(edge_categories.get("topology", []))
+        explicit_rels = set(edge_categories.get("explicit", []))
+        visible: list[bool] = []
+        for kind, name, variant in trace_meta:
+            if kind == "bbox":
+                visible.append(show_bboxes)
+                continue
+            if kind == "mesh":
+                visible.append(show_meshes)
+                continue
+            if (
+                variant is not None
+                and name == "overlaps_xy"
+                and variant != overlap_mode
+            ):
+                visible.append(False)
+                continue
+            if filter_mode == "all":
+                visible.append(kind != "edge_label" or show_edge_annotations)
+            elif filter_mode == "nodes":
+                visible.append(kind == "node")
+            elif filter_mode == "edges":
+                visible.append(
+                    kind in {"edge", "edge_hover"}
+                    or (kind == "edge_label" and show_edge_annotations)
+                )
+            elif filter_mode == "hierarchy":
+                visible.append(
+                    kind == "node"
+                    or (kind in {"edge", "edge_hover"} and name in hierarchy_rels)
+                    or (
+                        kind == "edge_label"
+                        and show_edge_annotations
+                        and name in hierarchy_rels
+                    )
+                )
+            elif filter_mode == "spatial":
+                visible.append(
+                    kind == "node"
+                    or (kind in {"edge", "edge_hover"} and name in spatial_rels)
+                    or (
+                        kind == "edge_label"
+                        and show_edge_annotations
+                        and name in spatial_rels
+                    )
+                )
+            elif filter_mode == "topology":
+                visible.append(
+                    kind == "node"
+                    or (kind in {"edge", "edge_hover"} and name in topology_rels)
+                    or (
+                        kind == "edge_label"
+                        and show_edge_annotations
+                        and name in topology_rels
+                    )
+                )
+            elif filter_mode == "explicit":
+                visible.append(
+                    kind == "node"
+                    or (kind in {"edge", "edge_hover"} and name in explicit_rels)
+                    or (
+                        kind == "edge_label"
+                        and show_edge_annotations
+                        and name in explicit_rels
+                    )
+                )
+            else:
+                visible.append(kind != "edge_label" or show_edge_annotations)
+        return visible
+
+    filter_modes = [
+        "all",
+        "nodes",
+        "edges",
+        "hierarchy",
+        "spatial",
+        "topology",
+        "explicit",
+    ]
+    filter_masks: dict[str, dict[str, dict[str, list[bool]]]] = {}
+    for overlap_mode in ordered_modes:
+        filter_masks[overlap_mode] = {
+            filter_mode: {
+                "base": _mask(filter_mode, overlap_mode),
+                "with_annotations": _mask(
+                    filter_mode,
+                    overlap_mode,
+                    show_edge_annotations=True,
+                ),
+                "with_bboxes": _mask(
+                    filter_mode,
+                    overlap_mode,
+                    show_bboxes=True,
+                ),
+                "with_annotations_and_bboxes": _mask(
+                    filter_mode,
+                    overlap_mode,
+                    show_edge_annotations=True,
+                    show_bboxes=True,
+                ),
+                "with_meshes": _mask(
+                    filter_mode,
+                    overlap_mode,
+                    show_meshes=True,
+                ),
+                "with_annotations_and_meshes": _mask(
+                    filter_mode,
+                    overlap_mode,
+                    show_edge_annotations=True,
+                    show_meshes=True,
+                ),
+                "with_bboxes_and_meshes": _mask(
+                    filter_mode,
+                    overlap_mode,
+                    show_bboxes=True,
+                    show_meshes=True,
+                ),
+                "with_annotations_and_bboxes_and_meshes": _mask(
+                    filter_mode,
+                    overlap_mode,
+                    show_edge_annotations=True,
+                    show_bboxes=True,
+                    show_meshes=True,
+                ),
+            }
+            for filter_mode in filter_modes
+        }
+
+    fig = go.Figure(data=traces)
+    fig.update_layout(
+        title={"text": "IFC Graph (JSONL)", "x": 0.01, "xanchor": "left"},
+        scene={"aspectmode": "data"},
+        showlegend=False,
+        font={
+            "family": "Segoe UI, Tahoma, Arial, sans-serif",
+            "size": 14,
+            "color": "#1f3552",
+        },
+        margin={"l": 8, "r": 8, "t": 56, "b": 8},
+        paper_bgcolor="#f7f9fc",
+        plot_bgcolor="#f7f9fc",
+    )
+
+    legend_payloads: dict[str, dict[str, str]] = {}
+    for mode in ordered_modes:
+        graph = graphs_by_mode[mode]
+        graph_edge_items = [
+            (str(source_id), str(target_id), attrs)
+            for source_id, target_id, attrs in graph.edges(data=True)
+        ]
+        edge_entries, total_edges = _viz_build_legend_entries(
+            graph_edge_items,
+            edge_color_map=edge_color_map,
+            edge_relation_explanations=edge_relation_explanations,
+        )
+        legend_payloads[mode] = {
+            "total_edges": str(total_edges),
+            "edge_items_html": _viz_render_legend_entries(
+                edge_entries,
+                prefix="Edge",
+                count_title="Edge count",
+            ),
+        }
+
+    node_items = []
+    for group_key in sorted(node_groups):
+        node_color = node_group_colors.get(group_key, "#22c55e")
+        label = node_group_labels.get(group_key, f"Node: {group_key}")
+        node_items.append(
+            "<div class='legend-item'>"
+            f"<span class='swatch dot' style='--swatch:{node_color}'></span>"
+            f"<span>{html.escape(label)}</span>"
+            "</div>"
+        )
+
+    plotly_div = pio.to_html(
+        fig,
+        full_html=False,
+        include_plotlyjs=True,
+        config={"responsive": True, "displaylogo": False},
+        div_id="viewer",
+        default_width="100%",
+        default_height="100%",
+    )
+    initial_legend = legend_payloads[base_mode]
+    overlap_mode_buttons = "".join(
+        (
+            f"<button {'class="active" ' if mode == base_mode else ''}"
+            f'data-overlap-mode="{html.escape(mode)}">'
+            f"Overlap: {html.escape(mode)}</button>"
+        )
+        for mode in ordered_modes
+    )
+
+    page_html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>IFC Graph</title>
+  <style>
+    :root {{
+      --ui-font: "Segoe UI", Tahoma, Arial, sans-serif;
+      --ui-size: 14px;
+      --ui-fg: #1f3552;
+      --panel-bg: rgba(255, 255, 255, 0.94);
+      --panel-border: #b9c6d8;
+      --panel-shadow: 0 6px 18px rgba(31, 53, 82, 0.12);
+      --gap: 12px;
+      --radius: 10px;
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      margin: 0;
+      min-height: 100vh;
+      background: linear-gradient(180deg, #f7f9fc 0%, #eef3fb 100%);
+      color: var(--ui-fg);
+      font-family: var(--ui-font);
+      font-size: var(--ui-size);
+      padding: 14px;
+    }}
+    .app {{
+      width: 100%;
+      height: calc(100vh - 28px);
+      display: flex;
+      flex-direction: column;
+      gap: var(--gap);
+    }}
+    .toolbar {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      padding: 10px;
+      background: var(--panel-bg);
+      border: 1px solid var(--panel-border);
+      border-radius: var(--radius);
+      box-shadow: var(--panel-shadow);
+    }}
+    .toolbar button {{
+      flex: 1 1 120px;
+      min-height: 38px;
+      border: 1px solid #9fb1c9;
+      border-radius: 8px;
+      background: #f2f6fc;
+      color: var(--ui-fg);
+      font-family: var(--ui-font);
+      font-size: var(--ui-size);
+      cursor: pointer;
+      padding: 8px 14px;
+    }}
+    .toolbar button.active {{
+      background: #dbe9ff;
+      border-color: #4c79bd;
+      font-weight: 600;
+    }}
+    .toolbar button.toggle {{
+      flex: 0 1 180px;
+      background: #fff8ea;
+      border-color: #d8b474;
+    }}
+    .toolbar button.toggle.active {{
+      background: #ffe9bf;
+      border-color: #bf8a2f;
+    }}
+    .toolbar button[data-overlap-mode] {{
+      flex: 0 1 150px;
+      background: #edf7ef;
+      border-color: #7eb08e;
+    }}
+    .toolbar button[data-overlap-mode].active {{
+      background: #d9f0de;
+      border-color: #3c8d57;
+    }}
+    .viewer-shell {{
+      position: relative;
+      flex: 1;
+      min-height: 420px;
+      border: 1px solid var(--panel-border);
+      border-radius: var(--radius);
+      overflow: hidden;
+      background: #f7f9fc;
+    }}
+    #viewer {{
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+    }}
+    .legend {{
+      position: absolute;
+      right: 16px;
+      bottom: 16px;
+      width: min(420px, calc(100% - 32px));
+      max-height: 52vh;
+      overflow: auto;
+      background: var(--panel-bg);
+      border: 1px solid var(--panel-border);
+      border-radius: var(--radius);
+      box-shadow: var(--panel-shadow);
+      padding: 12px 14px;
+      z-index: 5;
+    }}
+    .legend h3 {{
+      margin: 0 0 8px 0;
+      font-size: 17px;
+      line-height: 1.2;
+    }}
+    .legend .section-title {{
+      margin: 10px 0 6px;
+      font-weight: 700;
+    }}
+    .legend .section-meta {{
+      margin: -2px 0 8px;
+      color: #51657f;
+      font-size: 12px;
+    }}
+    .legend-item {{
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin: 6px 0;
+      line-height: 1.3;
+    }}
+    .legend-item-text {{
+      min-width: 0;
+      flex: 1 1 auto;
+      display: flex;
+      flex-direction: column;
+      gap: 1px;
+    }}
+    .legend-item-main {{
+      font-weight: 600;
+    }}
+    .legend-item-sub {{
+      color: #51657f;
+      font-size: 12px;
+    }}
+    .legend-count {{
+      flex: 0 0 auto;
+      min-width: 38px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: #e7eef8;
+      border: 1px solid #c5d3e6;
+      color: #1f3552;
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+      font-weight: 700;
+    }}
+    .swatch {{
+      flex: 0 0 auto;
+      display: inline-block;
+      background: var(--swatch);
+    }}
+    .swatch.line {{
+      width: 30px;
+      height: 4px;
+      border-radius: 2px;
+    }}
+    .swatch.dot {{
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+    }}
+  </style>
+</head>
+<body>
+  <div class="app">
+    <div class="toolbar" role="toolbar" aria-label="Graph filters">
+      {overlap_mode_buttons}
+      <button class="active" data-mode="all">Show All</button>
+      <button data-mode="nodes">Nodes Only</button>
+      <button data-mode="edges">Edges Only</button>
+      <button data-mode="hierarchy">Hierarchy</button>
+      <button data-mode="spatial">Spatial</button>
+      <button data-mode="topology">Topology</button>
+      <button data-mode="explicit">Explicit IFC</button>
+      <button
+        id="toggle-edge-annotations"
+        class="toggle"
+        type="button"
+        aria-pressed="false"
+      >
+        Edge Labels: Off
+      </button>
+      <button
+        id="toggle-bboxes"
+        class="toggle"
+        type="button"
+        aria-pressed="false"
+      >
+        BBoxes: Off
+      </button>
+      <button
+        id="toggle-meshes"
+        class="toggle"
+        type="button"
+        aria-pressed="false"
+      >
+        Meshes: Off
+      </button>
+    </div>
+    <div class="viewer-shell">
+      {plotly_div}
+      <aside class="legend" aria-label="Graph legend">
+        <h3>Legend</h3>
+        <div class="section-meta" id="overlap-mode-summary">
+          Active overlap mode: {html.escape(base_mode)}
+        </div>
+        <div class="section-title">Edges</div>
+        <div class="section-meta" id="legend-total-edges">
+          Total edges shown: {initial_legend["total_edges"]}
+        </div>
+        <div id="legend-edge-items">{initial_legend["edge_items_html"]}</div>
+        <div class="section-title">Nodes</div>
+        {"".join(node_items)}
+      </aside>
+    </div>
+  </div>
+  <script>
+    const masks = {json.dumps(filter_masks)};
+    const legendPayloads = {json.dumps(legend_payloads)};
+    const viewer = document.getElementById("viewer");
+    const modeButtons = Array.from(
+      document.querySelectorAll(".toolbar button[data-mode]")
+    );
+    const overlapModeButtons = Array.from(
+      document.querySelectorAll(".toolbar button[data-overlap-mode]")
+    );
+    const toggleEdgeAnnotationsButton = document.getElementById(
+      "toggle-edge-annotations"
+    );
+    const toggleBboxesButton = document.getElementById("toggle-bboxes");
+    const toggleMeshesButton = document.getElementById("toggle-meshes");
+    const legendEdgeItems = document.getElementById("legend-edge-items");
+    const legendTotalEdges = document.getElementById("legend-total-edges");
+    const overlapModeSummary = document.getElementById("overlap-mode-summary");
+    let currentMode = "all";
+    let currentOverlapMode = {json.dumps(base_mode)};
+    let edgeAnnotationsEnabled = false;
+    let bboxesEnabled = false;
+    let meshesEnabled = false;
+
+    function maskKey() {{
+      const parts = [];
+      if (edgeAnnotationsEnabled) parts.push("annotations");
+      if (bboxesEnabled) parts.push("bboxes");
+      if (meshesEnabled) parts.push("meshes");
+      return parts.length ? `with_${{parts.join("_and_")}}` : "base";
+    }}
+
+    function updateLegend() {{
+      const payload = legendPayloads[currentOverlapMode];
+      if (!payload) return;
+      legendEdgeItems.innerHTML = payload.edge_items_html;
+      legendTotalEdges.textContent =
+        `Total edges shown: ${{payload.total_edges}}`;
+      overlapModeSummary.textContent =
+        `Active overlap mode: ${{currentOverlapMode}}`;
+    }}
+
+    function applyMode(mode) {{
+      if (!viewer || !viewer.data) return;
+      currentMode = mode;
+      const modeMasks = masks[currentOverlapMode] || masks[{json.dumps(base_mode)}];
+      const visible =
+        (modeMasks[mode] || modeMasks.all)[maskKey()] || modeMasks.all.base;
+      Plotly.restyle(viewer, {{ visible }});
+      modeButtons.forEach((btn) =>
+        btn.classList.toggle("active", btn.dataset.mode === mode)
+      );
+      overlapModeButtons.forEach((btn) =>
+        btn.classList.toggle("active", btn.dataset.overlapMode === currentOverlapMode)
+      );
+      updateLegend();
+    }}
+
+    modeButtons.forEach((btn) => {{
+      btn.addEventListener("click", () => applyMode(btn.dataset.mode));
+    }});
+
+    overlapModeButtons.forEach((btn) => {{
+      btn.addEventListener("click", () => {{
+        currentOverlapMode = btn.dataset.overlapMode;
+        applyMode(currentMode);
+      }});
+    }});
+
+    toggleEdgeAnnotationsButton?.addEventListener("click", () => {{
+      edgeAnnotationsEnabled = !edgeAnnotationsEnabled;
+      toggleEdgeAnnotationsButton.classList.toggle("active", edgeAnnotationsEnabled);
+      toggleEdgeAnnotationsButton.setAttribute(
+        "aria-pressed",
+        edgeAnnotationsEnabled ? "true" : "false"
+      );
+      toggleEdgeAnnotationsButton.textContent = edgeAnnotationsEnabled
+        ? "Edge Labels: On"
+        : "Edge Labels: Off";
+      applyMode(currentMode);
+    }});
+
+    toggleBboxesButton?.addEventListener("click", () => {{
+      bboxesEnabled = !bboxesEnabled;
+      toggleBboxesButton.classList.toggle("active", bboxesEnabled);
+      toggleBboxesButton.setAttribute(
+        "aria-pressed",
+        bboxesEnabled ? "true" : "false"
+      );
+      toggleBboxesButton.textContent = bboxesEnabled
+        ? "BBoxes: On"
+        : "BBoxes: Off";
+      applyMode(currentMode);
+    }});
+
+    toggleMeshesButton?.addEventListener("click", () => {{
+      meshesEnabled = !meshesEnabled;
+      toggleMeshesButton.classList.toggle("active", meshesEnabled);
+      toggleMeshesButton.setAttribute(
+        "aria-pressed",
+        meshesEnabled ? "true" : "false"
+      );
+      toggleMeshesButton.textContent = meshesEnabled
+        ? "Meshes: On"
+        : "Meshes: Off";
+      applyMode(currentMode);
+    }});
+
+    applyMode(currentMode);
+
+    window.addEventListener("resize", () => {{
+      if (viewer && viewer.data) {{
+        Plotly.Plots.resize(viewer);
+      }}
+    }});
+  </script>
+</body>
+</html>
+"""
+    out_html.parent.mkdir(parents=True, exist_ok=True)
+    out_html.write_text(page_html, encoding="utf-8")
+    LOG.info("Visualization saved to %s", out_html)
+
+
 def build_graph(
     jsonl_paths: list[Path] | None = None,
     dataset: str | None = None,
     payload_mode: str | None = None,
+    *,
+    derived_edge_pruning_enabled: bool | None = None,
+    derived_edge_prune_classes: object = None,
+    overlap_xy_mode: object | None = None,
+    overlap_xy_min_ratio: object | None = None,
+    overlap_xy_top_k: object | None = None,
 ) -> nx.MultiDiGraph:
     # auto-detect jsonl files if no paths given
     # called with no args from query_service
@@ -2253,10 +4921,34 @@ def build_graph(
         if payload_mode is not None
         else os.environ.get("GRAPH_PAYLOAD_MODE", "full")
     )
+    pruning_policy = _resolve_derived_edge_pruning_policy(
+        enabled=derived_edge_pruning_enabled,
+        exclude_classes=derived_edge_prune_classes,
+    )
+    overlap_xy_policy = _resolve_overlap_xy_policy(
+        mode=overlap_xy_mode,
+        min_ratio=overlap_xy_min_ratio,
+        top_k=overlap_xy_top_k,
+    )
 
     G = build_graph_from_jsonl(jsonl_paths, payload_mode=_mode)
-    add_spatial_adjacency(G)
-    add_topology_facts(G)
+    G.graph.setdefault("graph_build", {})["derived_edge_pruning"] = {
+        "enabled": pruning_policy.enabled,
+        "exclude_classes": sorted(pruning_policy.exclude_classes),
+    }
+    G.graph["graph_build"]["overlap_xy"] = {
+        "mode": overlap_xy_policy.mode,
+        "min_ratio": overlap_xy_policy.min_ratio,
+        "top_k": overlap_xy_policy.top_k,
+    }
+    add_spatial_adjacency(G, exclude_classes=pruning_policy.exclude_classes)
+    add_topology_facts(
+        G,
+        exclude_classes=pruning_policy.exclude_classes,
+        overlap_xy_mode=overlap_xy_policy.mode,
+        overlap_xy_min_ratio=overlap_xy_policy.min_ratio,
+        overlap_xy_top_k=overlap_xy_policy.top_k,
+    )
     return G
 
 
@@ -2292,6 +4984,32 @@ def main() -> None:
         default=False,
         help="Skip HTML visualization (graph still built and stats printed).",
     )
+    ap.add_argument(
+        "--overlap-xy-mode",
+        type=_normalize_overlap_xy_mode,
+        default=None,
+        help=(
+            "Raw overlaps_xy emission mode: full, threshold, top_k, or none. "
+            "Default comes from config and now defaults to none."
+        ),
+    )
+    ap.add_argument(
+        "--overlap-xy-min-ratio",
+        type=float,
+        default=None,
+        help=(
+            "Minimum overlap ratio used only when --overlap-xy-mode=threshold. "
+            "Ratio = overlap_area / min(footprint areas)."
+        ),
+    )
+    ap.add_argument(
+        "--overlap-xy-top-k",
+        type=int,
+        default=None,
+        help=(
+            "Maximum retained overlap neighbors per node when --overlap-xy-mode=top_k."
+        ),
+    )
     args = ap.parse_args()
 
     script_dir = Path(__file__).resolve().parent
@@ -2306,13 +5024,27 @@ def main() -> None:
         return
 
     print(f"Building graph from {len(jsonl_files)} JSONL file(s)...")
-    G = build_graph(jsonl_files)
+    G = build_graph(
+        jsonl_files,
+        overlap_xy_mode=args.overlap_xy_mode,
+        overlap_xy_min_ratio=args.overlap_xy_min_ratio,
+        overlap_xy_top_k=args.overlap_xy_top_k,
+    )
     print(f"Graph: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges")
+    overlap_xy_stats = G.graph.get("graph_build", {}).get("overlap_xy", {})
+    print(
+        "overlap_xy: "
+        f"mode={overlap_xy_stats.get('mode')} "
+        f"min_ratio={overlap_xy_stats.get('min_ratio')} "
+        f"top_k={overlap_xy_stats.get('top_k')}"
+    )
 
     if not args.no_viz:
         html_path = out_dir / "ifc_graph.html"
         plot_interactive_graph(G, html_path)
+        asset_bundle_dir = export_webgl_graph_assets(G, out_dir)
         print(f"Visualization: {html_path}")
+        print(f"WebGL assets: {asset_bundle_dir}")
 
 
 if __name__ == "__main__":

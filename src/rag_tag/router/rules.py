@@ -3,7 +3,10 @@ from __future__ import annotations
 import re
 from typing import Literal
 
-from rag_tag.ifc_class_taxonomy import CLASS_ALIASES, normalize_ifc_class
+from rag_tag.ifc_class_taxonomy import (
+    find_class_alias_matches,
+    normalize_ifc_class,
+)
 
 from .capabilities import (
     IFC_SPACE_LEVEL_GRAPH_REASON,
@@ -61,6 +64,9 @@ _GROUP_CUES = (
     re.compile(r"\bbreak\s+down\b.*\bby\b"),
     re.compile(r"\bgrouped\s+by\b"),
 )
+_TYPE_GROUP_RE = re.compile(r"\b(types|families|kinds)\b")
+_KINDS_OF_RE = re.compile(r"\bwhat\s+kinds?\s+of\b")
+_TYPES_OF_RE = re.compile(r"\b(?:what|which)\s+types\s+of\b")
 
 _IFC_CLASS_RE = re.compile(r"\bifc[a-z0-9_]+\b", re.IGNORECASE)
 _PROPERTY_CUE_RE = re.compile(
@@ -105,6 +111,105 @@ _NAME_CONTAINS_RE = re.compile(
     r"\bname\s+(?:contains?|containing|with)\s+[\"']?(?P<term>[A-Za-z0-9_ -]+?)"
     r"[\"']?(?:\b|[.?!])",
     re.IGNORECASE,
+)
+_SPACE_WORD_RE = re.compile(r"\bspaces?\b", re.IGNORECASE)
+_WORD_TOKEN_RE = re.compile(r"[A-Za-z0-9_/-]+")
+
+_DESCRIPTIVE_CLASS_LEADING_IGNORES = frozenset(
+    {
+        "a",
+        "an",
+        "all",
+        "any",
+        "existing",
+        "our",
+        "some",
+        "the",
+        "these",
+        "those",
+    }
+)
+_DESCRIPTIVE_CLASS_BOUNDARY_TOKENS = frozenset(
+    {
+        "above",
+        "adjacent",
+        "and",
+        "are",
+        "as",
+        "at",
+        "be",
+        "below",
+        "by",
+        "count",
+        "does",
+        "do",
+        "exists",
+        "exist",
+        "find",
+        "for",
+        "from",
+        "get",
+        "has",
+        "have",
+        "how",
+        "identify",
+        "in",
+        "inside",
+        "intersects",
+        "is",
+        "list",
+        "many",
+        "near",
+        "number",
+        "of",
+        "on",
+        "or",
+        "outside",
+        "present",
+        "retrieve",
+        "show",
+        "there",
+        "to",
+        "used",
+        "what",
+        "which",
+        "with",
+        "within",
+    }
+)
+
+_NON_COMPOUND_SPACE_MODIFIERS = frozenset(
+    {
+        "a",
+        "an",
+        "any",
+        "all",
+        "count",
+        "how",
+        "many",
+        "number",
+        "of",
+        "list",
+        "show",
+        "which",
+        "what",
+        "the",
+        "these",
+        "those",
+        "their",
+        "our",
+        "existing",
+    }
+)
+_TYPE_GROUP_ACTION_CUES = (
+    _LIST_CUES
+    + _EXISTENCE_CUES
+    + (
+        "present",
+        "used",
+        "exist",
+        "exists",
+    )
 )
 
 _PROPERTY_FIELD_ALIASES: tuple[tuple[str, str], ...] = (
@@ -190,12 +295,31 @@ def route_question_rule(question: str) -> RouteDecision:
         suppressed_spans.append(type_name_span)
     suppressed_spans.extend(structured_filter_spans)
     suppressed_spans.extend(name_filter_spans)
+    text_match, text_match_span = _detect_compound_space_phrase(q)
+    if text_match_span is not None:
+        suppressed_spans.append(text_match_span)
     ifc_classes = _detect_ifc_classes(q, ignored_spans=suppressed_spans)
     if len(ifc_classes) > 1:
         return RouteDecision("graph", "Multiple IFC classes mentioned", None)
 
     ifc_class = ifc_classes[0] if ifc_classes else None
-    if ifc_class is None and not _mentions_generic_elements(q_lower):
+    descriptive_text_match = None
+    if (
+        ifc_class is not None
+        and text_match is None
+        and predefined_type is None
+        and type_name is None
+    ):
+        descriptive_text_match = _detect_descriptive_class_text_match(
+            q,
+            ifc_class,
+            ignored_spans=suppressed_spans,
+        )
+    if (
+        ifc_class is None
+        and text_match is None
+        and not _mentions_generic_elements(q_lower)
+    ):
         return RouteDecision("graph", "SQL intent without class", None)
 
     if is_ifc_space_level_graph_first(ifc_class, level_like):
@@ -226,6 +350,7 @@ def route_question_rule(question: str) -> RouteDecision:
         level_like=level_like,
         predefined_type=predefined_type,
         type_name=type_name,
+        text_match=text_match or descriptive_text_match,
         element_filters=element_filters,
         property_filters=property_filters,
         quantity_filters=quantity_filters,
@@ -247,6 +372,8 @@ def _detect_sql_intent(
     has_measure_field: bool,
 ) -> SqlIntent | None:
     if any(pattern.search(question_lower) for pattern in _GROUP_CUES):
+        return "group"
+    if _has_type_group_intent(question_lower):
         return "group"
     aggregate_op = _detect_aggregate_op(
         question_lower,
@@ -291,11 +418,11 @@ def _detect_ifc_classes(
         matches.append((match.start(), normalize_ifc_class(match.group(0))))
 
     question_lower = question.lower()
-    for term, ifc_class in CLASS_ALIASES.items():
-        for match in re.finditer(rf"\b{re.escape(term)}\b", question_lower):
-            if _span_is_ignored(match.span(), ignored_spans):
-                continue
-            matches.append((match.start(), ifc_class))
+    for start, _end, ifc_class in find_class_alias_matches(
+        question_lower,
+        ignored_spans=ignored_spans,
+    ):
+        matches.append((start, ifc_class))
 
     matches.sort(key=lambda item: item[0])
     ordered: list[str] = []
@@ -396,7 +523,105 @@ def _detect_group_by_field(question: str) -> SqlFieldRef | None:
     for phrase, field in _ELEMENT_GROUP_BY_ALIASES:
         if phrase in tail_lower:
             return SqlFieldRef(source="element", field=field)
+    if _has_type_group_intent(question_lower):
+        return SqlFieldRef(source="element", field="type_name")
     return None
+
+
+def _has_type_group_intent(question_lower: str) -> bool:
+    if "type name" in question_lower or "predefined type" in question_lower:
+        return False
+    if _KINDS_OF_RE.search(question_lower) or _TYPES_OF_RE.search(question_lower):
+        return True
+    if _TYPE_GROUP_RE.search(question_lower) is None:
+        return False
+    return any(cue in question_lower for cue in _TYPE_GROUP_ACTION_CUES)
+
+
+def _detect_compound_space_phrase(
+    question: str,
+) -> tuple[str | None, tuple[int, int] | None]:
+    word_matches = list(_WORD_TOKEN_RE.finditer(question))
+    for match in _SPACE_WORD_RE.finditer(question):
+        preceding_tokens = [
+            token_match
+            for token_match in word_matches
+            if token_match.end() <= match.start()
+        ]
+        if not preceding_tokens:
+            continue
+        candidate_matches = preceding_tokens[-3:]
+        while candidate_matches and (
+            candidate_matches[0].group(0).lower() in _NON_COMPOUND_SPACE_MODIFIERS
+        ):
+            candidate_matches.pop(0)
+        if not candidate_matches:
+            continue
+        tokens = [token_match.group(0).lower() for token_match in candidate_matches]
+        tokens.append(match.group(0).lower())
+        normalized_phrase = _normalize_compound_space_phrase(tokens)
+        if normalized_phrase is None:
+            continue
+        return normalized_phrase, (candidate_matches[0].start(), match.end())
+    return None, None
+
+
+def _normalize_compound_space_phrase(tokens: list[str]) -> str | None:
+    normalized_tokens = [token.strip(".,;:?!") for token in tokens]
+    normalized_tokens = [token for token in normalized_tokens if token]
+    if len(normalized_tokens) < 2:
+        return None
+
+    last = normalized_tokens[-1]
+    if last not in {"space", "spaces"}:
+        return None
+    normalized_tokens[-1] = "space"
+    return " ".join(normalized_tokens)
+
+
+def _detect_descriptive_class_text_match(
+    question: str,
+    ifc_class: str,
+    *,
+    ignored_spans: list[tuple[int, int]] | None = None,
+) -> str | None:
+    question_lower = question.lower()
+    alias_matches = [
+        (start, end)
+        for start, end, matched_class in find_class_alias_matches(
+            question_lower,
+            ignored_spans=ignored_spans,
+        )
+        if matched_class == ifc_class
+    ]
+    if not alias_matches:
+        return None
+
+    first_alias_start = alias_matches[0][0]
+    preceding_tokens = [
+        token_match
+        for token_match in _WORD_TOKEN_RE.finditer(question)
+        if token_match.end() <= first_alias_start
+    ]
+    if not preceding_tokens:
+        return None
+
+    collected: list[str] = []
+    for token_match in reversed(preceding_tokens[-6:]):
+        token = token_match.group(0).lower().strip(".,;:?!")
+        if not token:
+            continue
+        if not collected and token in _DESCRIPTIVE_CLASS_LEADING_IGNORES:
+            continue
+        if token in _DESCRIPTIVE_CLASS_BOUNDARY_TOKENS:
+            break
+        collected.insert(0, token)
+        if len(collected) >= 3:
+            break
+
+    if not collected:
+        return None
+    return " ".join(collected)
 
 
 def _detect_explicit_field(question: str) -> SqlFieldRef | None:

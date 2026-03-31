@@ -75,6 +75,7 @@ class SqlRequest:
     level_like: str | None
     predefined_type: str | None = None
     type_name: str | None = None
+    text_match: str | None = None
     element_filters: tuple[SqlValueFilter, ...] = ()
     property_filters: tuple[SqlValueFilter, ...] = ()
     quantity_filters: tuple[SqlValueFilter, ...] = ()

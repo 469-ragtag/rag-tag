@@ -14,6 +14,11 @@ class _RunResult:
         return self._usage
 
 
+class _RuntimeStub:
+    def __init__(self) -> None:
+        self.caches: dict[str, object] = {}
+
+
 def test_graph_agent_attaches_usage_to_success_response() -> None:
     agent = GraphAgent.__new__(GraphAgent)
     agent._agent = type(
@@ -31,7 +36,7 @@ def test_graph_agent_attaches_usage_to_success_response() -> None:
     agent._repair_agent = None
     agent._output_retries = 1
 
-    runtime = object()
+    runtime = _RuntimeStub()
     response = agent.run("What storey is the chimney on?", runtime, max_steps=5)
 
     assert response["answer"] == "Level 2"

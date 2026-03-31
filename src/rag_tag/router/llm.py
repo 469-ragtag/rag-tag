@@ -103,6 +103,7 @@ def route_with_llm(question: str, *, debug_llm_io: bool = False) -> RouteDecisio
             level_like=response.level_like,
             predefined_type=response.predefined_type,
             type_name=response.type_name,
+            text_match=response.text_match,
             property_filters=tuple(
                 SqlValueFilter(
                     source="property",
@@ -170,7 +171,8 @@ def _build_system_prompt() -> str:
         "- route='sql': Use for deterministic counts, lists, aggregates, and "
         "groupings over the known SQLite schema: elements, properties, and "
         "quantities. Allowed filters include IFC class, level, predefined_type, "
-        "type_name, property filters, and quantity filters.\n"
+        "type_name, text_match across name/type_name, property filters, and "
+        "quantity filters.\n"
         "- route='graph': Use for spatial relations, adjacency, connectivity, "
         "paths, room/space containment, system/serving/classification/zone "
         "membership, named-element comparisons, fuzzy named-object lookup, "
@@ -184,6 +186,16 @@ def _build_system_prompt() -> str:
         "- For aggregate intent, set aggregate_op and aggregate_field when "
         "needed. aggregate_field is optional only for aggregate_op='count'.\n"
         "- For group intent, set group_by. Group queries return grouped counts.\n"
+        "- Questions about types/families/kinds used or present should usually "
+        "route to SQL group intent with group_by={source='element', "
+        "field='type_name'}.\n"
+        "- Do not coerce compound object phrases like 'parking spaces' into "
+        "IfcSpace. Prefer text_match for deterministic name/type_name matching "
+        "when the phrase describes an object family rather than true "
+        "rooms/spaces.\n"
+        "- Preserve descriptive subtype words in text_match when the question is "
+        "still deterministic SQL, for example `round concrete columns` -> "
+        "ifc_class='IfcColumn' + text_match='round concrete'.\n"
         "- Use aggregate_field/group_by source='element' only for core columns "
         "like ifc_class, level, predefined_type, type_name, or name.\n"
         "- Use source='property' or source='quantity' for property/quantity "
@@ -196,6 +208,7 @@ def _build_system_prompt() -> str:
         "- ifc_class: IFC class name like 'IfcDoor', 'IfcWindow', or null\n"
         "- level_like: level/storey/floor identifier or null\n"
         "- predefined_type/type_name: optional exact filters\n"
+        "- text_match: optional phrase to match against element name/type_name\n"
         "- property_filters/quantity_filters: optional structured filters\n"
         "- aggregate_op: 'count', 'sum', 'avg', 'min', or 'max'\n"
         "- aggregate_field: source+field for aggregate intent when needed\n"
@@ -217,6 +230,18 @@ def _build_system_prompt() -> str:
         "A: route='sql', intent='group', ifc_class='IfcDoor', level_like='level 1', "
         "group_by={source='property', field='FireRating'}, "
         "reason='deterministic grouping by property'\n\n"
+        "Q: What door types are used in the building?\n"
+        "A: route='sql', intent='group', ifc_class='IfcDoor', level_like=null, "
+        "group_by={source='element', field='type_name'}, "
+        "reason='deterministic grouping by type_name'\n\n"
+        "Q: How many parking spaces are there?\n"
+        "A: route='sql', intent='count', ifc_class=null, level_like=null, "
+        "text_match='parking space', reason='compound object phrase matched "
+        "deterministically via name/type_name'\n\n"
+        "Q: How many round concrete columns are there?\n"
+        "A: route='sql', intent='count', ifc_class='IfcColumn', level_like=null, "
+        "text_match='round concrete', reason='deterministic constrained subtype "
+        "count via class plus descriptor text match'\n\n"
         "Q: Average UValue of windows on the ground floor.\n"
         "A: route='sql', intent='aggregate', "
         "ifc_class='IfcWindow', level_like='ground floor', "

@@ -16,6 +16,7 @@ readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
     "cohere>=5.20.4",
+    "fastapi>=0.115.0",
     "google-genai>=1.3.0",
     "ifcopenshell>=0.8.4.post1",
     "langgraph>=1.0.10",
@@ -23,6 +24,7 @@ dependencies = [
     "numpy>=2.4.1",
     "pydantic>=2.7.0",
     "plotly>=6.5.2",
+    "python-multipart>=0.0.20",
     "PyYAML>=6.0.2",
     "python-dotenv>=1.2.1",
     "pydantic-ai-slim[google,cohere,openai]>=0.0.1",
@@ -31,6 +33,7 @@ dependencies = [
     "textual>=1.0.0",
     "rdflib>=7.0.0",
     "pydantic-evals>=1.59.0",
+    "uvicorn>=0.30.0",
 ]
 
 [project.scripts]
@@ -40,6 +43,7 @@ rag-tag-jsonl-to-sql = "rag_tag.parser.jsonl_to_sql:main"
 rag-tag-jsonl-to-graph = "rag_tag.parser.jsonl_to_graph:main"
 rag-tag-generate-ontology-map = "rag_tag.cli.generate_ontology_map:main"
 rag-tag-refresh-ifc43-rdf = "rag_tag.cli.refresh_bsdd_ifc43_rdf:main"
+rag-tag-viewer = "rag_tag.viewer.cli:main"
 
 [dependency-groups]
 dev = [
