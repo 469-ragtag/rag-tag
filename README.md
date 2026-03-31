@@ -1,390 +1,360 @@
 # rag-tag
 
-`rag-tag` is a research toolkit for IFC-based digital twins.
+`rag-tag` is a research toolkit for asking natural-language questions over IFC-based digital twins.
 
-It converts IFC models into:
+It turns IFC models into queryable runtime artifacts, routes each question to the right retrieval path, and exposes both a CLI agent and a local web viewer for inspecting the model, the graph, and the answer evidence.
 
-- JSONL element records (schema-aware, geometry-aware)
-- flat SQLite tables for deterministic count/list/aggregation queries
-- a NetworkX graph for hierarchy + spatial/topological traversal
+## What it does
 
-Natural-language questions are routed to SQL or graph tools via PydanticAI.
+- Converts IFC models into JSONL element records, SQLite datasets, and a NetworkX graph
+- Uses deterministic SQL for counts, lists, and aggregations
+- Uses graph tools for spatial, containment, topology, and relationship questions
+- Routes natural-language questions between SQL and graph workflows
+- Supports local model/profile configuration across Gemini, Cohere, and Databricks-backed providers
+- Includes a local web viewer for graph exploration, IFC upload/rebuild, query execution, and 3D model inspection
+- Supports Logfire tracing for the main CLI and the viewer
 
-## High-level architecture
+## Architecture at a glance
 
-```
-IFC -> JSONL -> SQLite + NetworkX -> Router + Graph Agent
-```
-
-- SQL path: deterministic counts/lists/aggregations
-- Graph path: spatial and topology reasoning over element relationships
-
-## Active pipeline commands
-
-```bash
-uv run rag-tag-ifc-to-jsonl
-uv run rag-tag-jsonl-to-sql
-uv run rag-tag-jsonl-to-graph
+```text
+IFC -> JSONL -> SQLite + NetworkX -> Router -> SQL path or Graph agent
 ```
 
-Ontology support commands:
-
-```bash
-uv run rag-tag-refresh-ifc43-rdf
-uv run rag-tag-generate-ontology-map
-```
+- `SQL path` handles deterministic count/list/group/aggregate queries
+- `Graph path` handles spatial and topological reasoning over IFC hierarchy and derived graph relationships
 
 ## Quick start
 
-1. Install dependencies
+### 1. Install dependencies
 
 ```bash
 uv sync --group dev
 ```
 
-2. Copy the checked-in config template and env template
+### 2. Create local runtime config
 
 ```bash
 cp config.example.yaml config.yaml
 cp .env.sample .env
 ```
 
-3. Put shared defaults in your local `config.yaml` and secrets in `.env`
+- Keep shared local defaults in `config.yaml`
+- Keep secrets in `.env` or your shell environment
+- Treat `config.example.yaml` as the checked-in reference template
+
+Typical environment variables:
 
 ```bash
-DATABRICKS_TOKEN=...
 GEMINI_API_KEY=...
 COHERE_API_KEY=...
+DATABRICKS_HOST=...
+DATABRICKS_TOKEN=...
+LOGFIRE_TOKEN=...
 ```
 
-Start from `config.example.yaml`; it is the canonical checked-in reference for
-provider settings, model profiles, default router/agent selections, and
-experiment groupings. Keep your working `config.yaml` local (untracked), and
-keep secrets and one-off shell overrides in `.env` or your shell environment.
-
-4. Build artifacts
+### 3. Build artifacts from IFC
 
 ```bash
 uv run rag-tag-generate-ontology-map
-uv run rag-tag-ifc-to-jsonl
+uv run rag-tag-ifc-to-jsonl --ifc-file IFC-Files/Building-Architecture.ifc --out-dir output
 uv run rag-tag-jsonl-to-sql
 uv run rag-tag-jsonl-to-graph
 ```
 
-5. Run interactive agent
+### 4. Run the agent
+
+```bash
+uv run rag-tag --db output/Building-Architecture.db --graph-dataset Building-Architecture
+```
+
+Useful variants:
 
 ```bash
 uv run rag-tag
-```
-
-Use `config.example.yaml` as the starting point for Databricks-backed profile
-workflows and graph-model comparison runs.
-
-If you already run the app like this:
-
-```bash
-uv run rag-tag --tui --db output/Building-Architecture.db --graph-dataset Building-Architecture --trace
-```
-
-that same command still works. The new config flow changes model/provider/profile
-selection, not your normal CLI entrypoint. Keep using CLI flags for runtime session
-options such as `--tui`, `--db`, `--graph-dataset`, and `--trace`.
-
-## Configuration
-
-Use `config.example.yaml` as the canonical checked-in reference, then copy it to
-a local `config.yaml` for non-secret runtime defaults:
-
-- `defaults` for shared router/agent profile selection and `router_mode`
-- `providers` for named provider configuration such as Databricks hosts
-- `profiles` for reusable router and graph-agent model selections
-- `experiments` for repeatable graph comparison groups
-
-Use `.env` or shell environment variables for secrets and one-off overrides:
-
-- API keys and tokens such as `DATABRICKS_TOKEN`, `GEMINI_API_KEY`,
-  `COHERE_API_KEY`
-- machine-local overrides such as `RAG_TAG_CONFIG`
-- temporary runtime model/profile overrides such as `ROUTER_MODEL`,
-  `AGENT_MODEL`, `ROUTER_PROFILE`, `AGENT_PROFILE`
-
-Config discovery order:
-
-- repo-root `config.yaml`
-- repo-root `config.yml`
-- repo-root `config.json`
-
-Override the discovered config file with either:
-
-- `uv run rag-tag --config ./path/to/config.yaml`
-- `RAG_TAG_CONFIG=./path/to/config.yaml uv run rag-tag`
-
-The full checked-in template lives in `config.example.yaml`.
-
-Practical split:
-
-- local `config.yaml`: shared defaults you want to edit for your environment
-- `.env`: secrets and machine-local overrides
-- CLI flags: per-run session options such as TUI mode, selected DB, dataset, and tracing
-
-`config.yaml` is intentionally gitignored so you can keep machine-local runtime
-defaults without committing them.
-
-Minimal local `config.yaml` setup for the same TUI command you use today:
-
-`config.yaml`
-
-```yaml
-defaults:
-  router_profile: router-gemini-flash
-  agent_profile: dbx-claude-sonnet-4-6
-  router_mode: llm
-
-providers:
-  databricks:
-    type: databricks
-    host_env: DATABRICKS_HOST
-    token_env: DATABRICKS_TOKEN
-
-profiles:
-  router-gemini-flash:
-    model: google-gla:gemini-2.5-flash
-    settings:
-      temperature: 0.0
-
-  cohere-command-a:
-    model: cohere:command-a-03-2025
-    settings:
-      temperature: 0.1
-      max_tokens: 1024
-
-  dbx-claude-sonnet-4-6:
-    provider: databricks
-    model: databricks-claude-sonnet-4-6
-    settings:
-      temperature: 0.1
-      max_tokens: 1024
-```
-
-`.env`
-
-```bash
-DATABRICKS_HOST=your-workspace-host.databricks.com
-DATABRICKS_TOKEN=your_databricks_token
-GEMINI_API_KEY=your_gemini_api_key
-COHERE_API_KEY=your_cohere_api_key
-LOGFIRE_TOKEN=your_write_logfire_token
-```
-
-Then run the app exactly as before:
-
-```bash
-uv run rag-tag --tui --db output/Building-Architecture.db --graph-dataset Building-Architecture --trace
-```
-
-To switch models, either edit `defaults.agent_profile` in `config.yaml` or use a
-one-off override like:
-
-```bash
-uv run rag-tag --tui --db output/Building-Architecture.db --graph-dataset Building-Architecture --trace --agent-profile dbx-gpt-oss-20b
-```
-
-To switch back to the current Cohere graph agent through config, set:
-
-```yaml
-defaults:
-  agent_profile: cohere-command-a
-```
-
-or do it for one run only:
-
-```bash
-uv run rag-tag --tui --db output/Building-Architecture.db --graph-dataset Building-Architecture --trace --agent-profile cohere-command-a
-```
-
-## Databricks setup
-
-Common Databricks environment variables:
-
-```bash
-DATABRICKS_HOST=dbc-00000000-0000.cloud.databricks.com
-DATABRICKS_TOKEN=your_databricks_token
-```
-
-`DATABRICKS_TOKEN` is required for Databricks-backed profiles. `DATABRICKS_HOST`
-should now live in `.env` or your shell environment, while `config.yaml`
-references it via `host_env: DATABRICKS_HOST`.
-
-If you prefer to store the full OpenAI-compatible serving URL instead of the host,
-use `base_url_env` in config and define `DATABRICKS_BASE_URL` in `.env`.
-
-For Databricks profiles, the `model` value is the serving endpoint name that is
-resolved against the workspace's OpenAI-compatible `/serving-endpoints` base
-URL. `config.example.yaml` includes example profiles for:
-
-- Cohere Command A (current baseline)
-- Claude Sonnet 4.6
-- GPT OSS 20B
-- Llama 4 Maverick
-- Gemma 3 12B
-
-These are example endpoint names only; update them to match your own Databricks
-serving endpoints before use.
-
-Databricks compatibility note:
-
-- Databricks rejects the OpenAI-style `parallel_tool_calls` request field.
-- Do not add `parallel_tool_calls` to Databricks profile settings in local config files.
-- `rag-tag` strips that field automatically for Databricks-backed profiles.
-
-## Query modes
-
-- Default CLI: `uv run rag-tag`
-- Textual TUI: `uv run rag-tag --tui`
-
-Useful options:
-
-```bash
-uv run rag-tag --config ./config.yaml
-uv run rag-tag --db ./output/Building-Architecture.db
-uv run rag-tag --graph-dataset Building-Architecture
-uv run rag-tag --router-profile router-gemini-flash
-uv run rag-tag --agent-profile dbx-gpt-oss-20b
+uv run rag-tag --tui
 uv run rag-tag --input
 uv run rag-tag --verbose
 uv run rag-tag --trace
 ```
 
-Runtime override notes:
+## Common workflows
 
-- `--router-profile` and `--agent-profile` select named config profiles for one
-  run without editing `config.yaml`.
-- `ROUTER_PROFILE` and `AGENT_PROFILE` provide the same override via env vars.
-- `ROUTER_MODEL` and `AGENT_MODEL` still bypass profile resolution for one-off
-  runs and take precedence over config-selected profiles.
-- `ROUTER_MODE` still overrides `defaults.router_mode` when set in the
-  environment.
+### Ask questions in the CLI
 
-Dataset selection behavior:
+Run the standard agent:
 
-- If `--graph-dataset` is set, that JSONL stem is used for graph routing.
-- Else, if exactly one DB is selected, that DB stem is used.
-- Else, SQL queries can still merge across DBs, but graph queries require an
-  explicit dataset when multiple JSONL datasets are present.
+```bash
+uv run rag-tag --db output/Building-Architecture.db --graph-dataset Building-Architecture
+```
 
-## Graph model comparison
+Use `--trace` to enable Logfire observability:
 
-Use `scripts/eval_graph_models.py` to compare graph-agent behavior across
-configured profiles.
+```bash
+uv run rag-tag --db output/Building-Architecture.db --graph-dataset Building-Architecture --trace
+```
 
-Important behavior:
+### Open the local viewer
 
-- the script intentionally forces `route="graph"`
-- it compares graph-agent execution, not router behavior
-- select profiles explicitly with `--profiles` or indirectly with
-  `--experiment`
-- write a JSON artifact with `--output` for later review or diffing
+The viewer is the easiest way to inspect the graph, the source IFC model, and query results together.
 
-Practical example using a config-defined experiment and JSON report output:
+Build from a raw IFC and launch the server:
+
+```bash
+uv run rag-tag-viewer --ifc ./IFC-Files/Building-Architecture.ifc
+```
+
+Or start from existing generated artifacts:
+
+```bash
+uv run rag-tag-viewer --graph-dataset Building-Architecture
+uv run rag-tag-viewer --db ./output/Building-Architecture.db
+```
+
+Enable tracing in the viewer:
+
+```bash
+uv run rag-tag-viewer --ifc ./IFC-Files/Building-Architecture.ifc --trace
+```
+
+Viewer defaults:
+
+- host: `127.0.0.1`
+- port: `8000`
+- graph payload mode: `minimal`
+
+Main pages:
+
+- `http://127.0.0.1:8000/` - graph view
+- `http://127.0.0.1:8000/model` - 3D IFC model view
+- `http://127.0.0.1:8000/how-to-use` - built-in viewer guide
+
+### Build pipeline directly
+
+Project scripts:
+
+```bash
+uv run rag-tag-ifc-to-jsonl
+uv run rag-tag-jsonl-to-sql
+uv run rag-tag-jsonl-to-graph
+uv run rag-tag-refresh-ifc43-rdf
+uv run rag-tag-generate-ontology-map
+```
+
+For parser-specific details, see `src/rag_tag/parser/README.md`.
+
+## Current retrieval model
+
+`rag-tag` uses a hybrid retrieval pipeline rather than a single "LLM answers everything" flow.
+
+- `Router` decides whether a question should go to SQL or graph execution
+- `SQL` is the source of truth for deterministic counts and aggregations
+- `Graph agent` handles spatial reasoning, containment, topology, and multi-hop relationship queries
+- `Tool outputs` are normalized into a stable `{status, data, error}` envelope for graph workflows
+
+Examples:
+
+- `How many parking spaces are there?` -> SQL
+- `What is above room 216?` -> graph
+- `Are there any trees outside the building?` -> graph
+
+## Configuration model
+
+Use `config.example.yaml` as the canonical template, then keep your working `config.yaml` local and untracked.
+
+Put in `config.yaml`:
+
+- default router and agent profiles
+- router mode and graph orchestration defaults
+- named provider wiring
+- reusable profiles and experiment groups
+- graph build defaults such as pruning and overlap controls
+
+Put in `.env` or shell environment:
+
+- API keys and tokens such as `GEMINI_API_KEY`, `COHERE_API_KEY`, `DATABRICKS_TOKEN`
+- provider host or base URL values referenced by `*_env` config keys
+- machine-local overrides such as `RAG_TAG_CONFIG`
+
+Config discovery order when no override is provided:
+
+- `config.yaml`
+- `config.yml`
+- `config.json`
+
+Override config discovery with either:
+
+```bash
+uv run rag-tag --config ./config.yaml
+RAG_TAG_CONFIG=./config.yaml uv run rag-tag
+```
+
+Useful runtime overrides:
+
+```bash
+uv run rag-tag --router-profile router-gemini-flash
+uv run rag-tag --agent-profile cohere-command-a
+uv run rag-tag --agent-profile dbx-claude-sonnet-4-6
+ROUTER_MODEL=google-gla:gemini-2.5-flash uv run rag-tag
+AGENT_MODEL=cohere:command-a-03-2025 uv run rag-tag
+```
+
+## Graph build controls
+
+### Derived edge pruning
+
+`config.example.yaml` now includes:
+
+```yaml
+graph_build:
+    derived_edge_pruning:
+        enabled: true
+        exclude_classes:
+            - IfcMember
+            - IfcPlate
+```
+
+This pruning applies only to derived spatial/topology phases. It does not remove:
+
+- nodes
+- explicit IFC relationships
+- hierarchy edges
+- type edges
+
+### Overlap edge emission
+
+Raw `overlaps_xy` emission is configurable:
+
+- `full`
+- `threshold`
+- `top_k`
+- `none`
+
+The checked-in default is `none` so dense models do not emit large raw overlap edge sets unless explicitly requested.
+
+Examples:
+
+```bash
+uv run rag-tag-jsonl-to-graph --overlap-xy-mode none
+uv run rag-tag-jsonl-to-graph --overlap-xy-mode threshold --overlap-xy-min-ratio 0.20
+uv run rag-tag-jsonl-to-graph --overlap-xy-mode top_k --overlap-xy-top-k 5
+uv run rag-tag-jsonl-to-graph --overlap-xy-mode full
+```
+
+Important note:
+
+- `above` and `below` reasoning can still use internal XY overlap even when raw `overlaps_xy` edges are disabled
+
+## Model providers and profiles
+
+Current repo defaults and supported patterns:
+
+- default router model: `google-gla:gemini-2.5-flash`
+- default graph agent baseline: `cohere:command-a-03-2025`
+- Databricks-backed profiles are supported through PydanticAI's OpenAI-compatible path
+
+Databricks notes:
+
+- keep `DATABRICKS_HOST` or `DATABRICKS_BASE_URL` in `.env` or shell env
+- keep `DATABRICKS_TOKEN` in `.env` or shell env
+- do not add `parallel_tool_calls` to Databricks profile settings; `rag-tag` strips it automatically for those profiles
+
+Minimal example local config:
+
+```yaml
+defaults:
+    router_profile: router-gemini-flash
+    agent_profile: dbx-claude-sonnet-4-6
+    router_mode: llm
+
+providers:
+    databricks:
+        type: databricks
+        host_env: DATABRICKS_HOST
+        token_env: DATABRICKS_TOKEN
+
+profiles:
+    router-gemini-flash:
+        model: google-gla:gemini-2.5-flash
+        settings:
+            temperature: 0.0
+
+    cohere-command-a:
+        model: cohere:command-a-03-2025
+        settings:
+            temperature: 0.1
+            max_tokens: 1024
+
+    dbx-claude-sonnet-4-6:
+        provider: databricks
+        model: databricks-claude-sonnet-4-6
+        settings:
+            temperature: 0.1
+            max_tokens: 1024
+```
+
+## Tracing and observability
+
+Logfire tracing is supported in both the main CLI and the viewer.
+
+Examples:
+
+```bash
+uv run rag-tag --trace
+uv run rag-tag-viewer --ifc ./IFC-Files/Building-Architecture.ifc --trace
+```
+
+If `LOGFIRE_TOKEN` is set, traces can be sent to Logfire. Without a token, local instrumentation can still be enabled for development.
+
+## Evaluation workflows
+
+Compare graph-agent behavior across configured profiles:
 
 ```bash
 uv run python scripts/eval_graph_models.py \
   --config ./config.yaml \
-  --experiment graph-dbx-smoke \
+  --experiment graph-agent-compare \
   --db ./output/Building-Architecture.db \
   --graph-dataset Building-Architecture \
   --output ./output/graph-model-report.json
 ```
 
-One-off comparison with explicit profiles:
+Compare overlap modes on graph density and question behavior:
 
 ```bash
-uv run python scripts/eval_graph_models.py \
-  --config ./config.yaml \
-  --profiles cohere-command-a dbx-claude-sonnet-4-6 dbx-gpt-oss-20b dbx-llama-4-maverick \
-  --questions-file ./graph-questions.json \
-  --db ./output/Building-Architecture.db \
-  --output ./output/graph-model-report.json
+uv run python scripts/eval_overlap_modes.py \
+  --jsonl output/BigBuildingBIMModel.jsonl \
+  --db output/BigBuildingBIMModel.db \
+  --graph-dataset BigBuildingBIMModel \
+  --output output/eval_overlap_modes.json
 ```
 
-If `--db` resolves to exactly one SQLite database, its file stem is reused as
-the graph dataset automatically. Pass `--graph-dataset` when you need to pin a
-specific JSONL graph dataset instead.
+## Repository layout
 
-## Key repository paths
-
-```
+```text
 src/rag_tag/
-  run_agent.py                 # CLI entrypoint
-  textual_app.py               # Textual TUI
-  query_service.py             # shared routing/execution orchestration
-  ifc_sql_tool.py              # SQL execution helper
-  ifc_graph_tool.py            # graph query interface + filters
-  router/                      # SQL vs graph routing logic
-  agent/                       # PydanticAI graph agent + tools
-  parser/
-    ifc_to_jsonl.py            # IFC -> JSONL
-    jsonl_to_sql.py            # JSONL -> SQLite
-    jsonl_to_graph.py          # JSONL -> NetworkX graph
-    parse_bsdd_to_map.py       # RDF/registry -> ontology map JSON
-    ifc43_schema_registry.py   # IFC class/pset registry
-    ifc_geometry_parse.py      # centroid/bbox extraction helpers
+  run_agent.py                 CLI entrypoint
+  query_service.py             routing and execution orchestration
+  observability.py             Logfire setup
+  ifc_sql_tool.py              SQL query helper
+  ifc_graph_tool.py            graph query interface
+  textual_app.py               Textual TUI
+  viewer/                      local web viewer
+  router/                      SQL vs graph routing
+  agent/                       graph agent and graph tools
+  parser/                      IFC -> JSONL/SQLite/graph pipeline
+
+scripts/
+  eval_graph_models.py         graph-agent profile comparison
+  eval_overlap_modes.py        overlap mode comparison
+
+output/                        generated JSONL, DB, graph, and viewer artifacts
+IFC-Files/                     source IFC models
+tests/                         regression and behavior coverage
 ```
 
-## JSONL ingestion notes
+## Development and validation
 
-- Ingestion reads IFC schema and applies schema-aware behavior.
-- Property sets are split into `PropertySets.Official` and `PropertySets.Custom`
-  using class-specific `ValidPsets` from the ontology map.
-- Unknown/unsupported schema families degrade gracefully (no crash):
-  properties default to `Custom` and base-class expansion is empty.
-- Geometry blocks may include centroid, bounding box, mesh vertices/faces, 2D
-  footprint polygon, local placement matrix, and oriented bounding box when IFC
-  geometry extraction succeeds.
-
-## SQL and graph contracts
-
-- SQLite schema stays flat for reliable LLM SQL generation.
-- Graph nodes include both:
-    - `properties` (flat compatibility view)
-    - `payload` (full nested JSONL record)
-
-### Canonical graph action contract
-
-- All graph actions return the stable envelope: `{status,data,error}`.
-- Canonical action names (allowlist):
-  `get_elements_in_storey`, `find_elements_by_class`, `get_adjacent_elements`,
-  `get_topology_neighbors`, `get_intersections_3d`, `find_nodes`, `traverse`,
-  `spatial_query`, `find_elements_above`, `find_elements_below`,
-  `get_element_properties`, `list_property_keys`.
-- Required `data` payload fields are stable per action (e.g.,
-  `find_nodes -> {class,elements}`, `traverse -> {start,relation,depth,results}`).
-
-### Canonical relation taxonomy + source semantics
-
-- Relation buckets:
-  - hierarchy: `aggregates`, `contains`, `contained_in`
-  - spatial: `adjacent_to`, `connected_to`
-  - topology: `above`, `below`, `overlaps_xy`, `intersects_bbox`,
-    `intersects_3d`, `touches_surface`
-  - explicit IFC: `hosts`, `hosted_by`, `ifc_connected_to`, `typed_by`,
-    `belongs_to_system`, `in_zone`, `classified_as`
-- `source` semantics for relation-bearing outputs:
-  - `ifc` = explicit IFC relation extracted from model relationships
-  - `heuristic` = spatial proximity heuristic
-  - `topology` = topology/geometry-derived relation
-  - hierarchy edges may omit source (reported as null)
-
-### Property filtering and key discovery
-
-- Graph filtering supports both:
-  - flat keys (e.g., `FireRating`)
-  - dotted keys (e.g., `Pset_WallCommon.FireRating`)
-- Key discovery is exposed via the canonical `list_property_keys` action/tool.
-- In `GRAPH_PAYLOAD_MODE=minimal`, dotted key discovery falls back to SQLite
-  when a DB path is wired into graph context.
-
-## Linting and checks
+Core checks:
 
 ```bash
 uv run ruff format --check .
@@ -392,11 +362,32 @@ uv run ruff check .
 uv run pytest
 ```
 
-## Reliability notes
+Useful targeted checks:
 
-- SQL merge mode reports partial database failures in `warning.failed_db_paths`
-  and `warning.db_errors` rather than silently dropping them.
-- `uv run rag-tag --strict-sql` makes SQL count/list queries fail closed when
-  any selected database errors.
-- Graph queries support explicit IFC `typed_by` relationships when type objects
-  are present in the exported JSONL.
+```bash
+uv run pytest tests/test_viewer_api.py
+uv run pytest tests/test_batch34_graph_semantics.py
+uv run pytest tests/test_graph_batch1_bounded_outputs.py
+```
+
+## Reliability and design notes
+
+- SQL counts and aggregations should come from SQL results, not model synthesis
+- Graph outputs are bounded and include truncation metadata where relevant
+- Graph adjacency is still heuristic and geometry-driven, not full BIM topology
+- The graph backend is currently NetworkX, not Neo4j/Cypher
+- If geometry is missing, graph reasoning degrades gracefully rather than inventing structure
+
+## Known limitations
+
+- `adjacent_to` is based on geometry heuristics, not authoritative topology
+- raw IFC exports vary a lot by authoring tool, especially for site/exterior elements
+- some outside/inside answers still rely on footprint or containment inference
+- dense models can still produce expensive graph-agent runs if the query is broad or ambiguous
+
+## Where to look next
+
+- `config.example.yaml` for the full checked-in runtime template
+- `src/rag_tag/parser/README.md` for parser-specific pipeline details
+- `src/rag_tag/viewer/static/how-to-use.html` for the built-in viewer guide
+- PR `#49` for the graph pruning and viewer feature set that shaped the current workflow
