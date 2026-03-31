@@ -10,7 +10,7 @@ from rag_tag.config import (
     CONFIG_PATH_ENV_VAR,
     ROUTER_PROFILE_ENV_VAR,
 )
-from rag_tag.evals import BenchmarkCase
+from rag_tag.evals import BenchmarkAnswer, BenchmarkCase
 from rag_tag.evals.runtime import (
     BENCHMARK_GRAPH_ORCHESTRATOR_ENV_VAR,
     temporary_runtime_overrides,
@@ -159,6 +159,82 @@ def test_run_benchmark_case_returns_structured_sql_result(
         reasoning_tokens=None,
         usage_available=True,
     )
+
+
+def test_run_benchmark_case_records_compare_attributes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = BenchmarkCase(
+        id="q001",
+        question="How many walls are in the model?",
+        expected_route="sql",
+        answer=BenchmarkAnswer(
+            canonical=" There are\n exactly 4 walls. ",
+        ),
+    )
+
+    recorded_attributes: list[tuple[str, object]] = []
+
+    def fake_set_eval_attribute(name: str, value: object) -> None:
+        recorded_attributes.append((name, value))
+
+    def fake_execute_query(
+        question: str,
+        db_paths: list[Path],
+        runtime: object | None,
+        agent: object | None,
+        *,
+        debug_llm_io: bool,
+        graph_dataset: str | None,
+        context_db: Path | None,
+        payload_mode: str | None,
+        strict_sql: bool,
+        graph_max_steps: int | None,
+    ) -> dict[str, object]:
+        del (
+            question,
+            db_paths,
+            runtime,
+            agent,
+            debug_llm_io,
+            graph_dataset,
+            context_db,
+            payload_mode,
+            strict_sql,
+            graph_max_steps,
+        )
+        return {
+            "result": {
+                "route": "sql",
+                "decision": "count query",
+                "answer": " Found\n 12 IfcWall. ",
+                "warning": None,
+                "error": None,
+                "data": {"count": 12},
+            },
+            "runtime": None,
+            "agent": None,
+        }
+
+    monkeypatch.setattr(
+        "rag_tag.evals.task_runner.set_eval_attribute",
+        fake_set_eval_attribute,
+    )
+    monkeypatch.setattr("rag_tag.evals.task_runner.execute_query", fake_execute_query)
+
+    bundle = run_benchmark_case(
+        case,
+        db_paths=[Path("/tmp/model.db")],
+        runtime=None,
+        agent=None,
+    )
+
+    assert bundle.result.answer == "Found\n 12 IfcWall."
+    assert recorded_attributes == [
+        ("compare_question", "How many walls are in the model?"),
+        ("compare_expected_answer", "There are exactly 4 walls."),
+        ("compare_agent_answer", "Found 12 IfcWall."),
+    ]
 
 
 def test_run_benchmark_case_preserves_runtime_and_agent_reuse(

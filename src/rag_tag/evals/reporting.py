@@ -30,6 +30,8 @@ _RUNS_FIELDNAMES = [
     "route_correct",
     "decision_reason",
     "answer",
+    "agent_answer",
+    "expected_answer",
     "answer_correct",
     "judge_score",
     "judge_reason",
@@ -131,6 +133,7 @@ class NormalizedRunRecord:
     route_correct: bool | None
     decision_reason: str | None
     answer: str | None
+    expected_answer: str | None
     answer_correct: bool | None
     warning: str | None
     error: str | None
@@ -163,6 +166,8 @@ class NormalizedRunRecord:
             "route_correct": self.route_correct,
             "decision_reason": self.decision_reason,
             "answer": self.answer,
+            "agent_answer": self.answer,
+            "expected_answer": self.expected_answer,
             "answer_correct": self.answer_correct,
             "judge_score": self.judge_score,
             "judge_reason": self.judge_reason,
@@ -415,6 +420,10 @@ def _build_case_record(
     repeat_index, repeat_total = _parse_repeat_name(getattr(case, "name", None))
     assertions = getattr(case, "assertions", {})
     scores = getattr(case, "scores", {})
+    expected_answer = _expected_answer_text(
+        getattr(case, "metadata", None),
+        getattr(case, "expected_output", None),
+    )
     route_eval = _find_named_eval_result(
         assertions,
         "route_matches_expected",
@@ -474,6 +483,7 @@ def _build_case_record(
         if task_result is not None
         else None,
         answer=task_result.answer if task_result is not None else None,
+        expected_answer=expected_answer,
         answer_correct=_eval_bool(answer_eval),
         warning=_warning_text(task_result.warning if task_result is not None else None),
         error=task_result.error if task_result is not None else None,
@@ -506,6 +516,10 @@ def _build_failure_record(
     question = (
         _coerce_text(getattr(getattr(failure, "inputs", None), "question", None)) or ""
     )
+    expected_answer = _expected_answer_text(
+        getattr(failure, "metadata", None),
+        getattr(failure, "expected_output", None),
+    )
     return NormalizedRunRecord(
         experiment_name=experiment_name,
         dataset_name=dataset_name,
@@ -526,6 +540,7 @@ def _build_failure_record(
         route_correct=False,
         decision_reason=None,
         answer=None,
+        expected_answer=expected_answer,
         answer_correct=False,
         warning=None,
         error=_coerce_text(getattr(failure, "error_message", None)),
@@ -545,6 +560,23 @@ def _metadata_value(metadata: object, key: str) -> object | None:
     if isinstance(metadata, dict):
         return metadata.get(key)
     return None
+
+
+def _expected_answer_text(metadata: object, expected_output: object) -> str | None:
+    expected_answer = _coerce_text(_metadata_value(metadata, "expected_answer"))
+    if expected_answer is not None:
+        return expected_answer
+
+    if isinstance(expected_output, dict):
+        answer = expected_output.get("answer")
+        if isinstance(answer, dict):
+            return _coerce_text(answer.get("canonical"))
+
+    answer = getattr(expected_output, "answer", None)
+    if isinstance(answer, dict):
+        return _coerce_text(answer.get("canonical"))
+
+    return _coerce_text(getattr(answer, "canonical", None))
 
 
 def _parse_repeat_name(name: object) -> tuple[int | None, int | None]:

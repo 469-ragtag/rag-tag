@@ -9,6 +9,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from pydantic_evals import set_eval_attribute
+
 from rag_tag.config import (
     AGENT_PROFILE_ENV_VAR,
     CONFIG_PATH_ENV_VAR,
@@ -109,6 +111,12 @@ def run_benchmark_case(
     resolved_agent_profile: str | None = agent_profile
     resolved_config_path: str | None = config_path
 
+    _record_compare_attribute("compare_question", case.question)
+    _record_compare_attribute(
+        "compare_expected_answer",
+        _resolve_expected_answer_text(case),
+    )
+
     # Benchmark overrides currently flow through process env vars, so serialize
     # task execution to avoid cross-run contamination when evaluations repeat or
     # request concurrency.
@@ -154,6 +162,7 @@ def run_benchmark_case(
         context_db=context_db,
         db_paths=db_paths,
     )
+    _record_compare_attribute("compare_agent_answer", result.answer)
     return BenchmarkTaskBundle(
         result=result,
         runtime=bundle.get("runtime"),
@@ -259,6 +268,25 @@ def _coerce_answer_text(value: object) -> str | None:
         text = value.strip()
         return text or None
     return str(value)
+
+
+def _resolve_expected_answer_text(case: BenchmarkCase) -> str | None:
+    if case.expected_answer is not None:
+        return case.expected_answer
+    if case.answer is not None:
+        return case.answer.canonical
+    return None
+
+
+def _record_compare_attribute(name: str, value: str | None) -> None:
+    set_eval_attribute(name, _normalize_compare_text(value))
+
+
+def _normalize_compare_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = " ".join(value.split())
+    return normalized or None
 
 
 def _coerce_error_text(value: object) -> str | None:

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import csv
 from dataclasses import dataclass
+from pathlib import Path
 
 from rag_tag.evals.benchmark import BenchmarkCombination, BenchmarkSuiteEntry
 from rag_tag.evals.reporting import (
@@ -8,6 +10,7 @@ from rag_tag.evals.reporting import (
     build_leaderboard_rows,
     build_runs_rows,
     top_leaderboard_rows,
+    write_csv_rows,
 )
 from rag_tag.evals.task_runner import BenchmarkTaskResult, BenchmarkUsage
 
@@ -103,15 +106,23 @@ def _task_result(
     )
 
 
-def test_build_runs_rows_includes_case_and_failure_records() -> None:
+def test_build_runs_rows_includes_case_and_failure_records(tmp_path: Path) -> None:
     report = _Report(
         name="benchmark-e2e-v1__router-a__agent-a__baseline",
         cases=[
             _Case(
                 name="q001 [1/2]",
                 inputs=type("Inputs", (), {"question": "Which rooms are adjacent?"})(),
-                metadata={"case_id": "q001", "expected_route": "graph"},
-                expected_output=None,
+                metadata={
+                    "case_id": "q001",
+                    "expected_route": "graph",
+                    "expected_answer": "The kitchen is adjacent to the dining room.",
+                },
+                expected_output={
+                    "answer": {
+                        "canonical": "The kitchen is adjacent to the dining room."
+                    }
+                },
                 output=_task_result(
                     case_id="q001",
                     question="Which rooms are adjacent?",
@@ -145,8 +156,14 @@ def test_build_runs_rows_includes_case_and_failure_records() -> None:
             _Failure(
                 name="q002 [1/2]",
                 inputs=type("Inputs", (), {"question": "How many doors?"})(),
-                metadata={"case_id": "q002", "expected_route": "sql"},
-                expected_output=None,
+                metadata={
+                    "case_id": "q002",
+                    "expected_route": "sql",
+                    "expected_answer": "There are 4 doors.",
+                },
+                expected_output={
+                    "answer": {"canonical": "There are 4 doors."}
+                },
                 error_message="task crashed",
                 error_stacktrace="traceback",
                 source_case_name="q002",
@@ -174,6 +191,8 @@ def test_build_runs_rows_includes_case_and_failure_records() -> None:
     assert rows[0]["repeat_total"] == 2
     assert rows[0]["route_correct"] is True
     assert rows[0]["answer_correct"] is True
+    assert rows[0]["agent_answer"] == "answer for q001"
+    assert rows[0]["expected_answer"] == "The kitchen is adjacent to the dining room."
     assert rows[0]["judge_score"] == 0.8
     assert rows[0]["input_tokens"] == 10
     assert rows[0]["output_tokens"] == 5
@@ -181,10 +200,25 @@ def test_build_runs_rows_includes_case_and_failure_records() -> None:
     assert rows[0]["trace_id"] == "case-trace-1"
     assert rows[1]["case_id"] == "q002"
     assert rows[1]["error"] == "task crashed"
+    assert rows[1]["agent_answer"] is None
+    assert rows[1]["expected_answer"] == "There are 4 doors."
     assert rows[1]["answer_correct"] is False
     assert rows[1]["route_correct"] is False
     assert rows[1]["no_error"] is False
     assert rows[1]["no_error_assertion"] is False
+
+    runs_path = tmp_path / "runs.csv"
+    write_csv_rows(runs_path, rows, kind="runs")
+    with runs_path.open("r", encoding="utf-8", newline="") as handle:
+        written_rows = list(csv.DictReader(handle))
+
+    assert written_rows[0]["agent_answer"] == "answer for q001"
+    assert (
+        written_rows[0]["expected_answer"]
+        == "The kitchen is adjacent to the dining room."
+    )
+    assert written_rows[1]["agent_answer"] == ""
+    assert written_rows[1]["expected_answer"] == "There are 4 doors."
 
 
 def test_build_case_groups_and_leaderboard_rows_aggregate_metrics() -> None:
