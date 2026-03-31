@@ -61,6 +61,7 @@ Useful overrides:
 make tui DATASET=Building-Architecture
 make tui-trace DATASET=BigBuildingBIMModel
 make bench TARGET=building-architecture PRESET=smoke CONFIG=config.yaml
+make bench TARGET=building-architecture PRESET=full CONFIG=config.yaml BENCH_CASE_ID=q020
 make bench-trace TARGET=building-architecture PRESET=full CONFIG=config.yaml BENCH_ARGS="--orchestrators pydanticai --router-profiles dbx-gpt-oss-20b --prompt-strategies baseline"
 make benchmark BENCH_EXPERIMENT=benchmark-e2e-v1
 ```
@@ -686,6 +687,33 @@ uv run python scripts/eval_benchmarks.py \
   --questions-file ./evals/benchmark_cases_v1.yaml \
   --tags sql graph \
   --db ./output/Building-Architecture.db
+```
+
+### Run from the start through a case id
+
+Use `--case-id` to keep cases from the start of the YAML file through the named
+case id, inclusive. This follows file order, so `--case-id q020` means "run the
+cases up to and including `q020` as they appear in the dataset file".
+
+```bash
+uv run python scripts/eval_benchmarks.py \
+  --config ./config.yaml \
+  --questions-file ./evals/benchmark_cases_v1.yaml \
+  --case-id q020 \
+  --db ./output/Building-Architecture.db \
+  --graph-dataset Building-Architecture
+```
+
+You can combine the cutoff with tags. The cutoff is applied first, then tags are
+matched within that truncated case set.
+
+```bash
+make bench \
+  TARGET=building-architecture \
+  PRESET=full \
+  CONFIG=config.yaml \
+  BENCH_CASE_ID=q020 \
+  BENCH_TAGS="graph"
 ```
 
 ### Benchmark artifacts

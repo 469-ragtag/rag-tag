@@ -37,6 +37,13 @@ def _parse_tag(value: str) -> str:
     return cleaned
 
 
+def _parse_case_id(value: str) -> str:
+    cleaned = value.strip()
+    if not cleaned:
+        raise argparse.ArgumentTypeError("Case id cannot be empty.")
+    return cleaned
+
+
 def _parse_model_name(value: str) -> str:
     cleaned = value.strip()
     if not cleaned:
@@ -148,6 +155,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--answer-judge-model", type=_parse_model_name, default=None)
     parser.add_argument("--output-dir", type=Path, default=None)
     parser.add_argument("--tags", nargs="*", type=_parse_tag, default=None)
+    parser.add_argument(
+        "--case-id",
+        type=_parse_case_id,
+        default=None,
+        help=(
+            "Run cases from the start of the dataset through this case id (inclusive)."
+        ),
+    )
     return parser
 
 
@@ -181,6 +196,7 @@ def main(argv: list[str] | None = None) -> int:
             prompt_strategies=args.prompt_strategies,
             orchestrators=args.orchestrators,
             tags=args.tags,
+            case_id=args.case_id,
             repeat=args.repeat,
             max_concurrency=args.max_concurrency,
             db_paths=db_paths,

@@ -12,6 +12,7 @@ from rag_tag.evals.benchmark import (
     BenchmarkCombination,
     build_benchmark_cli_config,
     expand_benchmark_matrix,
+    load_benchmark_dataset_with_filters,
     run_benchmark_suite,
 )
 from rag_tag.evals.evaluators import DEFAULT_ANSWER_JUDGE_MODEL
@@ -340,6 +341,66 @@ def test_build_benchmark_cli_config_uses_experiment_defaults_and_tag_filter(
     ]
 
 
+def test_load_benchmark_dataset_with_filters_applies_case_id_before_tags(
+    tmp_path: Path,
+) -> None:
+    dataset_path = tmp_path / "benchmark.yaml"
+    dataset_path.write_text(
+        "schema_version: 2\n"
+        "dataset_name: benchmark_cases_v2\n"
+        "cases:\n"
+        "  - id: q001\n"
+        "    question: How many walls?\n"
+        "    expected_route: sql\n"
+        "    answer:\n"
+        "      canonical: There are 4 walls.\n"
+        "    tags: [sql]\n"
+        "  - id: q002\n"
+        "    question: Which rooms are adjacent?\n"
+        "    expected_route: graph\n"
+        "    answer:\n"
+        "      canonical: The living room is adjacent to the entry hall.\n"
+        "    tags: [graph]\n"
+        "  - id: q003\n"
+        "    question: Which storey contains the chimney?\n"
+        "    expected_route: graph\n"
+        "    answer:\n"
+        "      canonical: The chimney is on the groundfloor.\n"
+        "    tags: [graph]\n",
+        encoding="utf-8",
+    )
+
+    filtered = load_benchmark_dataset_with_filters(
+        dataset_path,
+        tags=["graph"],
+        case_id="q002",
+    )
+
+    assert filtered.schema_version == 2
+    assert filtered.dataset_name == "benchmark_cases_v2"
+    assert [case.id for case in filtered.cases] == ["q002"]
+
+
+def test_load_benchmark_dataset_with_filters_rejects_unknown_case_id(
+    tmp_path: Path,
+) -> None:
+    dataset_path = tmp_path / "benchmark.yaml"
+    dataset_path.write_text(
+        "schema_version: 2\n"
+        "dataset_name: benchmark_cases_v2\n"
+        "cases:\n"
+        "  - id: q001\n"
+        "    question: How many walls?\n"
+        "    expected_route: sql\n"
+        "    answer:\n"
+        "      canonical: There are 4 walls.\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="case-id cutoff was not found: q020"):
+        load_benchmark_dataset_with_filters(dataset_path, case_id="q020")
+
+
 def test_build_benchmark_cli_config_resolves_relative_dataset_from_config_path(
     tmp_path: Path,
     monkeypatch,
@@ -571,6 +632,7 @@ def test_build_benchmark_cli_config_cli_overrides_beat_preset_target_and_experim
         prompt_strategies=["baseline"],
         orchestrators=["pydanticai"],
         tags=["cli"],
+        case_id="q020",
         repeat=7,
         max_concurrency=8,
         db_paths=[db_from_cli],
@@ -586,6 +648,7 @@ def test_build_benchmark_cli_config_cli_overrides_beat_preset_target_and_experim
     assert cli_config.context_db == db_from_cli.resolve()
     assert cli_config.graph_dataset == "cli-graph"
     assert cli_config.tags == ["cli"]
+    assert cli_config.case_id == "q020"
     assert cli_config.repeat == 7
     assert cli_config.max_concurrency == 8
     assert cli_config.answer_judge_model == "cli-judge"
@@ -662,6 +725,8 @@ def test_eval_benchmarks_script_passes_answer_judge_and_orchestrator_overrides(
             str(db_path),
             "--answer-judge-model",
             "google-gla:gemini-2.5-flash",
+            "--case-id",
+            "q020",
             "--orchestrators",
             "langgraph",
         ]
@@ -671,6 +736,7 @@ def test_eval_benchmarks_script_passes_answer_judge_and_orchestrator_overrides(
     assert captured["preset_name"] == "smoke"
     assert captured["target_name"] == "building-architecture"
     assert captured["answer_judge_model"] == "google-gla:gemini-2.5-flash"
+    assert captured["case_id"] == "q020"
     assert captured["orchestrators"] == ["langgraph"]
     capsys.readouterr()
 

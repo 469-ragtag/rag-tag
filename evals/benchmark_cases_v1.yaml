@@ -1,300 +1,300 @@
 schema_version: 2
 dataset_name: benchmark_cases_v1
 cases:
-  - id: q001
-    question: How many walls are in the model?
-    expected_route: sql
-    answer:
-      canonical: |
-        There are exactly 4 walls in the model:
-        #234 "house - outer wall - house right front"
-        #258 "house - outer wall - house right back"
-        #277 "house - outer wall - house left"
-        #310 "plumbing wall"
-      judge_notes:
-        - chooses sql routing for a deterministic count query
-        - returns a grounded count of wall elements
-        - avoids unsupported graph-only reasoning
-    tags: [sql, count, walls]
-    max_duration_s: 10
+    - id: q001
+      question: How many walls are in the model?
+      expected_route: sql
+      answer:
+          canonical: |
+              There are exactly 4 walls in the model:
+              #234 "house - outer wall - house right front"
+              #258 "house - outer wall - house right back"
+              #277 "house - outer wall - house left"
+              #310 "plumbing wall"
+          judge_notes:
+              - chooses sql routing for a deterministic count query
+              - returns a grounded count of wall elements
+              - avoids unsupported graph-only reasoning
+      tags: [sql, count, walls]
+      max_duration_s: 10
 
-  - id: q002
-    question: List all spaces located in the groundfloor.
-    expected_route: graph
-    answer:
-      canonical: |
-        There are 2 spaces contained within the 00 groundfloor:
-        #75 "living room"
-        #182 "entry hall"
-      judge_notes:
-        - identifies the ground floor or matching storey correctly
-        - returns space elements grounded in containment evidence
-        - avoids inventing spaces not supported by the model
-    tags: [graph, spaces, level, containment]
-    max_duration_s: 20
+    - id: q002
+      question: List all spaces located in the groundfloor.
+      expected_route: graph
+      answer:
+          canonical: |
+              There are 2 spaces contained within the 00 groundfloor:
+              #75 "living room"
+              #182 "entry hall"
+          judge_notes:
+              - identifies the ground floor or matching storey correctly
+              - returns space elements grounded in containment evidence
+              - avoids inventing spaces not supported by the model
+      tags: [graph, spaces, level, containment]
+      max_duration_s: 20
 
-  - id: q003
-    question: How many slabs are there, and what are their names?
-    expected_route: sql
-    answer:
-      canonical: |
-        There are 3 slabs in the project:
-        #49 "floor"
-        #343 "house - roof - slab left"
-        #367 "house - roof - slab right"
-      judge_notes:
-        - treats the request as a deterministic listing/count task
-        - returns slab names grounded in retrieved data
-        - keeps the count consistent with the returned set
-    tags: [sql, count, list, slabs]
-    max_duration_s: 12
+    - id: q003
+      question: How many slabs are there, and what are their names?
+      expected_route: sql
+      answer:
+          canonical: |
+              There are 3 slabs in the project:
+              #49 "floor"
+              #343 "house - roof - slab left"
+              #367 "house - roof - slab right"
+          judge_notes:
+              - treats the request as a deterministic listing/count task
+              - returns slab names grounded in retrieved data
+              - keeps the count consistent with the returned set
+      tags: [sql, count, list, slabs]
+      max_duration_s: 12
 
-  - id: q004
-    question: What is the total number of building element proxies in the project?
-    expected_route: sql
-    answer:
-      canonical: |
-        There are 4 building element proxies:
-        #172 "Group#18"
-        #302 "Group#19"
-        #417 "origin"
-        #436 "geo-reference"
-      judge_notes:
-        - chooses sql routing for a bounded count query
-        - counts only building element proxy entities
-        - returns a deterministic total
-    tags: [sql, count, proxies]
-    max_duration_s: 10
+    - id: q004
+      question: What is the total number of building element proxies in the project?
+      expected_route: sql
+      answer:
+          canonical: |
+              There are 4 building element proxies:
+              #172 "Group#18"
+              #302 "Group#19"
+              #417 "origin"
+              #436 "geo-reference"
+          judge_notes:
+              - chooses sql routing for a bounded count query
+              - counts only building element proxy entities
+              - returns a deterministic total
+      tags: [sql, count, proxies]
+      max_duration_s: 10
 
-  - id: q005
-    question: How many elements have the word "roof" in their name?
-    expected_route: sql
-    answer:
-      canonical: |
-        There are 3 elements with "roof" in their name:
-        #334 "house - roof" (IfcRoof)
-        #343 "house - roof - slab left" (IfcSlab)
-        #367 "house - roof - slab right" (IfcSlab)
-      judge_notes:
-        - uses deterministic name-based filtering
-        - counts only elements whose name matches the roof term
-        - avoids unsupported spatial reasoning
-    tags: [sql, count, name-filter, roof]
-    max_duration_s: 10
+    - id: q005
+      question: How many elements have the word "roof" in their name?
+      expected_route: sql
+      answer:
+          canonical: |
+              There are 3 elements with "roof" in their name:
+              #334 "house - roof" (IfcRoof)
+              #343 "house - roof - slab left" (IfcSlab)
+              #367 "house - roof - slab right" (IfcSlab)
+          judge_notes:
+              - uses deterministic name-based filtering
+              - counts only elements whose name matches the roof term
+              - avoids unsupported spatial reasoning
+      tags: [sql, count, name-filter, roof]
+      max_duration_s: 10
 
-  - id: q006
-    question: What building storey contains the chimney?
-    expected_route: graph
-    answer:
-      canonical: The chimney (#296) is contained in the "00 groundfloor" (#40).
-      judge_notes:
-        - identifies the chimney anchor correctly
-        - follows containment to the correct building storey
-        - reports uncertainty if no grounded storey is found
-    tags: [graph, containment, storey, chimney]
-    max_duration_s: 20
+    - id: q006
+      question: What building storey contains the chimney?
+      expected_route: graph
+      answer:
+          canonical: The chimney (#296) is contained in the "00 groundfloor" (#40).
+          judge_notes:
+              - identifies the chimney anchor correctly
+              - follows containment to the correct building storey
+              - reports uncertainty if no grounded storey is found
+      tags: [graph, containment, storey, chimney]
+      max_duration_s: 20
 
-  - id: q007
-    question: What elements are contained directly inside the Single-family house building, excluding storeys?
-    expected_route: graph
-    answer:
-      canonical: |
-        The direct elements inside the Single-family house (#30), excluding storeys, are:
-        #334 "house - roof" (IfcRoof)
-        #385 "house - gross volume" (IfcSpatialZone)
-        #399 "sand bedding" (IfcEarthworksFill)
-      judge_notes:
-        - identifies the Single-family house building correctly
-        - returns only directly contained elements
-        - excludes storeys from the final set
-    tags: [graph, containment, building, filter]
-    max_duration_s: 20
+    - id: q007
+      question: What elements are contained directly inside the Single-family house building, excluding storeys?
+      expected_route: graph
+      answer:
+          canonical: |
+              The direct elements inside the Single-family house (#30), excluding storeys, are:
+              #334 "house - roof" (IfcRoof)
+              #385 "house - gross volume" (IfcSpatialZone)
+              #399 "sand bedding" (IfcEarthworksFill)
+          judge_notes:
+              - identifies the Single-family house building correctly
+              - returns only directly contained elements
+              - excludes storeys from the final set
+      tags: [graph, containment, building, filter]
+      max_duration_s: 20
 
-  - id: q008
-    question: Which site contains the "origin" element?
-    expected_route: graph
-    answer:
-      canonical: The "origin" proxy (#417) is contained directly in the "house - site" (#23).
-      judge_notes:
-        - resolves the origin element anchor correctly
-        - traces containment to the site level
-        - does not fabricate site relationships
-    tags: [graph, containment, site, origin]
-    max_duration_s: 20
+    - id: q008
+      question: Which site contains the "origin" element?
+      expected_route: graph
+      answer:
+          canonical: The "origin" proxy (#417) is contained directly in the "house - site" (#23).
+          judge_notes:
+              - resolves the origin element anchor correctly
+              - traces containment to the site level
+              - does not fabricate site relationships
+      tags: [graph, containment, site, origin]
+      max_duration_s: 20
 
-  - id: q009
-    question: What elements make up the roof assembly?
-    expected_route: graph
-    answer:
-      canonical: |
-        The "house - roof" (#334) aggregates:
-        "house - roof - slab left" (#343)
-        "house - roof - slab right" (#367)
-      judge_notes:
-        - identifies the roof assembly anchor correctly
-        - returns grounded member elements of that assembly
-        - avoids adding unsupported parts
-    tags: [graph, assembly, containment, roof]
-    max_duration_s: 20
+    - id: q009
+      question: What elements make up the roof assembly?
+      expected_route: graph
+      answer:
+          canonical: |
+              The "house - roof" (#334) aggregates:
+              "house - roof - slab left" (#343)
+              "house - roof - slab right" (#367)
+          judge_notes:
+              - identifies the roof assembly anchor correctly
+              - returns grounded member elements of that assembly
+              - avoids adding unsupported parts
+      tags: [graph, assembly, containment, roof]
+      max_duration_s: 20
 
-  - id: q010
-    question: Are there any proxy elements located directly inside the living room?
-    expected_route: graph
-    answer:
-      canonical: |
-        Yes. The "living room" (#75) directly contains the proxy element "Group#18" (#172).
-      judge_notes:
-        - identifies the living room space correctly
-        - checks direct containment rather than loose proximity
-        - answers yes or no only from grounded evidence
-    tags: [graph, containment, proxies, living-room]
-    max_duration_s: 20
+    - id: q010
+      question: Are there any proxy elements located directly inside the living room?
+      expected_route: graph
+      answer:
+          canonical: |
+              Yes. The "living room" (#75) directly contains the proxy element "Group#18" (#172).
+          judge_notes:
+              - identifies the living room space correctly
+              - checks direct containment rather than loose proximity
+              - answers yes or no only from grounded evidence
+      tags: [graph, containment, proxies, living-room]
+      max_duration_s: 20
 
-  - id: q011
-    question: Find the material of the kitchen furniture.
-    expected_route: graph
-    answer:
-      canonical: |
-        The "kitchen" furniture (#155) is associated with the material "wood_mdf_plate" (#159).
-      judge_notes:
-        - identifies the kitchen furniture anchor correctly
-        - retrieves material information from grounded data
-        - avoids fabricating material names
-    tags: [graph, material, furniture, kitchen]
-    max_duration_s: 20
+    - id: q011
+      question: Find the material of the kitchen furniture.
+      expected_route: graph
+      answer:
+          canonical: |
+              The "kitchen" furniture (#155) is associated with the material "wood_mdf_plate" (#159).
+          judge_notes:
+              - identifies the kitchen furniture anchor correctly
+              - retrieves material information from grounded data
+              - avoids fabricating material names
+      tags: [graph, material, furniture, kitchen]
+      max_duration_s: 20
 
-  - id: q012
-    question: What is the net volume and area of the left roof slab?
-    expected_route: graph
-    answer:
-      canonical: |
-        The left roof slab (#343) has:
-        Net Volume: 6.72 m3 (6.7203428483966)
-        Net Area: 22.40 m2 (22.40114282797721)
-      judge_notes:
-        - identifies the left roof slab correctly
-        - returns grounded quantity values for net volume and area
-        - avoids mixing values from other slabs
-    tags: [graph, quantity, slab, roof]
-    max_duration_s: 20
+    - id: q012
+      question: What is the net volume and area of the left roof slab?
+      expected_route: graph
+      answer:
+          canonical: |
+              The left roof slab (#343) has:
+              Net Volume: 6.72 m3 (6.7203428483966)
+              Net Area: 22.40 m2 (22.40114282797721)
+          judge_notes:
+              - identifies the left roof slab correctly
+              - returns grounded quantity values for net volume and area
+              - avoids mixing values from other slabs
+      tags: [graph, quantity, slab, roof]
+      max_duration_s: 20
 
-  - id: q013
-    question: What is the length, width, and volume of the left outer wall?
-    expected_route: graph
-    answer:
-      canonical: |
-        The left outer wall (#277) has:
-        Length: 6000 mm (6000.000000000036)
-        Width: 200 mm (200.00000000000975)
-        Net Volume: 4.23 m3 (4.230883117545889)
-      judge_notes:
-        - identifies the left outer wall correctly
-        - returns grounded dimensional values
-        - keeps all reported measurements tied to the same wall
-    tags: [graph, quantity, dimensions, wall]
-    max_duration_s: 20
+    - id: q013
+      question: What is the length, width, and volume of the left outer wall?
+      expected_route: graph
+      answer:
+          canonical: |
+              The left outer wall (#277) has:
+              Length: 6000 mm (6000.000000000036)
+              Width: 200 mm (200.00000000000975)
+              Net Volume: 4.23 m3 (4.230883117545889)
+          judge_notes:
+              - identifies the left outer wall correctly
+              - returns grounded dimensional values
+              - keeps all reported measurements tied to the same wall
+      tags: [graph, quantity, dimensions, wall]
+      max_duration_s: 20
 
-  - id: q014
-    question: Does the ground floor slab have a fire rating?
-    expected_route: graph
-    answer:
-      canonical: |
-        Yes. The "floor" slab (#49) has a FireRating property of "REI30".
-        It also inherits an "REI60" rating via its SlabType.
-      judge_notes:
-        - identifies the ground floor slab correctly
-        - checks for a grounded fire rating property
-        - states absence clearly when no fire rating is present
-    tags: [graph, property, slab, fire-rating]
-    max_duration_s: 20
+    - id: q014
+      question: Does the ground floor slab have a fire rating?
+      expected_route: graph
+      answer:
+          canonical: |
+              Yes. The "floor" slab (#49) has a FireRating property of "REI30".
+              It also inherits an "REI60" rating via its SlabType.
+          judge_notes:
+              - identifies the ground floor slab correctly
+              - checks for a grounded fire rating property
+              - states absence clearly when no fire rating is present
+      tags: [graph, property, slab, fire-rating]
+      max_duration_s: 20
 
-  - id: q015
-    question: What material is used for the sand bedding?
-    expected_route: graph
-    answer:
-      canonical: |
-        The "sand bedding" (#399) is assigned the material
-        "bulk-material_sand-coarse_generic" (#403).
-      judge_notes:
-        - resolves the sand bedding anchor correctly
-        - returns grounded material information
-        - avoids unsupported substitutions or guesses
-    tags: [graph, material, bedding]
-    max_duration_s: 20
+    - id: q015
+      question: What material is used for the sand bedding?
+      expected_route: graph
+      answer:
+          canonical: |
+              The "sand bedding" (#399) is assigned the material
+              "bulk-material_sand-coarse_generic" (#403).
+          judge_notes:
+              - resolves the sand bedding anchor correctly
+              - returns grounded material information
+              - avoids unsupported substitutions or guesses
+      tags: [graph, material, bedding]
+      max_duration_s: 20
 
-  - id: q016
-    question: The kitchen furniture is in a specific space. What zone does that space belong to?
-    expected_route: graph
-    answer:
-      canonical: |
-        The "kitchen" (#155) is in the "living room" (#75), and that space belongs to
-        the zone "house - living space" (#71).
-      judge_notes:
-        - identifies the kitchen furniture and its containing space
-        - traces the space to its zone membership
-        - reports the zone only if supported by evidence
-    tags: [graph, multi-hop, zone, kitchen]
-    max_duration_s: 25
+    - id: q016
+      question: The kitchen furniture is in a specific space. What zone does that space belong to?
+      expected_route: graph
+      answer:
+          canonical: |
+              The "kitchen" (#155) is in the "living room" (#75), and that space belongs to
+              the zone "house - living space" (#71).
+          judge_notes:
+              - identifies the kitchen furniture and its containing space
+              - traces the space to its zone membership
+              - reports the zone only if supported by evidence
+      tags: [graph, multi-hop, zone, kitchen]
+      max_duration_s: 25
 
-  - id: q017
-    question: What are the materials of all the walls located on the groundfloor?
-    expected_route: graph
-    answer:
-      canonical: |
-        The groundfloor contains 4 walls:
-        Outer walls #234, #258, and #277 use "stone_sand-lime" (#238).
-        Plumbing wall #310 uses "gypsum_fiber-board_panel" (#314).
-      judge_notes:
-        - identifies walls associated with the ground floor correctly
-        - returns grounded material information for each wall or grouped set
-        - avoids fabricating materials for unmatched walls
-    tags: [graph, material, walls, level]
-    max_duration_s: 25
+    - id: q017
+      question: What are the materials of all the walls located on the groundfloor?
+      expected_route: graph
+      answer:
+          canonical: |
+              The groundfloor contains 4 walls:
+              Outer walls #234, #258, and #277 use "stone_sand-lime" (#238).
+              Plumbing wall #310 uses "gypsum_fiber-board_panel" (#314).
+          judge_notes:
+              - identifies walls associated with the ground floor correctly
+              - returns grounded material information for each wall or grouped set
+              - avoids fabricating materials for unmatched walls
+      tags: [graph, material, walls, level]
+      max_duration_s: 25
 
-  - id: q018
-    question: Find the entry hall. What building storey is it on, and what building is that storey in?
-    expected_route: graph
-    answer:
-      canonical: |
-        The "entry hall" (#182) is on the "00 groundfloor" (#40),
-        which is in the "Single-family house" (#30).
-      judge_notes:
-        - identifies the entry hall anchor correctly
-        - returns the containing building storey
-        - returns the building associated with that storey
-    tags: [graph, multi-hop, storey, building, entry-hall]
-    max_duration_s: 25
+    - id: q018
+      question: Find the entry hall. What building storey is it on, and what building is that storey in?
+      expected_route: graph
+      answer:
+          canonical: |
+              The "entry hall" (#182) is on the "00 groundfloor" (#40),
+              which is in the "Single-family house" (#30).
+          judge_notes:
+              - identifies the entry hall anchor correctly
+              - returns the containing building storey
+              - returns the building associated with that storey
+      tags: [graph, multi-hop, storey, building, entry-hall]
+      max_duration_s: 25
 
-  - id: q019
-    question: Compare the net volume of the right roof slab and the left roof slab. Which is larger?
-    expected_route: graph
-    answer:
-      canonical: |
-        Right roof slab (#367): Net Volume 9.36 m3
-        Left roof slab (#343): Net Volume 6.72 m3
-        The right roof slab is larger.
-      judge_notes:
-        - identifies both roof slab anchors correctly
-        - compares grounded net volume values
-        - states which slab is larger only if the evidence supports it
-    tags: [graph, comparison, quantity, roof]
-    max_duration_s: 25
+    - id: q019
+      question: Compare the net volume of the right roof slab and the left roof slab. Which is larger?
+      expected_route: graph
+      answer:
+          canonical: |
+              Right roof slab (#367): Net Volume 9.36 m3
+              Left roof slab (#343): Net Volume 6.72 m3
+              The right roof slab is larger.
+          judge_notes:
+              - identifies both roof slab anchors correctly
+              - compares grounded net volume values
+              - states which slab is larger only if the evidence supports it
+      tags: [graph, comparison, quantity, roof]
+      max_duration_s: 25
 
-  - id: q020
-    question: Trace the full containment path of the "kitchen" element from the project level down.
-    expected_route: graph
-    answer:
-      canonical: |
-        Project #13 "ifc silly sample scene - project"
-        -> Site #20 "environment - site"
-        -> Site #23 "house - site"
-        -> Building #30 "Single-family house"
-        -> Building Storey #40 "00 groundfloor"
-        -> Space #75 "living room"
-        -> Furniture #155 "kitchen"
-      judge_notes:
-        - identifies the kitchen element anchor correctly
-        - returns the containment chain in order
-        - keeps the path grounded from project level to the target element
-    tags: [graph, path, containment, kitchen]
-    max_duration_s: 25
+    - id: q020
+      question: Trace the full containment path of the "kitchen" element from the project level down.
+      expected_route: graph
+      answer:
+          canonical: |
+              Project #13 "ifc silly sample scene - project"
+              -> Site #20 "environment - site"
+              -> Site #23 "house - site"
+              -> Building #30 "Single-family house"
+              -> Building Storey #40 "00 groundfloor"
+              -> Space #75 "living room"
+              -> Furniture #155 "kitchen"
+          judge_notes:
+              - identifies the kitchen element anchor correctly
+              - returns the containment chain in order
+              - keeps the path grounded from project level to the target element
+      tags: [graph, path, containment, kitchen]
+      max_duration_s: 25

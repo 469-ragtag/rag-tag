@@ -97,6 +97,7 @@ class BenchmarkCliConfig:
     debug_llm_io: bool = False
     trace: bool = False
     tags: list[str] = field(default_factory=list)
+    case_id: str | None = None
     output_dir: Path | None = None
     combinations: list[BenchmarkCombination] = field(default_factory=list)
 
@@ -127,6 +128,7 @@ def build_benchmark_cli_config(
     answer_judge_model: str | None = None,
     debug_llm_io: bool = False,
     trace: bool = False,
+    case_id: str | None = None,
     output_dir: Path | None = None,
 ) -> BenchmarkCliConfig:
     """Resolve CLI/config inputs into one executable benchmark suite config."""
@@ -206,6 +208,9 @@ def build_benchmark_cli_config(
         or (preset.tags if preset is not None and preset.tags else [])
         or (experiment.tags if experiment is not None and experiment.tags else [])
     )
+    resolved_case_id = case_id.strip() if case_id is not None else None
+    if resolved_case_id == "":
+        resolved_case_id = None
     resolved_repeat = (
         repeat
         if repeat is not None
@@ -261,6 +266,7 @@ def build_benchmark_cli_config(
         debug_llm_io=debug_llm_io,
         trace=trace,
         tags=resolved_tags,
+        case_id=resolved_case_id,
         output_dir=output_dir,
         combinations=combinations,
     )
@@ -369,34 +375,79 @@ def _normalize_graph_orchestrator_name(
     )
 
 
+def load_benchmark_dataset_with_filters(
+    dataset_path: Path,
+    *,
+    tags: list[str] | None = None,
+    case_id: str | None = None,
+) -> BenchmarkDataset:
+    """Load a benchmark dataset and optionally filter it by cutoff and tags."""
+
+    dataset = load_benchmark_dataset(dataset_path)
+    filtered_cases = list(dataset.cases)
+
+    normalized_case_id = case_id.strip() if case_id is not None else None
+    if normalized_case_id == "":
+        normalized_case_id = None
+    if normalized_case_id is not None:
+        matched_index = next(
+            (
+                index
+                for index, case in enumerate(filtered_cases)
+                if case.id == normalized_case_id
+            ),
+            None,
+        )
+        if matched_index is None:
+            raise ValueError(
+                f"Benchmark dataset case-id cutoff was not found: {normalized_case_id}"
+            )
+        filtered_cases = filtered_cases[: matched_index + 1]
+
+    if not tags:
+        return BenchmarkDataset(
+            schema_version=dataset.schema_version,
+            dataset_name=dataset.dataset_name,
+            cases=filtered_cases,
+        )
+
+    normalized_tags = {tag.strip() for tag in tags if tag.strip()}
+    if not normalized_tags:
+        return BenchmarkDataset(
+            schema_version=dataset.schema_version,
+            dataset_name=dataset.dataset_name,
+            cases=filtered_cases,
+        )
+
+    filtered_cases = [
+        case for case in filtered_cases if normalized_tags.intersection(case.tags)
+    ]
+    if not filtered_cases:
+        within_cutoff = (
+            f" within case-id cutoff {normalized_case_id}"
+            if normalized_case_id is not None
+            else ""
+        )
+        raise ValueError(
+            "Benchmark dataset tag filter matched no cases: "
+            f"{', '.join(sorted(normalized_tags))}{within_cutoff}"
+        )
+
+    return BenchmarkDataset(
+        schema_version=dataset.schema_version,
+        dataset_name=dataset.dataset_name,
+        cases=filtered_cases,
+    )
+
+
 def load_benchmark_dataset_with_tags(
     dataset_path: Path,
     *,
     tags: list[str] | None = None,
 ) -> BenchmarkDataset:
-    """Load a benchmark dataset and optionally filter it by tags."""
+    """Backward-compatible tag-only dataset loader."""
 
-    dataset = load_benchmark_dataset(dataset_path)
-    if not tags:
-        return dataset
-
-    normalized_tags = {tag.strip() for tag in tags if tag.strip()}
-    if not normalized_tags:
-        return dataset
-
-    filtered_cases = [
-        case for case in dataset.cases if normalized_tags.intersection(case.tags)
-    ]
-    if not filtered_cases:
-        raise ValueError(
-            "Benchmark dataset tag filter matched no cases: "
-            f"{', '.join(sorted(normalized_tags))}"
-        )
-
-    return BenchmarkDataset(
-        dataset_name=dataset.dataset_name,
-        cases=filtered_cases,
-    )
+    return load_benchmark_dataset_with_filters(dataset_path, tags=tags)
 
 
 def run_benchmark_suite(config: BenchmarkCliConfig) -> BenchmarkSuiteResult:
@@ -411,7 +462,11 @@ async def run_benchmark_suite_async(
     """Run the benchmark matrix, optionally with Logfire tracing."""
 
     logfire_status = setup_logfire(enabled=config.trace, console=True)
-    dataset = load_benchmark_dataset_with_tags(config.dataset_path, tags=config.tags)
+    dataset = load_benchmark_dataset_with_filters(
+        config.dataset_path,
+        tags=config.tags,
+        case_id=config.case_id,
+    )
     run_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     output_dir = _resolve_output_dir(config.output_dir, run_id)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -754,6 +809,7 @@ def _build_entry_report_metadata(
         "dataset_path": str(config.dataset_path),
         "answer_judge_model": config.answer_judge_model,
         "tag_filter": list(config.tags),
+        "case_id_cutoff": config.case_id,
         "trace_requested": config.trace,
         "logfire_enabled": logfire_status.enabled,
         "logfire_cloud_sync": logfire_status.cloud_sync,
@@ -786,6 +842,7 @@ def _build_suite_metadata(
         ),
         "answer_judge_model": config.answer_judge_model,
         "tag_filter": list(config.tags),
+        "case_id_cutoff": config.case_id,
         "repeat": config.repeat,
         "max_concurrency": config.max_concurrency,
     }

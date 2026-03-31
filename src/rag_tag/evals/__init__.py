@@ -7,6 +7,7 @@ from .benchmark import (
     BenchmarkSuiteResult,
     build_benchmark_cli_config,
     expand_benchmark_matrix,
+    load_benchmark_dataset_with_filters,
     load_benchmark_dataset_with_tags,
     run_benchmark_suite,
 )
@@ -85,6 +86,7 @@ __all__ = [
     "build_runs_rows",
     "evaluate_benchmark_dataset",
     "expand_benchmark_matrix",
+    "load_benchmark_dataset_with_filters",
     "load_benchmark_dataset_with_tags",
     "load_benchmark_dataset",
     "resolve_benchmark_strategy",

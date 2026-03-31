@@ -21,7 +21,8 @@ BENCH_QUESTIONS_FILE ?=
 BENCH_SELECTOR_ARGS = $(if $(strip $(BENCH_QUESTIONS_FILE)),--questions-file $(BENCH_QUESTIONS_FILE),$(if $(strip $(BENCH_EXPERIMENT)),--experiment $(BENCH_EXPERIMENT),$(if $(strip $(BENCH_PRESET)),--preset $(BENCH_PRESET),))) $(if $(strip $(BENCH_TARGET)),--target $(BENCH_TARGET),)
 BENCH_ANSWER_JUDGE_MODEL ?=
 BENCH_TAGS ?=
-BENCH_RESOURCE_ARGS = $(if $(strip $(BENCH_DB)),--db $(BENCH_DB),) $(if $(strip $(BENCH_GRAPH_DATASET)),--graph-dataset $(BENCH_GRAPH_DATASET),) $(if $(strip $(BENCH_ANSWER_JUDGE_MODEL)),--answer-judge-model $(BENCH_ANSWER_JUDGE_MODEL),) $(if $(strip $(BENCH_TAGS)),--tags $(BENCH_TAGS),)
+BENCH_CASE_ID ?=
+BENCH_RESOURCE_ARGS = $(if $(strip $(BENCH_DB)),--db $(BENCH_DB),) $(if $(strip $(BENCH_GRAPH_DATASET)),--graph-dataset $(BENCH_GRAPH_DATASET),) $(if $(strip $(BENCH_ANSWER_JUDGE_MODEL)),--answer-judge-model $(BENCH_ANSWER_JUDGE_MODEL),) $(if $(strip $(BENCH_TAGS)),--tags $(BENCH_TAGS),) $(if $(strip $(BENCH_CASE_ID)),--case-id $(BENCH_CASE_ID),)
 BENCH_ARGS ?=
 
 ROUTING_DB ?= output/Building-Architecture.db
