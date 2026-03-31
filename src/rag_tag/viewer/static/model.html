@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>RAGTAG IFC Model Viewer</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body class="viewer-page model-page">
+  <div class="app-shell model-app-shell">
+    <header class="topbar">
+      <div class="topbar-copy">
+        <p class="eyebrow">3D Model Viewer</p>
+        <div class="view-switch-row">
+          <h1>RAGTAG IFC Model Viewer</h1>
+          <nav class="view-switch" aria-label="Viewer pages">
+            <a class="view-switch-link" href="/">Graph</a>
+            <a class="view-switch-link active" href="/model" aria-current="page">
+              3D Model
+            </a>
+          </nav>
+        </div>
+        <p id="model-page-status" class="topbar-meta">
+          Loading the active IFC dataset...
+        </p>
+      </div>
+      <div class="topbar-actions">
+        <div id="recent-ifc-picker" class="recent-ifc-picker" hidden>
+          <label class="visually-hidden" for="recent-ifc-select">Recent IFCs</label>
+          <select id="recent-ifc-select" class="recent-ifc-select">
+            <option value="">Recent IFCs</option>
+          </select>
+          <button id="recent-ifc-open" class="secondary" type="button">
+            Open Recent
+          </button>
+        </div>
+        <input
+          id="ifc-upload-input"
+          class="visually-hidden"
+          type="file"
+          accept=".ifc"
+        />
+        <button id="ifc-upload-trigger" class="secondary" type="button">
+          Upload IFC
+        </button>
+        <div class="upload-status-stack">
+          <div id="ifc-upload-status" class="topbar-meta" aria-live="polite">
+            Upload an IFC to rebuild both the graph and 3D model views.
+          </div>
+          <div id="ifc-upload-progress-row" class="upload-progress-row" hidden>
+            <progress id="ifc-upload-progress" max="100" value="0"></progress>
+            <span id="ifc-upload-progress-value" class="upload-progress-value">0%</span>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <main class="workspace model-workspace">
+      <section id="model-stage" class="model-stage panel">
+        <div class="graph-toolbar" role="toolbar" aria-label="3D model controls">
+          <div class="graph-toolbar-row graph-toolbar-row-secondary">
+            <div
+              class="toolbar-group toolbar-group-chips"
+              role="group"
+              aria-label="3D side panel toggles"
+            >
+              <button
+                id="toggle-model-search-panel"
+                class="toggle chip-toggle active"
+                type="button"
+              >
+                Explorer: On
+              </button>
+              <button
+                id="toggle-model-inspector-panel"
+                class="toggle chip-toggle active"
+                type="button"
+              >
+                Inspector: On
+              </button>
+            </div>
+            <div id="model-toolbar-status" class="toolbar-status" aria-live="polite">
+              Preparing model viewer...
+            </div>
+          </div>
+        </div>
+        <div class="model-shell">
+          <div class="graph-utility-bar" aria-label="3D model tools">
+            <button
+              id="model-tool-fullscreen"
+              class="graph-tool-button"
+              type="button"
+              data-tooltip="Enter or exit fullscreen"
+              aria-label="Toggle model fullscreen"
+            >
+              <svg viewBox="0 0 16 16" aria-hidden="true">
+                <path
+                  d="M6 2.75H2.75V6M10 2.75h3.25V6M13.25 10v3.25H10M2.75 10v3.25H6"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="1.4"
+                />
+              </svg>
+            </button>
+            <button
+              id="model-tool-reset"
+              class="graph-tool-button"
+              type="button"
+              data-tooltip="Fit the IFC model back into view"
+              aria-label="Reset model view"
+            >
+              <svg viewBox="0 0 16 16" aria-hidden="true">
+                <path
+                  d="M8 2.5a5.5 5.5 0 1 0 5.03 3.28M8 2.5h3.5v3.5"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="1.4"
+                />
+              </svg>
+            </button>
+            <a
+              id="model-tool-how-to-use"
+              class="graph-tool-button"
+              href="/how-to-use"
+              data-tooltip="Open the viewer guide"
+              aria-label="Open viewer guide"
+            >
+              <svg viewBox="0 0 16 16" aria-hidden="true">
+                <path
+                  d="M4 3.25h6.5a1.25 1.25 0 0 1 1.25 1.25v8.25H5.25A1.25 1.25 0 0 0 4 14V3.25Zm0 0A1.25 1.25 0 0 0 2.75 4.5v7.75A1.75 1.75 0 0 0 4.5 14h8"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="1.2"
+                />
+              </svg>
+            </a>
+            <a
+              id="model-tool-graph"
+              class="graph-tool-button"
+              href="/"
+              data-tooltip="Open the paired graph view"
+              aria-label="Open graph view"
+            >
+              <svg viewBox="0 0 16 16" aria-hidden="true">
+                <circle cx="3.25" cy="8" r="1.35" fill="currentColor" />
+                <circle cx="12.75" cy="3.5" r="1.35" fill="currentColor" />
+                <circle cx="12.75" cy="12.5" r="1.35" fill="currentColor" />
+                <path
+                  d="M4.5 7.4 11.5 4.15M4.5 8.6l7 3.25"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="1.2"
+                />
+              </svg>
+            </a>
+          </div>
+          <div id="model-viewport" class="model-viewport" aria-label="IFC model viewport"></div>
+          <div id="model-empty-state" class="graph-empty-state" hidden>
+            <h3>No active IFC file available</h3>
+            <p>
+              The graph viewer can still run without a raw IFC file, but the 3D model
+              viewer needs one.
+            </p>
+            <p>
+              Start the viewer with <code>uv run rag-tag-viewer --ifc ...</code> or
+              upload an IFC from this page.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <aside id="model-right-sidebar" class="sidebar panel model-sidebar">
+        <div class="panel-heading compact sidebar-heading">
+          <div>
+            <h2>Side Panels</h2>
+            <p class="sidebar-meta">
+              Search IFC elements and inspect the currently selected model element.
+            </p>
+          </div>
+        </div>
+        <div class="sidebar-stack">
+          <section id="model-search-panel" class="sidebar-section sidebar-search-section">
+            <div class="sidebar-section-head">
+              <div>
+                <h3>Node Explorer</h3>
+                <p class="sidebar-section-meta">
+                  Search, filter, and focus IFC elements directly from the 3D model view.
+                </p>
+              </div>
+            </div>
+            <form id="model-search-form" class="search-form">
+              <div class="inline-form">
+                <input
+                  id="model-search-input"
+                  type="search"
+                  placeholder="Wall, room, GUID..."
+                />
+                <button type="submit">Search</button>
+              </div>
+              <div class="search-controls">
+                <label class="field-group">
+                  <span>Class</span>
+                  <select id="model-search-class-filter">
+                    <option value="">All classes</option>
+                  </select>
+                </label>
+                <label class="field-group">
+                  <span>Page Size</span>
+                  <select id="model-search-page-size">
+                    <option value="10">10</option>
+                    <option value="25" selected>25</option>
+                    <option value="50">50</option>
+                    <option value="100">100</option>
+                  </select>
+                </label>
+                <button id="model-search-reset" class="secondary" type="button">
+                  Reset
+                </button>
+              </div>
+            </form>
+            <div id="model-search-results-meta" class="muted">
+              Loading node browser...
+            </div>
+            <div class="search-pagination" aria-label="Search pagination">
+              <button id="model-search-prev-page" class="secondary" type="button">
+                Previous
+              </button>
+              <span id="model-search-page-status" class="search-page-status">
+                Page 1
+              </span>
+              <button id="model-search-next-page" class="secondary" type="button">
+                Next
+              </button>
+            </div>
+            <div id="model-search-results" class="search-results"></div>
+          </section>
+
+          <section
+            id="model-selection-panel"
+            class="sidebar-section sidebar-inspector-section is-empty"
+          >
+            <div class="sidebar-section-head">
+              <div>
+                <h3>Inspector</h3>
+                <p id="model-selection-caption" class="sidebar-section-meta">
+                  Select an IFC element in the model or from search to inspect its properties.
+                </p>
+              </div>
+            </div>
+            <pre id="model-selection-details" class="result-box inspector-empty">
+Select an IFC element in the model or from search to inspect its properties.
+            </pre>
+          </section>
+        </div>
+      </aside>
+    </main>
+
+    <section id="query-dock" class="bottom-dock panel">
+      <div class="dock-head">
+        <div>
+          <p class="eyebrow">Query Runner</p>
+          <p id="query-status" class="sidebar-section-meta">
+            Dataset: loading... | details:off
+          </p>
+        </div>
+        <div class="dock-actions query-toolbar-actions">
+          <button
+            id="query-tool-fullscreen"
+            class="graph-tool-button"
+            type="button"
+            data-tooltip="Enter or exit query fullscreen"
+            aria-label="Toggle query fullscreen"
+          >
+            <svg viewBox="0 0 16 16" aria-hidden="true">
+              <path
+                d="M6 2.75H2.75V6M10 2.75h3.25V6M13.25 10v3.25H10M2.75 10v3.25H6"
+                fill="none"
+                stroke="currentColor"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="1.4"
+              />
+            </svg>
+          </button>
+          <button
+            id="query-toggle-details"
+            type="button"
+            class="secondary"
+            aria-pressed="false"
+          >
+            Details: Off
+          </button>
+          <button id="query-copy-transcript" type="button" class="secondary">
+            Copy Transcript
+          </button>
+        </div>
+      </div>
+      <div id="query-result" class="dock-result query-empty" aria-live="polite">
+        No query yet.
+      </div>
+      <form id="query-form" class="query-bar">
+        <textarea
+          id="query-input"
+          rows="2"
+          placeholder="Ask a question about the active IFC dataset"
+        ></textarea>
+        <button type="submit">Run Query</button>
+      </form>
+    </section>
+  </div>
+
+  <script type="module" src="/static/model-viewer.js"></script>
+  <script type="module" src="/static/query-runner.js"></script>
+  <script type="module" src="/static/recent-ifc.js"></script>
+</body>
+</html>

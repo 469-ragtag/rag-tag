@@ -10,8 +10,10 @@ without changing public action names or response contracts.
 
 from __future__ import annotations
 
+import re
 from collections import deque
-from typing import Any
+from copy import deepcopy
+from typing import Any, Callable
 
 from pydantic_ai import RunContext
 from rapidfuzz import fuzz, process
@@ -28,6 +30,12 @@ from rag_tag.ifc_graph_tool import query_ifc_graph
 # Minimum rapidfuzz WRatio score (0-100) to accept a fuzzy class normalisation.
 _CLASS_FUZZY_THRESHOLD = 72
 _TYPE_INTENT_TERMS = ("type", "family", "template", "style", "kind")
+_LEGACY_SCAN_MAX_RESULTS = 50
+_LEGACY_NEIGHBOR_MAX_RESULTS = 25
+_LEGACY_BOUNDED_ACTION_HARD_CAP = 100
+_FUZZY_FIND_NODES_DEFAULT_RESULTS = 10
+_FUZZY_FIND_NODES_HARD_CAP = 25
+_QUERY_TERM_PATTERN = re.compile(r"[a-z0-9]+")
 _CONTAINER_CLASSES = {
     "IfcProject",
     "IfcSite",
@@ -40,6 +48,48 @@ _CONTAINER_CLASSES = {
 }
 _ZONE_CONTAINER_CLASSES = {"IfcZone", "IfcSpatialZone"}
 _CONTAINER_EDGE_RELATIONS = {"contains", "aggregates"}
+_GENERIC_CONTAINER_STOPWORDS = {
+    "a",
+    "an",
+    "any",
+    "at",
+    "by",
+    "for",
+    "in",
+    "inside",
+    "is",
+    "near",
+    "of",
+    "on",
+    "outside",
+    "that",
+    "the",
+    "this",
+    "to",
+}
+_GENERIC_CONTAINER_INTENTS = {
+    "IfcBuilding": {"building"},
+    "IfcSite": {"site"},
+    "IfcBuildingStorey": {"floor", "level", "storey"},
+    "IfcSpace": {"room", "space"},
+    "IfcProject": {"project"},
+}
+_SECONDARY_CONTAINER_CLASSES = {
+    "IfcProject",
+    "IfcSite",
+    "IfcBuilding",
+    "IfcBuildingStorey",
+    "IfcSpace",
+}
+_GENERIC_CONTAINER_CANONICAL_BOOST = 60.0
+_GENERIC_CONTAINER_SECONDARY_BOOST = 4.0
+_GENERIC_CONTAINER_PROXY_PENALTY = 18.0
+_RUN_GUARD_CACHE_KEY = "_graph_agent_guard"
+_STABLE_SET_STOP_WARNING = (
+    "A stable constrained set was already resolved in this run; reuse it instead "
+    "of reopening broad search unless ambiguity or truncation still blocks the "
+    "answer."
+)
 
 
 # ---------------------------------------------------------------------------
@@ -92,20 +142,262 @@ def _query_has_type_intent(query: str) -> bool:
     return any(term in query_terms for term in _TYPE_INTENT_TERMS)
 
 
+def _query_terms(query: str) -> list[str]:
+    """Return normalized alphanumeric query terms."""
+    return _QUERY_TERM_PATTERN.findall(query.lower())
+
+
+def _generic_container_target_class(query: str) -> str | None:
+    """Return the canonical IFC container class for generic container queries.
+
+    The bias is intentionally narrow: only apply when the query is essentially
+    a generic container noun phrase like "building" or "the floor", not when it
+    is a specific named phrase such as "server room" or "main building".
+    """
+    content_terms = {
+        term for term in _query_terms(query) if term not in _GENERIC_CONTAINER_STOPWORDS
+    }
+    if not content_terms:
+        return None
+
+    matched_targets = [
+        class_name
+        for class_name, aliases in _GENERIC_CONTAINER_INTENTS.items()
+        if content_terms.issubset(aliases)
+    ]
+    if len(matched_targets) != 1:
+        return None
+    return matched_targets[0]
+
+
+def _normalize_fuzzy_result_limit(
+    requested_limit: Any,
+    *,
+    param_name: str,
+) -> tuple[int | None, dict[str, Any] | None]:
+    """Return a validated, hard-capped fuzzy result limit."""
+    try:
+        parsed_limit = int(requested_limit)
+    except (TypeError, ValueError):
+        return None, make_error_envelope(
+            f"Invalid param: {param_name} must be an integer",
+            "invalid",
+        )
+    if parsed_limit < 1:
+        return None, make_error_envelope(
+            f"{param_name} must be >= 1",
+            "invalid",
+        )
+    return min(parsed_limit, _FUZZY_FIND_NODES_HARD_CAP), None
+
+
+def _guard_container(runtime: GraphRuntime | Any) -> dict[str, Any]:
+    """Return the mutable container that stores per-run guard state."""
+    if isinstance(runtime, GraphRuntime):
+        return runtime.caches
+    graph = get_networkx_graph(runtime)
+    return graph.graph
+
+
+def _get_run_guard(
+    runtime: GraphRuntime | Any,
+    *,
+    create: bool = False,
+) -> dict[str, Any] | None:
+    """Return the per-run guard state when available."""
+    container = _guard_container(runtime)
+    existing = container.get(_RUN_GUARD_CACHE_KEY)
+    if isinstance(existing, dict):
+        return existing
+    if not create:
+        return None
+
+    state = {
+        "broad_searches": {},
+        "stable_set_tools_used": [],
+    }
+    container[_RUN_GUARD_CACHE_KEY] = state
+    return state
+
+
+def _append_data_warnings(
+    envelope: dict[str, Any],
+    warnings: list[str],
+) -> dict[str, Any]:
+    """Append warning strings to a successful tool envelope."""
+    if envelope.get("status") != "ok":
+        return envelope
+    data = envelope.get("data")
+    if not isinstance(data, dict):
+        return envelope
+
+    existing = data.get("warnings")
+    merged: list[str] = []
+    if isinstance(existing, list):
+        merged.extend(str(item) for item in existing if str(item).strip())
+    elif isinstance(existing, str) and existing.strip():
+        merged.append(existing.strip())
+
+    for warning in warnings:
+        if warning not in merged:
+            merged.append(warning)
+
+    if merged:
+        data["warnings"] = merged
+    return envelope
+
+
+def _record_broad_search(
+    runtime: GraphRuntime | Any,
+    *,
+    key: tuple[object, ...],
+    response: dict[str, Any],
+    metadata: dict[str, Any],
+) -> None:
+    """Store the latest broad-search response for duplicate reuse."""
+    if response.get("status") != "ok":
+        return
+    guard = _get_run_guard(runtime, create=True)
+    if guard is None:
+        return
+    broad_searches = guard.setdefault("broad_searches", {})
+    broad_searches[key] = {
+        "response": deepcopy(response),
+        "metadata": dict(metadata),
+        "reuse_count": 0,
+    }
+
+
+def _reuse_broad_search(
+    runtime: GraphRuntime | Any,
+    *,
+    key: tuple[object, ...],
+    requested_metadata: dict[str, Any],
+    warning: str,
+    should_reuse: Callable[[dict[str, Any], dict[str, Any]], bool],
+) -> dict[str, Any] | None:
+    """Return a warned cached response when a duplicate broad search should reuse."""
+    guard = _get_run_guard(runtime)
+    if guard is None:
+        return None
+
+    broad_searches = guard.get("broad_searches")
+    if not isinstance(broad_searches, dict):
+        return None
+
+    cached = broad_searches.get(key)
+    if not isinstance(cached, dict):
+        return None
+
+    metadata = cached.get("metadata")
+    if not isinstance(metadata, dict) or not should_reuse(metadata, requested_metadata):
+        return None
+
+    cached["reuse_count"] = int(cached.get("reuse_count", 0)) + 1
+    reused = deepcopy(cached.get("response"))
+    warnings = [warning]
+    stable_tools = guard.get("stable_set_tools_used")
+    if isinstance(stable_tools, list) and stable_tools:
+        warnings.append(_STABLE_SET_STOP_WARNING)
+    return _append_data_warnings(reused, warnings)
+
+
+def _mark_stable_set_tool(
+    runtime: GraphRuntime | Any,
+    *,
+    tool_name: str,
+) -> None:
+    """Record deterministic set tools that often signal a stopping point."""
+    guard = _get_run_guard(runtime, create=True)
+    if guard is None:
+        return
+    stable_tools = guard.setdefault("stable_set_tools_used", [])
+    if tool_name not in stable_tools:
+        stable_tools.append(tool_name)
+
+
+def _has_complete_non_empty_items(
+    envelope: dict[str, Any],
+    *,
+    items_key: str,
+) -> bool:
+    """Return True when a successful bounded result contains a full non-empty set."""
+    if envelope.get("status") != "ok":
+        return False
+    data = envelope.get("data")
+    if not isinstance(data, dict):
+        return False
+    if bool(data.get("truncated")):
+        return False
+    items = data.get(items_key)
+    return isinstance(items, list) and len(items) > 0
+
+
+def _reuse_unconditionally(_cached: dict[str, Any], _requested: dict[str, Any]) -> bool:
+    """Return True for duplicate searches that should always reuse prior results."""
+    return True
+
+
+def _reuse_when_not_expanding(
+    cached: dict[str, Any],
+    requested: dict[str, Any],
+) -> bool:
+    """Reuse when the new call does not widen a prior bounded search."""
+    cached_limit = int(cached.get("limit") or 0)
+    requested_limit = int(requested.get("limit") or 0)
+    cached_depth = int(cached.get("depth") or 0)
+    requested_depth = int(requested.get("depth") or 0)
+    cached_truncated = bool(cached.get("truncated"))
+
+    if requested_depth > cached_depth:
+        return False
+    if cached_truncated and requested_limit > cached_limit:
+        return False
+    return requested_limit <= cached_limit or not cached_truncated
+
+
 def _fuzzy_find_nodes_impl(
     runtime: GraphRuntime,
     query: str,
     class_filter: str | None = None,
-    top_k: int = 10,
+    top_k: int = _FUZZY_FIND_NODES_DEFAULT_RESULTS,
     min_score: float = 50.0,
 ) -> dict[str, Any]:
     """Score nodes by fuzzy-matching query against label, ObjectType, Description.
 
     Returns a standard envelope dict (status/data/error).
     """
+    bounded_top_k, error = _normalize_fuzzy_result_limit(top_k, param_name="top_k")
+    if error is not None:
+        return error
+
+    if generic_container_target := (
+        _generic_container_target_class(query) if class_filter is None else None
+    ):
+        reused = _reuse_broad_search(
+            runtime,
+            key=("fuzzy_find_nodes", "generic_container", generic_container_target),
+            requested_metadata={"limit": bounded_top_k},
+            warning=(
+                "Reused the prior canonical container anchor search. Prefer the "
+                "existing exact container ID instead of repeating broad fuzzy "
+                "resolution."
+            ),
+            should_reuse=_reuse_unconditionally,
+        )
+        if reused is not None:
+            reused_data = reused.get("data")
+            if isinstance(reused_data, dict):
+                reused_data["query"] = query
+                reused_data["class_filter"] = class_filter
+            return reused
+
     G = get_networkx_graph(runtime)
     results: list[dict[str, Any]] = []
     query_has_type_intent = _query_has_type_intent(query)
+    generic_container_target = (
+        generic_container_target if class_filter is None else None
+    )
 
     for node_id, data in G.nodes(data=True):
         if class_filter is not None:
@@ -142,6 +434,15 @@ def _fuzzy_find_nodes_impl(
             else:
                 adjusted_score -= 8.0
 
+        if generic_container_target is not None:
+            if class_name == generic_container_target:
+                adjusted_score += _GENERIC_CONTAINER_CANONICAL_BOOST
+            elif class_name in _SECONDARY_CONTAINER_CLASSES:
+                adjusted_score += _GENERIC_CONTAINER_SECONDARY_BOOST
+
+            if class_name == "IfcBuildingElementProxy":
+                adjusted_score -= _GENERIC_CONTAINER_PROXY_PENALTY
+
         if adjusted_score >= min_score:
             results.append(
                 {
@@ -154,24 +455,49 @@ def _fuzzy_find_nodes_impl(
                 }
             )
 
-    results.sort(key=lambda x: x["score"], reverse=True)
-    visible_results = results[:top_k]
+    results.sort(
+        key=lambda item: (
+            -float(item["score"]),
+            str(item.get("label") or ""),
+            str(item["id"]),
+        )
+    )
+    visible_results = results[:bounded_top_k]
+    total_found = len(results)
+    truncated = total_found > len(visible_results)
+    truncation_reason = None
+    if truncated:
+        truncation_reason = (
+            f"Results truncated to {bounded_top_k} item(s) to stay bounded."
+        )
     evidence = collect_evidence(
         visible_results,
         source_tool="fuzzy_find_nodes",
         match_reason_builder=lambda item: f"fuzzy_score={item['score']}",
     )
-    return {
+    response = {
         "status": "ok",
         "data": {
             "query": query,
             "class_filter": class_filter,
             "matches": visible_results,
-            "total": len(results),
+            "total": total_found,
+            "total_found": total_found,
+            "returned_count": len(visible_results),
+            "truncated": truncated,
+            "truncation_reason": truncation_reason,
             "evidence": evidence,
         },
         "error": None,
     }
+    if generic_container_target is not None:
+        _record_broad_search(
+            runtime,
+            key=("fuzzy_find_nodes", "generic_container", generic_container_target),
+            response=response,
+            metadata={"limit": bounded_top_k, "truncated": truncated},
+        )
+    return response
 
 
 def _find_container_elements_excluding_impl(
@@ -179,6 +505,7 @@ def _find_container_elements_excluding_impl(
     container_id: str,
     exclude_container_ids: list[str] | None = None,
     depth: int = 4,
+    max_results: int = _LEGACY_SCAN_MAX_RESULTS,
 ) -> dict[str, Any]:
     """Return non-container members of one container minus excluded containers."""
     graph = get_networkx_graph(runtime)
@@ -203,6 +530,23 @@ def _find_container_elements_excluding_impl(
             "invalid",
         )
 
+    try:
+        requested_max_results = int(max_results)
+    except (TypeError, ValueError):
+        return make_error_envelope(
+            "Invalid param: max_results must be an integer",
+            "invalid",
+        )
+    if requested_max_results < 1:
+        return make_error_envelope(
+            "max_results must be >= 1",
+            "invalid",
+        )
+    bounded_max_results = min(
+        requested_max_results,
+        _LEGACY_BOUNDED_ACTION_HARD_CAP,
+    )
+
     included = _collect_container_descendants(graph, [container_id], depth=depth)
     excluded = _collect_container_descendants(
         graph,
@@ -216,6 +560,8 @@ def _find_container_elements_excluding_impl(
             str(node_id),
         ),
     )
+    total_found = len(element_ids)
+    visible_element_ids = element_ids[:bounded_max_results]
 
     elements = [
         {
@@ -227,16 +573,27 @@ def _find_container_elements_excluding_impl(
             ),
             "payload": None,
         }
-        for node_id in element_ids
+        for node_id in visible_element_ids
     ]
 
-    return {
+    truncated = total_found > len(elements)
+    truncation_reason = None
+    if truncated:
+        truncation_reason = (
+            f"Results truncated to {bounded_max_results} item(s) to stay bounded."
+        )
+
+    response = {
         "status": "ok",
         "data": {
             "container_id": container_id,
             "exclude_container_ids": exclude_container_ids,
-            "count": len(element_ids),
+            "count": total_found,
             "elements": elements,
+            "total_found": total_found,
+            "returned_count": len(elements),
+            "truncated": truncated,
+            "truncation_reason": truncation_reason,
             "evidence": collect_evidence(
                 elements,
                 source_tool="find_container_elements_excluding",
@@ -244,6 +601,7 @@ def _find_container_elements_excluding_impl(
         },
         "error": None,
     }
+    return response
 
 
 def _collect_container_descendants(
@@ -314,11 +672,14 @@ def register_graph_tools(agent: Any) -> None:
         ctx: RunContext[GraphRuntime],
         query: str,
         class_filter: str | None = None,
-        top_k: int = 10,
+        top_k: int = _FUZZY_FIND_NODES_DEFAULT_RESULTS,
     ) -> dict[str, Any]:
         """Fuzzy-search for graph nodes by matching query against common text fields."""
+        bounded_top_k, error = _normalize_fuzzy_result_limit(top_k, param_name="top_k")
+        if error is not None:
+            return error
         return _fuzzy_find_nodes_impl(
-            ctx.deps, query, class_filter=class_filter, top_k=top_k
+            ctx.deps, query, class_filter=class_filter, top_k=bounded_top_k
         )
 
     @agent.tool
@@ -326,12 +687,14 @@ def register_graph_tools(agent: Any) -> None:
         ctx: RunContext[GraphRuntime],
         class_: str | None = None,
         property_filters: dict[str, Any] | None = None,
+        max_results: int = _LEGACY_SCAN_MAX_RESULTS,
     ) -> dict[str, Any]:
         """Find nodes in the IFC graph by class and/or property filters.
 
         Multi-word class_ input is treated as a descriptive query and routed to
         fuzzy_find_nodes. class_ is fuzzy-normalised against classes present in
-        the graph before querying.
+        the graph before querying. Returns a bounded candidate set and may mark
+        `data.truncated=true` when more matches exist.
 
         ``property_filters`` supports two key formats:
         - Flat key (e.g. ``{"Name": "Wall A"}``): matched against the node's
@@ -345,7 +708,17 @@ def register_graph_tools(agent: Any) -> None:
         """
         # Multi-word input means descriptive name, not IFC class.
         if class_ and " " in class_.strip():
-            return _fuzzy_find_nodes_impl(ctx.deps, class_, top_k=20)
+            bounded_max_results, error = _normalize_fuzzy_result_limit(
+                max_results,
+                param_name="max_results",
+            )
+            if error is not None:
+                return error
+            return _fuzzy_find_nodes_impl(
+                ctx.deps,
+                class_,
+                top_k=bounded_max_results,
+            )
 
         normalized_class = class_
         if class_:
@@ -358,6 +731,7 @@ def register_graph_tools(agent: Any) -> None:
             params["class"] = normalized_class
         if property_filters:
             params["property_filters"] = property_filters
+        params["max_results"] = max_results
 
         result = query_ifc_graph(ctx.deps, "find_nodes", params)
 
@@ -385,17 +759,61 @@ def register_graph_tools(agent: Any) -> None:
         start: str,
         relation: str | None = None,
         depth: int = 1,
+        max_results: int = _LEGACY_NEIGHBOR_MAX_RESULTS,
     ) -> dict[str, Any]:
         """Traverse the graph from a starting node following edges.
 
         For location/storey lookup:
         - relation='contains' to move from storey/space -> contained elements
         - relation='contained_in' to move from element -> containing structure
+        Results are bounded and may be partial when `data.truncated=true`.
         """
-        params: dict[str, Any] = {"start": start, "depth": depth}
+        params: dict[str, Any] = {
+            "start": start,
+            "depth": depth,
+            "max_results": max_results,
+        }
         if relation:
             params["relation"] = relation
-        return query_ifc_graph(ctx.deps, "traverse", params)
+
+        graph = get_networkx_graph(ctx.deps)
+        start_data = graph.nodes[start] if start in graph else {}
+        start_class = str(start_data.get("class_") or "")
+        relation_name = normalize_relation_name(relation) if relation else None
+        broad_container_relation = relation_name in {
+            None,
+            "contains",
+            "contained_in",
+            "aggregates",
+        }
+        if start_class in _SECONDARY_CONTAINER_CLASSES and broad_container_relation:
+            reused = _reuse_broad_search(
+                ctx.deps,
+                key=("traverse", start, relation_name or "*"),
+                requested_metadata={"depth": depth, "limit": max_results},
+                warning=(
+                    "Reused the prior broad containment traversal. Prefer the "
+                    "existing evidence, exact IDs, or a narrower follow-up instead "
+                    "of repeating the same container traversal."
+                ),
+                should_reuse=_reuse_when_not_expanding,
+            )
+            if reused is not None:
+                return reused
+
+        result = query_ifc_graph(ctx.deps, "traverse", params)
+        if start_class in _SECONDARY_CONTAINER_CLASSES and broad_container_relation:
+            _record_broad_search(
+                ctx.deps,
+                key=("traverse", start, relation_name or "*"),
+                response=result,
+                metadata={
+                    "depth": depth,
+                    "limit": max_results,
+                    "truncated": bool((result.get("data") or {}).get("truncated")),
+                },
+            )
+        return result
 
     @agent.tool
     def spatial_query(
@@ -403,9 +821,14 @@ def register_graph_tools(agent: Any) -> None:
         near: str,
         max_distance: float,
         class_: str | None = None,
+        max_results: int = _LEGACY_SCAN_MAX_RESULTS,
     ) -> dict[str, Any]:
-        """Find elements within a spatial distance of a reference element."""
-        params: dict[str, Any] = {"near": near, "max_distance": max_distance}
+        """Find bounded nearby elements within a spatial distance."""
+        params: dict[str, Any] = {
+            "near": near,
+            "max_distance": max_distance,
+            "max_results": max_results,
+        }
         if class_:
             params["class"] = class_
         return query_ifc_graph(ctx.deps, "spatial_query", params)
@@ -414,9 +837,55 @@ def register_graph_tools(agent: Any) -> None:
     def get_elements_in_storey(
         ctx: RunContext[GraphRuntime],
         storey: str,
+        max_results: int = _LEGACY_SCAN_MAX_RESULTS,
     ) -> dict[str, Any]:
-        """Get all non-container elements in a specific storey/level."""
-        return query_ifc_graph(ctx.deps, "get_elements_in_storey", {"storey": storey})
+        """Get a bounded list of non-container elements in a specific storey/level."""
+        return query_ifc_graph(
+            ctx.deps,
+            "get_elements_in_storey",
+            {"storey": storey, "max_results": max_results},
+        )
+
+    @agent.tool
+    def find_elements_inside_footprint(
+        ctx: RunContext[GraphRuntime],
+        container: str,
+        class_: str | None = None,
+        max_results: int = _LEGACY_SCAN_MAX_RESULTS,
+    ) -> dict[str, Any]:
+        """Find bounded elements whose plan point falls inside a container footprint.
+
+        Use this for footprint/plan-area questions such as:
+        - elements inside a room footprint
+        - objects within a storey/building plan area
+        """
+        params: dict[str, Any] = {
+            "container": container,
+            "max_results": max_results,
+        }
+        if class_ is not None:
+            params["class"] = class_
+        return query_ifc_graph(ctx.deps, "find_elements_inside_footprint", params)
+
+    @agent.tool
+    def find_same_storey_elements(
+        ctx: RunContext[GraphRuntime],
+        anchor: str,
+        class_: str | None = None,
+        max_results: int = _LEGACY_SCAN_MAX_RESULTS,
+    ) -> dict[str, Any]:
+        """Find bounded non-container elements on the same resolved storey.
+
+        Prefer this over broad topology or distance searches when the user asks
+        for elements on the same floor/storey as an anchor object or room.
+        """
+        params: dict[str, Any] = {
+            "anchor": anchor,
+            "max_results": max_results,
+        }
+        if class_ is not None:
+            params["class"] = class_
+        return query_ifc_graph(ctx.deps, "find_same_storey_elements", params)
 
     @agent.tool
     def find_container_elements_excluding(
@@ -424,6 +893,7 @@ def register_graph_tools(agent: Any) -> None:
         container_id: str,
         exclude_container_ids: list[str] | None = None,
         depth: int = 4,
+        max_results: int = _LEGACY_SCAN_MAX_RESULTS,
     ) -> dict[str, Any]:
         """List elements inside one container while excluding other containers.
 
@@ -431,29 +901,165 @@ def register_graph_tools(agent: Any) -> None:
         - elements in a building but not in a given storey
         - elements in a space/zone/building excluding another container subset
         """
-        return _find_container_elements_excluding_impl(
+        reused = _reuse_broad_search(
+            ctx.deps,
+            key=(
+                "find_container_elements_excluding",
+                container_id,
+                tuple(sorted(exclude_container_ids or [])),
+            ),
+            requested_metadata={"depth": depth, "limit": max_results},
+            warning=(
+                "Reused the prior broad container-difference result. Prefer the "
+                "existing candidate set or narrow the container scope before "
+                "repeating the same exclusion scan."
+            ),
+            should_reuse=_reuse_when_not_expanding,
+        )
+        if reused is not None:
+            return reused
+
+        result = _find_container_elements_excluding_impl(
             ctx.deps,
             container_id,
             exclude_container_ids=exclude_container_ids,
             depth=depth,
+            max_results=max_results,
         )
+        _record_broad_search(
+            ctx.deps,
+            key=(
+                "find_container_elements_excluding",
+                container_id,
+                tuple(sorted(exclude_container_ids or [])),
+            ),
+            response=result,
+            metadata={
+                "depth": depth,
+                "limit": max_results,
+                "truncated": bool((result.get("data") or {}).get("truncated")),
+            },
+        )
+        return result
 
     @agent.tool
     def find_elements_by_class(
         ctx: RunContext[GraphRuntime],
         class_: str,
+        max_results: int = _LEGACY_SCAN_MAX_RESULTS,
     ) -> dict[str, Any]:
-        """Find all elements of a specific IFC class."""
-        return query_ifc_graph(ctx.deps, "find_elements_by_class", {"class": class_})
+        """Find a bounded set of elements of a specific IFC class."""
+        normalized_class = class_.strip()
+        reused = _reuse_broad_search(
+            ctx.deps,
+            key=("find_elements_by_class", normalized_class.lower()),
+            requested_metadata={"limit": max_results},
+            warning=(
+                "Reused the prior broad class scan. Prefer the existing candidate "
+                "set or add narrower evidence before repeating the same class-wide "
+                "search."
+            ),
+            should_reuse=_reuse_when_not_expanding,
+        )
+        if reused is not None:
+            return reused
+
+        result = query_ifc_graph(
+            ctx.deps,
+            "find_elements_by_class",
+            {"class": class_, "max_results": max_results},
+        )
+        _record_broad_search(
+            ctx.deps,
+            key=("find_elements_by_class", normalized_class.lower()),
+            response=result,
+            metadata={
+                "limit": max_results,
+                "truncated": bool((result.get("data") or {}).get("truncated")),
+            },
+        )
+        return result
+
+    @agent.tool
+    def resolve_element_set(
+        ctx: RunContext[GraphRuntime],
+        query: str,
+        class_filter: str | None = None,
+        match_mode: str = "set",
+        max_results: int = _LEGACY_NEIGHBOR_MAX_RESULTS,
+    ) -> dict[str, Any]:
+        """Resolve one deterministic constrained occurrence set for later graph steps.
+
+        Use this for descriptive subtype/family anchors like `exterior curtain wall`,
+        `round concrete column`, or `tree` when the overall question is graph-shaped
+        but the anchor set itself can still be found deterministically.
+
+        Prefer `match_mode='singular'` when the wording truly targets one specific
+        occurrence. If that returns ambiguity, narrow instead of silently fanning
+        out. Prefer `match_mode='set'` when the wording is really asking about a
+        constrained family/set of occurrences.
+        """
+        normalized_class_filter = class_filter
+        if class_filter:
+            best, _score = _normalize_class_fuzzy(class_filter, ctx.deps)
+            if best is not None:
+                normalized_class_filter = best
+
+        result = query_ifc_graph(
+            ctx.deps,
+            "resolve_element_set",
+            {
+                "query": query,
+                "class": normalized_class_filter,
+                "match_mode": match_mode,
+                "max_results": max_results,
+            },
+        )
+        if match_mode == "set" and _has_complete_non_empty_items(
+            result,
+            items_key="matches",
+        ):
+            _mark_stable_set_tool(ctx.deps, tool_name="resolve_element_set")
+        return result
+
+    @agent.tool
+    def relate_element_set(
+        ctx: RunContext[GraphRuntime],
+        anchor_ids: list[str],
+        relation: str,
+        max_results: int = _LEGACY_NEIGHBOR_MAX_RESULTS,
+    ) -> dict[str, Any]:
+        """Compute one bounded relation-union over an already resolved anchor set.
+
+        Prefer this over repeating `get_adjacent_elements`,
+        `get_topology_neighbors`, `get_intersections_3d`, or vertical helpers for
+        each anchor separately when the question is about a constrained set such as
+        `adjacent to these exterior curtain walls`.
+        """
+        result = query_ifc_graph(
+            ctx.deps,
+            "relate_element_set",
+            {
+                "anchor_ids": anchor_ids,
+                "relation": relation,
+                "max_results": max_results,
+            },
+        )
+        if _has_complete_non_empty_items(result, items_key="results"):
+            _mark_stable_set_tool(ctx.deps, tool_name="relate_element_set")
+        return result
 
     @agent.tool
     def get_adjacent_elements(
         ctx: RunContext[GraphRuntime],
         element_id: str,
+        max_results: int = _LEGACY_NEIGHBOR_MAX_RESULTS,
     ) -> dict[str, Any]:
-        """Get elements spatially adjacent to a given element."""
+        """Get a bounded adjacency set for a given element."""
         return query_ifc_graph(
-            ctx.deps, "get_adjacent_elements", {"element_id": element_id}
+            ctx.deps,
+            "get_adjacent_elements",
+            {"element_id": element_id, "max_results": max_results},
         )
 
     @agent.tool
@@ -461,27 +1067,38 @@ def register_graph_tools(agent: Any) -> None:
         ctx: RunContext[GraphRuntime],
         element_id: str,
         relation: str,
+        max_results: int = _LEGACY_NEIGHBOR_MAX_RESULTS,
     ) -> dict[str, Any]:
         """Get topology neighbors for one relation.
 
-        relation must be one of: above, below, overlaps_xy, intersects_bbox,
-        intersects_3d, touches_surface, space_bounded_by, bounds_space,
-        path_connected_to.
+        relation must be one of: above, below, aligned_with, overlaps_xy,
+        intersects_bbox, intersects_3d, touches_surface, space_bounded_by,
+        bounds_space, shares_boundary_with, path_connected_to. Returns a
+        bounded candidate list. Depending on the graph-build overlap policy,
+        `overlaps_xy` may legitimately return no neighbors even when vertical
+        `above` / `below` edges exist.
         """
         return query_ifc_graph(
             ctx.deps,
             "get_topology_neighbors",
-            {"element_id": element_id, "relation": relation},
+            {
+                "element_id": element_id,
+                "relation": relation,
+                "max_results": max_results,
+            },
         )
 
     @agent.tool
     def get_intersections_3d(
         ctx: RunContext[GraphRuntime],
         element_id: str,
+        max_results: int = _LEGACY_NEIGHBOR_MAX_RESULTS,
     ) -> dict[str, Any]:
-        """Get mesh-informed 3D intersection neighbors for an element."""
+        """Get a bounded mesh-informed 3D intersection set for an element."""
         return query_ifc_graph(
-            ctx.deps, "get_intersections_3d", {"element_id": element_id}
+            ctx.deps,
+            "get_intersections_3d",
+            {"element_id": element_id, "max_results": max_results},
         )
 
     @agent.tool
@@ -489,9 +1106,13 @@ def register_graph_tools(agent: Any) -> None:
         ctx: RunContext[GraphRuntime],
         element_id: str,
         max_gap: float | None = None,
+        max_results: int = _LEGACY_NEIGHBOR_MAX_RESULTS,
     ) -> dict[str, Any]:
-        """Find elements above a reference element."""
-        params: dict[str, Any] = {"element_id": element_id}
+        """Find a bounded list of elements above a reference element."""
+        params: dict[str, Any] = {
+            "element_id": element_id,
+            "max_results": max_results,
+        }
         if max_gap is not None:
             params["max_gap"] = max_gap
         return query_ifc_graph(ctx.deps, "find_elements_above", params)
@@ -501,9 +1122,13 @@ def register_graph_tools(agent: Any) -> None:
         ctx: RunContext[GraphRuntime],
         element_id: str,
         max_gap: float | None = None,
+        max_results: int = _LEGACY_NEIGHBOR_MAX_RESULTS,
     ) -> dict[str, Any]:
-        """Find elements below a reference element."""
-        params: dict[str, Any] = {"element_id": element_id}
+        """Find a bounded list of elements below a reference element."""
+        params: dict[str, Any] = {
+            "element_id": element_id,
+            "max_results": max_results,
+        }
         if max_gap is not None:
             params["max_gap"] = max_gap
         return query_ifc_graph(ctx.deps, "find_elements_below", params)
@@ -648,7 +1273,9 @@ def register_graph_tools(agent: Any) -> None:
         }
         if field is not None:
             params["field"] = field
-        return query_ifc_graph(ctx.deps, "aggregate_elements", params)
+        result = query_ifc_graph(ctx.deps, "aggregate_elements", params)
+        _mark_stable_set_tool(ctx.deps, tool_name="aggregate_elements")
+        return result
 
     @agent.tool
     def group_elements_by_property(
@@ -662,7 +1289,7 @@ def register_graph_tools(agent: Any) -> None:
         Use this after graph discovery when the user asks for a deterministic
         breakdown by level, type, property, or quantity value.
         """
-        return query_ifc_graph(
+        result = query_ifc_graph(
             ctx.deps,
             "group_elements_by_property",
             {
@@ -671,3 +1298,5 @@ def register_graph_tools(agent: Any) -> None:
                 "max_groups": max_groups,
             },
         )
+        _mark_stable_set_tool(ctx.deps, tool_name="group_elements_by_property")
+        return result

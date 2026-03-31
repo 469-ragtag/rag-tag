@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import inspect
 import logging
+from dataclasses import dataclass
 from pathlib import Path
 
 import ifcopenshell
@@ -22,6 +23,16 @@ class InvalidIfcError(ValueError):
     """Raised when an IFC file fails validation."""
 
 
+@dataclass(slots=True, frozen=True)
+class ElementGeometry:
+    """Geometry derived from a single shape extraction pass."""
+
+    vertices: np.ndarray | None
+    faces: np.ndarray | None
+    centroid: np.ndarray | None
+    bbox: tuple[np.ndarray, np.ndarray] | None
+
+
 def _build_geom_settings() -> ifcopenshell.geom.settings:
     settings = ifcopenshell.geom.settings()
     # Ensure coordinates are in model/world coordinates.
@@ -35,11 +46,24 @@ def _extract_shape_mesh(
     element, settings: ifcopenshell.geom.settings
 ) -> tuple[np.ndarray | None, np.ndarray | None]:
     """Return mesh vertices and triangular faces for an element."""
+    geometry = get_element_geometry_data(element, settings)
+    return geometry.vertices, geometry.faces
+
+
+def get_element_geometry_data(
+    element, settings: ifcopenshell.geom.settings
+) -> ElementGeometry:
+    """Return mesh, centroid, and bounding box from one shape build."""
     try:
         shape = ifcopenshell.geom.create_shape(settings, element)
     except Exception as exc:
         LOG.debug("Mesh extraction failed for %s: %s", element.is_a(), exc)
-        return None, None
+        return ElementGeometry(
+            vertices=None,
+            faces=None,
+            centroid=None,
+            bbox=None,
+        )
 
     try:
         verts = np.asarray(shape.geometry.verts, dtype=float).reshape(-1, 3)
@@ -59,7 +83,23 @@ def _extract_shape_mesh(
         verts = None
     if faces is not None and faces.size == 0:
         faces = None
-    return verts, faces
+    if verts is None:
+        return ElementGeometry(
+            vertices=None,
+            faces=faces,
+            centroid=None,
+            bbox=None,
+        )
+
+    centroid = verts.mean(axis=0)
+    min_xyz = verts.min(axis=0)
+    max_xyz = verts.max(axis=0)
+    return ElementGeometry(
+        vertices=verts,
+        faces=faces,
+        centroid=centroid,
+        bbox=(min_xyz, max_xyz),
+    )
 
 
 def _cross_2d(o: np.ndarray, a: np.ndarray, b: np.ndarray) -> float:
@@ -189,15 +229,7 @@ def get_element_centroid(
     Returns the centroid of an IFC element's geometry as (x, y, z).
     If geometry cannot be extracted, returns (0.0, 0.0, 0.0).
     """
-    try:
-        shape = ifcopenshell.geom.create_shape(settings, element)
-        verts = np.array(shape.geometry.verts, dtype=float).reshape(-1, 3)
-        if verts.size == 0:
-            return None
-        return verts.mean(axis=0)
-    except Exception as exc:
-        LOG.debug("Centroid extraction failed for %s: %s", element.is_a(), exc)
-        return None
+    return get_element_geometry_data(element, settings).centroid
 
 
 def get_element_bounding_box(
@@ -207,17 +239,7 @@ def get_element_bounding_box(
     Returns the axis-aligned bounding box of an IFC element as (min_xyz, max_xyz).
     If geometry cannot be extracted, returns ((0,0,0), (0,0,0)).
     """
-    try:
-        shape = ifcopenshell.geom.create_shape(settings, element)
-        verts = np.array(shape.geometry.verts, dtype=float).reshape(-1, 3)
-        if verts.size == 0:
-            return None
-        min_xyz = verts.min(axis=0)
-        max_xyz = verts.max(axis=0)
-        return min_xyz, max_xyz
-    except Exception as exc:
-        LOG.debug("BBox extraction failed for %s: %s", element.is_a(), exc)
-        return None
+    return get_element_geometry_data(element, settings).bbox
 
 
 def get_element_mesh(
@@ -261,18 +283,8 @@ def get_element_geometry(
     ``centroid`` is shape ``(3,)`` and ``bbox`` is a 2-tuple of shape-``(3,)``
     arrays.  Both keys are present even on failure (set to ``None``).
     """
-    try:
-        shape = ifcopenshell.geom.create_shape(settings, element)
-        verts = np.asarray(shape.geometry.verts, dtype=float).reshape(-1, 3)
-        if verts.size == 0:
-            return {"centroid": None, "bbox": None}
-        centroid = verts.mean(axis=0)
-        min_xyz = verts.min(axis=0)
-        max_xyz = verts.max(axis=0)
-        return {"centroid": centroid, "bbox": (min_xyz, max_xyz)}
-    except Exception as exc:
-        LOG.debug("Geometry extraction failed for %s: %s", element.is_a(), exc)
-        return {"centroid": None, "bbox": None}
+    geometry = get_element_geometry_data(element, settings)
+    return {"centroid": geometry.centroid, "bbox": geometry.bbox}
 
 
 def get_ifc_model(ifc_path: Path):

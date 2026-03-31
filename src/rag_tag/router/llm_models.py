@@ -78,6 +78,7 @@ class LlmRouteResponse(BaseModel):
     level_like: str | None = None
     predefined_type: str | None = None
     type_name: str | None = None
+    text_match: str | None = None
     property_filters: list[LlmValueFilter] = Field(default_factory=list)
     quantity_filters: list[LlmValueFilter] = Field(default_factory=list)
     aggregate_op: LlmAggregateOp | None = None
@@ -130,7 +131,9 @@ class LlmRouteResponse(BaseModel):
             return "Ifc"
         return "Ifc" + core[0].upper() + core[1:]
 
-    @field_validator("level_like", "predefined_type", "type_name", mode="before")
+    @field_validator(
+        "level_like", "predefined_type", "type_name", "text_match", mode="before"
+    )
     @classmethod
     def _normalize_optional_string(cls, value: object) -> str | None:
         if value is None:

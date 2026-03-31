@@ -1,0 +1,15 @@
+{
+  "name": "rag-tag-viewer-frontend",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:model": "node scripts/build-model.mjs"
+  },
+  "dependencies": {
+    "@thatopen/components": "^3.3.3",
+    "@thatopen/components-front": "^3.3.3",
+    "esbuild": "^0.27.4",
+    "three": "^0.183.2",
+    "web-ifc": "^0.0.77"
+  }
+}

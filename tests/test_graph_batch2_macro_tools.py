@@ -242,6 +242,64 @@ def test_trace_distribution_network_orders_same_depth_results_deterministically(
     ]
 
 
+def test_trace_distribution_network_exposes_truncation_metadata() -> None:
+    graph = nx.MultiDiGraph()
+    graph.add_node(
+        "Element::root",
+        label="Root",
+        class_="IfcPipeSegment",
+        properties={"GlobalId": "ROOT"},
+    )
+    graph.add_node(
+        "Element::zulu",
+        label="Zulu branch",
+        class_="IfcPipeSegment",
+        properties={"GlobalId": "ZULU"},
+    )
+    graph.add_node(
+        "Element::alpha",
+        label="Alpha branch",
+        class_="IfcPipeSegment",
+        properties={"GlobalId": "ALPHA"},
+    )
+    graph.add_edge(
+        "Element::root",
+        "Element::zulu",
+        relation="ifc_connected_to",
+        source="ifc",
+    )
+    graph.add_edge(
+        "Element::root",
+        "Element::alpha",
+        relation="ifc_connected_to",
+        source="ifc",
+    )
+
+    result = query_ifc_graph(
+        graph,
+        "trace_distribution_network",
+        {
+            "start": "Element::root",
+            "max_depth": 1,
+            "relations": ["ifc_connected_to"],
+            "max_results": 1,
+        },
+    )
+
+    assert result["status"] == "ok"
+    data = result["data"]
+    assert [item["id"] for item in data["results"]] == ["Element::alpha"]
+    assert data["results"][0]["path"][-1]["id"] == "Element::alpha"
+    assert data["visited_count"] == 2
+    assert data["total_found"] == 2
+    assert data["returned_count"] == 1
+    assert data["truncated"] is True
+    assert data["truncation_reason"] == (
+        "Results truncated to 1 item(s) to stay bounded."
+    )
+    assert data["warnings"] == [data["truncation_reason"]]
+
+
 def test_find_shortest_path_returns_ordered_path_and_steps() -> None:
     graph = _build_batch2_graph()
 
@@ -333,6 +391,64 @@ def test_find_by_classification_matches_normalized_label_and_context_evidence() 
     )
 
 
+def test_find_by_classification_exposes_truncation_metadata() -> None:
+    graph = nx.MultiDiGraph()
+    graph.add_node(
+        "Classification::Pr_70_70_63",
+        label="Pr_70_70_63",
+        class_="IfcClassificationReference",
+        node_kind="context",
+    )
+    for node_id, label, global_id in [
+        ("Element::ahu-a", "AHU Alpha", "AHUA"),
+        ("Element::ahu-b", "AHU Bravo", "AHUB"),
+        ("Element::ahu-c", "AHU Charlie", "AHUC"),
+    ]:
+        graph.add_node(
+            node_id,
+            label=label,
+            class_="IfcUnitaryEquipment",
+            properties={"GlobalId": global_id},
+        )
+        graph.add_edge(
+            node_id,
+            "Classification::Pr_70_70_63",
+            relation="classified_as",
+            source="ifc",
+        )
+
+    result = query_ifc_graph(
+        graph,
+        "find_by_classification",
+        {"classification": "pr 70 70 63", "max_results": 2},
+    )
+
+    assert result["status"] == "ok"
+    data = result["data"]
+    assert [item["id"] for item in data["elements"]] == [
+        "Element::ahu-a",
+        "Element::ahu-b",
+    ]
+    assert data["matched_classifications"] == [
+        {
+            "id": "Classification::Pr_70_70_63",
+            "global_id": None,
+            "label": "Pr_70_70_63",
+            "class_": "IfcClassificationReference",
+            "match_reason": "normalized_label",
+            "match_score": 2,
+        }
+    ]
+    assert data["total"] == 3
+    assert data["total_found"] == 3
+    assert data["returned_count"] == 2
+    assert data["truncated"] is True
+    assert data["truncation_reason"] == (
+        "Results truncated to 2 item(s) to stay bounded."
+    )
+    assert data["warnings"] == [data["truncation_reason"]]
+
+
 def test_find_equipment_serving_space_finds_upstream_equipment() -> None:
     graph = _build_batch2_graph()
 
@@ -366,6 +482,57 @@ def test_find_equipment_serving_space_finds_upstream_equipment() -> None:
         "source_tool": "find_equipment_serving_space",
         "match_reason": "space_anchor",
     }
+
+
+def test_find_equipment_serving_space_exposes_truncation_metadata() -> None:
+    graph = nx.MultiDiGraph()
+    graph.add_node(
+        "Element::space-401",
+        label="Room 401",
+        class_="IfcSpace",
+        properties={"GlobalId": "SPACE401"},
+    )
+    for node_id, label, global_id in [
+        ("Element::ahu-a", "AHU Alpha", "AHUA"),
+        ("Element::ahu-b", "AHU Bravo", "AHUB"),
+        ("Element::ahu-c", "AHU Charlie", "AHUC"),
+    ]:
+        graph.add_node(
+            node_id,
+            label=label,
+            class_="IfcUnitaryEquipment",
+            properties={"GlobalId": global_id},
+        )
+        graph.add_edge("Element::space-401", node_id, relation="contains")
+
+    result = query_ifc_graph(
+        graph,
+        "find_equipment_serving_space",
+        {"space": "Element::space-401", "max_results": 2},
+    )
+
+    assert result["status"] == "ok"
+    data = result["data"]
+    assert [item["id"] for item in data["equipment"]] == [
+        "Element::ahu-a",
+        "Element::ahu-b",
+    ]
+    assert [item["candidate_type"] for item in data["equipment"]] == [
+        "equipment",
+        "equipment",
+    ]
+    assert [item["path"][-1]["id"] for item in data["equipment"]] == [
+        "Element::ahu-a",
+        "Element::ahu-b",
+    ]
+    assert data["seed_count"] == 3
+    assert data["total_found"] == 3
+    assert data["returned_count"] == 2
+    assert data["truncated"] is True
+    assert data["truncation_reason"] == (
+        "Results truncated to 2 item(s) to stay bounded."
+    )
+    assert data["warnings"] == [data["truncation_reason"]]
 
 
 def test_find_equipment_serving_space_returns_terminal_fallback_warning() -> None:

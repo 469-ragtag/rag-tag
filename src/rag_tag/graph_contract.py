@@ -20,6 +20,10 @@ from typing import Any
 CANONICAL_ACTIONS: tuple[str, ...] = (
     "get_elements_in_storey",
     "find_elements_by_class",
+    "find_elements_inside_footprint",
+    "find_same_storey_elements",
+    "resolve_element_set",
+    "relate_element_set",
     "get_adjacent_elements",
     "get_topology_neighbors",
     "get_intersections_3d",
@@ -70,12 +74,14 @@ SPATIAL_RELATIONS: tuple[str, ...] = (
 TOPOLOGY_RELATIONS: tuple[str, ...] = (
     "above",
     "below",
+    "aligned_with",
     "overlaps_xy",
     "intersects_bbox",
     "intersects_3d",
     "touches_surface",
     "space_bounded_by",
     "bounds_space",
+    "shares_boundary_with",
     "path_connected_to",
 )
 
@@ -89,6 +95,19 @@ EXPLICIT_IFC_RELATIONS: tuple[str, ...] = (
     "classified_as",
 )
 
+SYMMETRIC_RELATIONS: tuple[str, ...] = (
+    "adjacent_to",
+    "connected_to",
+    "aligned_with",
+    "overlaps_xy",
+    "intersects_bbox",
+    "intersects_3d",
+    "touches_surface",
+    "shares_boundary_with",
+    "ifc_connected_to",
+    "path_connected_to",
+)
+
 RELATION_TAXONOMY: dict[str, tuple[str, ...]] = {
     "hierarchy": HIERARCHY_RELATIONS,
     "spatial": SPATIAL_RELATIONS,
@@ -99,6 +118,7 @@ RELATION_TAXONOMY: dict[str, tuple[str, ...]] = {
 CANONICAL_RELATION_SET = frozenset(
     relation for relations in RELATION_TAXONOMY.values() for relation in relations
 )
+SYMMETRIC_RELATION_SET = frozenset(SYMMETRIC_RELATIONS)
 
 
 # ---------------------------------------------------------------------------
@@ -121,48 +141,113 @@ KNOWN_RELATION_SOURCE_SET = frozenset(KNOWN_RELATION_SOURCES)
 # ---------------------------------------------------------------------------
 
 EVIDENCE_LIMIT = 5
+_BOUNDED_LIST_METADATA_DEFAULTS: dict[str, Any] = {
+    "total_found": 0,
+    "returned_count": 0,
+    "truncated": False,
+    "truncation_reason": None,
+}
 
 # Defaults also define required field presence for each action's data payload.
 ACTION_DATA_DEFAULTS: dict[str, dict[str, Any]] = {
-    "get_elements_in_storey": {"storey": None, "elements": [], "evidence": []},
-    "find_elements_by_class": {"class": None, "elements": [], "evidence": []},
-    "get_adjacent_elements": {"element_id": None, "adjacent": [], "evidence": []},
+    "get_elements_in_storey": {
+        "storey": None,
+        "elements": [],
+        "evidence": [],
+        **_BOUNDED_LIST_METADATA_DEFAULTS,
+    },
+    "find_elements_by_class": {
+        "class": None,
+        "elements": [],
+        "evidence": [],
+        **_BOUNDED_LIST_METADATA_DEFAULTS,
+    },
+    "find_elements_inside_footprint": {
+        "container": None,
+        "class": None,
+        "elements": [],
+        "evidence": [],
+        **_BOUNDED_LIST_METADATA_DEFAULTS,
+    },
+    "find_same_storey_elements": {
+        "anchor": None,
+        "storey_id": None,
+        "class": None,
+        "elements": [],
+        "evidence": [],
+        **_BOUNDED_LIST_METADATA_DEFAULTS,
+    },
+    "resolve_element_set": {
+        "query": None,
+        "class_filter": None,
+        "match_mode": None,
+        "matches": [],
+        "evidence": [],
+        **_BOUNDED_LIST_METADATA_DEFAULTS,
+    },
+    "relate_element_set": {
+        "anchor_ids": [],
+        "relation": None,
+        "anchor_count": 0,
+        "matched_anchor_count": 0,
+        "unmatched_anchor_count": 0,
+        "results": [],
+        "evidence": [],
+        **_BOUNDED_LIST_METADATA_DEFAULTS,
+    },
+    "get_adjacent_elements": {
+        "element_id": None,
+        "adjacent": [],
+        "evidence": [],
+        **_BOUNDED_LIST_METADATA_DEFAULTS,
+    },
     "get_topology_neighbors": {
         "element_id": None,
         "relation": None,
         "neighbors": [],
         "evidence": [],
+        **_BOUNDED_LIST_METADATA_DEFAULTS,
     },
     "get_intersections_3d": {
         "element_id": None,
         "intersections_3d": [],
         "evidence": [],
+        **_BOUNDED_LIST_METADATA_DEFAULTS,
     },
-    "find_nodes": {"class": None, "elements": [], "evidence": []},
+    "find_nodes": {
+        "class": None,
+        "elements": [],
+        "evidence": [],
+        **_BOUNDED_LIST_METADATA_DEFAULTS,
+    },
     "traverse": {
         "start": None,
         "relation": None,
         "depth": 1,
         "results": [],
         "evidence": [],
+        **_BOUNDED_LIST_METADATA_DEFAULTS,
     },
     "spatial_query": {
         "near": None,
         "max_distance": None,
         "results": [],
         "evidence": [],
+        **_BOUNDED_LIST_METADATA_DEFAULTS,
     },
     "find_elements_above": {
         "element_id": None,
         "max_gap": None,
         "results": [],
         "evidence": [],
+        **_BOUNDED_LIST_METADATA_DEFAULTS,
     },
     "find_elements_below": {
         "element_id": None,
         "max_gap": None,
         "results": [],
         "evidence": [],
+        **_BOUNDED_LIST_METADATA_DEFAULTS,
     },
     "get_element_properties": {
         "id": None,
@@ -179,11 +264,13 @@ ACTION_DATA_DEFAULTS: dict[str, dict[str, Any]] = {
         "max_depth": None,
         "results": [],
         "evidence": [],
+        **_BOUNDED_LIST_METADATA_DEFAULTS,
     },
     "find_equipment_serving_space": {
         "space": None,
         "equipment": [],
         "evidence": [],
+        **_BOUNDED_LIST_METADATA_DEFAULTS,
     },
     "find_shortest_path": {
         "start": None,
@@ -196,6 +283,7 @@ ACTION_DATA_DEFAULTS: dict[str, dict[str, Any]] = {
         "classification": None,
         "elements": [],
         "evidence": [],
+        **_BOUNDED_LIST_METADATA_DEFAULTS,
     },
     "aggregate_elements": {
         "metric": None,
@@ -226,6 +314,10 @@ ACTION_REQUIRED_DATA_FIELDS: dict[str, tuple[str, ...]] = {
 ACTION_EVIDENCE_FIELDS: dict[str, tuple[str, ...]] = {
     "get_elements_in_storey": ("elements",),
     "find_elements_by_class": ("elements",),
+    "find_elements_inside_footprint": ("elements",),
+    "find_same_storey_elements": ("elements",),
+    "resolve_element_set": ("matches",),
+    "relate_element_set": ("results",),
     "get_adjacent_elements": ("adjacent",),
     "get_topology_neighbors": ("neighbors",),
     "get_intersections_3d": ("intersections_3d",),
@@ -430,6 +522,24 @@ def normalize_relation_name(relation: Any) -> str | None:
         relation = str(relation)
     cleaned = relation.strip().lower()
     return cleaned or None
+
+
+def is_symmetric_relation(relation: Any) -> bool:
+    """Return True when a relation should be traversable from either endpoint."""
+    normalized = normalize_relation_name(relation)
+    return normalized in SYMMETRIC_RELATION_SET
+
+
+def canonicalize_undirected_edge_endpoints(
+    source_id: Any,
+    target_id: Any,
+) -> tuple[str, str]:
+    """Return a deterministic endpoint ordering for one undirected edge record."""
+    source_text = str(source_id)
+    target_text = str(target_id)
+    if source_text <= target_text:
+        return source_text, target_text
+    return target_text, source_text
 
 
 def relation_bucket(relation: str | None) -> str | None:

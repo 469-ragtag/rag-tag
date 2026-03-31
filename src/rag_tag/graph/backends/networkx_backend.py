@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 import sqlite3
+from bisect import insort
 from collections import deque
 from typing import Any, Iterable
 
@@ -32,6 +34,7 @@ from rag_tag.graph_contract import (
     build_evidence_item,
     collect_evidence,
     is_allowed_action,
+    is_symmetric_relation,
     make_error_envelope,
     make_ok_envelope,
     merge_evidence_items,
@@ -39,6 +42,11 @@ from rag_tag.graph_contract import (
     normalize_relation_name,
     normalize_relation_source,
     relation_bucket,
+)
+from rag_tag.text_matching import (
+    combined_text_match_terms,
+    normalize_text_match_text,
+    text_match_terms,
 )
 
 _logger = logging.getLogger(__name__)
@@ -67,6 +75,23 @@ _DIRECTIONAL_TOPOLOGY_RELATIONS = {
     "below",
     "space_bounded_by",
     "bounds_space",
+}
+_ALIGNED_WITH_ALLOWED_CLASSES = {
+    "IfcWall",
+    "IfcBeam",
+    "IfcMember",
+    "IfcCurtainWall",
+    "IfcRailing",
+}
+_CONTAINER_CLASS_NAMES = {
+    "IfcProject",
+    "IfcSite",
+    "IfcBuilding",
+    "IfcBuildingStorey",
+    "IfcSpace",
+    "IfcZone",
+    "IfcSpatialZone",
+    "IfcTypeObject",
 }
 _TERMINAL_CLASS_NAMES = {
     "IfcFlowTerminal",
@@ -114,6 +139,23 @@ _EQUIPMENT_CLASS_NAMES = {
     "IfcTubeBundle",
     "IfcValve",
 }
+_LEGACY_BOUNDED_ACTION_DEFAULTS = {
+    "find_nodes": 50,
+    "resolve_element_set": 25,
+    "relate_element_set": 25,
+    "traverse": 25,
+    "spatial_query": 50,
+    "get_elements_in_storey": 50,
+    "find_elements_by_class": 50,
+    "find_elements_inside_footprint": 50,
+    "find_same_storey_elements": 50,
+    "get_adjacent_elements": 25,
+    "get_topology_neighbors": 25,
+    "get_intersections_3d": 25,
+    "find_elements_above": 25,
+    "find_elements_below": 25,
+}
+_LEGACY_BOUNDED_ACTION_HARD_CAP = 100
 
 
 def _ok_action(action: str, data: dict[str, Any] | None) -> dict[str, Any]:
@@ -262,6 +304,7 @@ class NetworkXGraphBackend:
                     "space_bounded_by",
                     "bounds_space",
                     "path_connected_to",
+                    "shares_boundary_with",
                 }:
                     return "ifc"
                 return "topology"
@@ -388,6 +431,41 @@ class NetworkXGraphBackend:
 
             return None, {"error": f"Storey not found: {storey_query}"}
 
+        def resolve_graph_or_storey_node(
+            node_ref: str,
+        ) -> tuple[str | None, dict[str, Any] | None]:
+            resolved, err = resolve_graph_node(node_ref)
+            if resolved is not None:
+                return resolved, None
+            if err and "Ambiguous" in str(err.get("error", "")):
+                return None, err
+
+            resolved_storey, storey_err = resolve_storey_node(node_ref)
+            if resolved_storey is not None:
+                return resolved_storey, None
+            if storey_err and "Ambiguous" in str(storey_err.get("error", "")):
+                return None, {
+                    "error": "Ambiguous node_id",
+                    "candidates": storey_err.get("candidates", []),
+                }
+            return None, err or storey_err
+
+        def node_class_name(node_id: str) -> str | None:
+            raw = G.nodes[node_id].get("class_")
+            if raw is None:
+                return None
+            text = str(raw).strip()
+            return text or None
+
+        def node_dataset(node_id: str) -> str | None:
+            raw = G.nodes[node_id].get("dataset")
+            if isinstance(raw, str) and raw.strip():
+                return raw
+            return None
+
+        def node_is_container(node_id: str) -> bool:
+            return node_class_name(node_id) in _CONTAINER_CLASS_NAMES
+
         def storey_elements(start: str) -> Iterable[str]:
             visited = {start}
             q = deque([start])
@@ -405,6 +483,306 @@ class NetworkXGraphBackend:
                     visited.add(nbr)
                     q.append(nbr)
                     yield nbr
+
+        def non_container_descendants(start: str) -> list[str]:
+            return [
+                node_id
+                for node_id in storey_elements(start)
+                if not node_is_container(node_id)
+            ]
+
+        def resolve_storey_for_node(node_id: str) -> tuple[str | None, str | None]:
+            if node_id not in G:
+                return None, None
+            if node_class_name(node_id) == "IfcBuildingStorey":
+                return node_id, "self"
+
+            visited = {node_id}
+            queue: deque[str] = deque([node_id])
+            while queue:
+                current = queue.popleft()
+                for nbr in G.successors(current):
+                    has_contained_in = any(
+                        normalize_relation_name(edge.get("relation")) == "contained_in"
+                        for edge in iter_edge_dicts(current, nbr)
+                    )
+                    if not has_contained_in or nbr in visited:
+                        continue
+                    if node_class_name(nbr) == "IfcBuildingStorey":
+                        return nbr, "contained_in"
+                    visited.add(nbr)
+                    queue.append(nbr)
+
+            props = G.nodes[node_id].get("properties") or {}
+            if not isinstance(props, dict):
+                return None, None
+            level_value = props.get("Level")
+            if not isinstance(level_value, str) or not level_value.strip():
+                return None, None
+
+            normalized_level = normalize_text(level_value)
+            dataset_key = node_dataset(node_id)
+            matches = [
+                candidate_id
+                for candidate_id, candidate_data in G.nodes(data=True)
+                if node_class_name(candidate_id) == "IfcBuildingStorey"
+                and (dataset_key is None or node_dataset(candidate_id) == dataset_key)
+                and normalize_text(str(candidate_data.get("label", "")))
+                == normalized_level
+            ]
+            if len(matches) == 1:
+                return matches[0], "level"
+            return None, None
+
+        def element_node_ids_for_dataset(
+            dataset_key: str | None,
+        ) -> list[str]:
+            return [
+                node_id
+                for node_id in G.nodes
+                if str(node_id).startswith("Element::")
+                and (dataset_key is None or node_dataset(str(node_id)) == dataset_key)
+                and not node_is_container(str(node_id))
+            ]
+
+        def node_plan_point(
+            node_id: str,
+        ) -> tuple[tuple[float, float] | None, str | None]:
+            data = G.nodes[node_id]
+            geometry = data.get("geometry")
+            if isinstance(geometry, (list, tuple)) and len(geometry) >= 2:
+                try:
+                    return (float(geometry[0]), float(geometry[1])), "centroid"
+                except (TypeError, ValueError):
+                    pass
+
+            bbox = data.get("bbox")
+            if (
+                isinstance(bbox, (list, tuple))
+                and len(bbox) == 2
+                and isinstance(bbox[0], (list, tuple))
+                and isinstance(bbox[1], (list, tuple))
+                and len(bbox[0]) >= 2
+                and len(bbox[1]) >= 2
+            ):
+                try:
+                    return (
+                        (
+                            (float(bbox[0][0]) + float(bbox[1][0])) * 0.5,
+                            (float(bbox[0][1]) + float(bbox[1][1])) * 0.5,
+                        ),
+                        "bbox_center_fallback",
+                    )
+                except (TypeError, ValueError):
+                    return None, None
+            return None, None
+
+        def point_in_polygon_xy(
+            point: tuple[float, float],
+            polygon: list[tuple[float, float]],
+        ) -> bool:
+            x, y = point
+            inside = False
+            epsilon = 1e-9
+
+            for index, (x1, y1) in enumerate(polygon):
+                x2, y2 = polygon[(index + 1) % len(polygon)]
+                dx = x2 - x1
+                dy = y2 - y1
+                cross = (x - x1) * dy - (y - y1) * dx
+                if abs(cross) <= epsilon:
+                    dot = (x - x1) * (x - x2) + (y - y1) * (y - y2)
+                    if dot <= epsilon:
+                        return True
+
+                intersects = ((y1 > y) != (y2 > y)) and (
+                    x <= ((x2 - x1) * (y - y1) / ((y2 - y1) or epsilon)) + x1 + epsilon
+                )
+                if intersects:
+                    inside = not inside
+            return inside
+
+        def point_in_bbox_2d(
+            point: tuple[float, float],
+            bbox_2d: tuple[float, float, float, float],
+        ) -> bool:
+            x, y = point
+            min_x, min_y, max_x, max_y = bbox_2d
+            epsilon = 1e-9
+            return (
+                min_x - epsilon <= x <= max_x + epsilon
+                and min_y - epsilon <= y <= max_y + epsilon
+            )
+
+        def node_footprint_geometry(
+            node_id: str,
+        ) -> tuple[
+            list[tuple[float, float]] | None, tuple[float, float, float, float] | None
+        ]:
+            data = G.nodes[node_id]
+            footprint = data.get("footprint_polygon")
+            if isinstance(footprint, list) and len(footprint) >= 3:
+                parsed_footprint: list[tuple[float, float]] = []
+                for point in footprint:
+                    if isinstance(point, (list, tuple)) and len(point) == 2:
+                        parsed_footprint.append((float(point[0]), float(point[1])))
+                if len(parsed_footprint) >= 3:
+                    return parsed_footprint, None
+
+            bbox_2d = data.get("footprint_bbox_2d")
+            if isinstance(bbox_2d, (list, tuple)) and len(bbox_2d) == 4:
+                try:
+                    return None, tuple(float(value) for value in bbox_2d)
+                except (TypeError, ValueError):
+                    return None, None
+            return None, None
+
+        def aligned_signature(node_id: str) -> dict[str, Any] | None:
+            if node_class_name(node_id) not in _ALIGNED_WITH_ALLOWED_CLASSES:
+                return None
+
+            obb = G.nodes[node_id].get("obb")
+            if not isinstance(obb, dict):
+                return None
+            axes = obb.get("axes")
+            extents = obb.get("extents")
+            center = obb.get("center")
+            if (
+                not isinstance(axes, (list, tuple))
+                or len(axes) < 2
+                or not isinstance(extents, (list, tuple))
+                or len(extents) < 2
+                or not isinstance(center, (list, tuple))
+                or len(center) < 2
+            ):
+                return None
+
+            axis_candidates: list[tuple[float, tuple[float, float], float]] = []
+            short_extents: list[float] = []
+            for raw_axis, raw_extent in zip(axes[:2], extents[:2], strict=False):
+                if not isinstance(raw_axis, (list, tuple)) or len(raw_axis) < 2:
+                    return None
+                try:
+                    axis_x = float(raw_axis[0])
+                    axis_y = float(raw_axis[1])
+                    extent = abs(float(raw_extent))
+                except (TypeError, ValueError):
+                    return None
+                axis_len = math.hypot(axis_x, axis_y)
+                if axis_len <= 1e-9 or extent <= 1e-9:
+                    continue
+                normalized_axis = (axis_x / axis_len, axis_y / axis_len)
+                axis_candidates.append((extent * axis_len, normalized_axis, extent))
+                short_extents.append(extent)
+
+            if len(axis_candidates) < 2:
+                return None
+
+            axis_candidates.sort(key=lambda item: item[0], reverse=True)
+            try:
+                center_xy = (float(center[0]), float(center[1]))
+            except (TypeError, ValueError):
+                return None
+
+            return {
+                "axis": axis_candidates[0][1],
+                "center_xy": center_xy,
+                "short_extent": min(short_extents),
+            }
+
+        def aligned_neighbors(
+            node_id: str,
+        ) -> tuple[list[dict[str, Any]], str | None]:
+            anchor_class = node_class_name(node_id)
+            if anchor_class not in _ALIGNED_WITH_ALLOWED_CLASSES:
+                return [], (
+                    "`aligned_with` is only available for elongated core classes "
+                    "such as walls, beams, members, curtain walls, and railings."
+                )
+
+            anchor_signature = aligned_signature(node_id)
+            if anchor_signature is None:
+                return [], "Aligned-with reasoning requires valid OBB data."
+
+            anchor_storey_id, _anchor_storey_method = resolve_storey_for_node(node_id)
+            anchor_dataset = node_dataset(node_id)
+            results: list[dict[str, Any]] = []
+
+            for candidate_id in element_node_ids_for_dataset(anchor_dataset):
+                if candidate_id == node_id:
+                    continue
+                if node_class_name(candidate_id) not in _ALIGNED_WITH_ALLOWED_CLASSES:
+                    continue
+
+                candidate_signature = aligned_signature(candidate_id)
+                if candidate_signature is None:
+                    continue
+
+                anchor_axis_x, anchor_axis_y = anchor_signature["axis"]
+                candidate_axis_x, candidate_axis_y = candidate_signature["axis"]
+                dot = (
+                    anchor_axis_x * candidate_axis_x + anchor_axis_y * candidate_axis_y
+                )
+                if dot < 0.0:
+                    candidate_axis_x *= -1.0
+                    candidate_axis_y *= -1.0
+                    dot *= -1.0
+                dot = max(-1.0, min(1.0, dot))
+                angle_deg = math.degrees(math.acos(dot))
+                if angle_deg > 10.0:
+                    continue
+
+                blend_x = anchor_axis_x + candidate_axis_x
+                blend_y = anchor_axis_y + candidate_axis_y
+                blend_len = math.hypot(blend_x, blend_y)
+                if blend_len <= 1e-9:
+                    ref_axis_x, ref_axis_y = anchor_axis_x, anchor_axis_y
+                else:
+                    ref_axis_x = blend_x / blend_len
+                    ref_axis_y = blend_y / blend_len
+
+                perp_x, perp_y = -ref_axis_y, ref_axis_x
+                delta_x = (
+                    candidate_signature["center_xy"][0]
+                    - anchor_signature["center_xy"][0]
+                )
+                delta_y = (
+                    candidate_signature["center_xy"][1]
+                    - anchor_signature["center_xy"][1]
+                )
+                lateral_offset_xy = abs(delta_x * perp_x + delta_y * perp_y)
+                offset_limit = max(
+                    0.25,
+                    min(
+                        float(anchor_signature["short_extent"]),
+                        float(candidate_signature["short_extent"]),
+                    ),
+                )
+                if lateral_offset_xy > offset_limit:
+                    continue
+
+                candidate_storey_id, _candidate_storey_method = resolve_storey_for_node(
+                    candidate_id
+                )
+                same_storey = (
+                    anchor_storey_id is not None
+                    and candidate_storey_id == anchor_storey_id
+                )
+
+                item = compact_node(candidate_id)
+                item.update(
+                    {
+                        "relation": "aligned_with",
+                        "source": "topology",
+                        "angle_deg": round(angle_deg, 6),
+                        "lateral_offset_xy": round(lateral_offset_xy, 6),
+                        "same_storey": same_storey,
+                        "storey_id": candidate_storey_id,
+                    }
+                )
+                results.append(item)
+
+            return results, None
 
         def spatial_neighbors(node_id: str) -> Iterable[tuple[str, dict[str, Any]]]:
             seen: set[tuple[str, str, str]] = set()
@@ -609,6 +987,298 @@ class NetworkXGraphBackend:
                 "label": G.nodes[node_id].get("label"),
                 "class_": G.nodes[node_id].get("class_"),
             }
+
+        def parse_legacy_max_results(action_name: str) -> int | dict[str, Any]:
+            default_limit = _LEGACY_BOUNDED_ACTION_DEFAULTS.get(action_name)
+            if default_limit is None:
+                return {
+                    "error": f"Unsupported bounded action: {action_name}",
+                    "code": "invalid",
+                }
+            try:
+                requested = int(params.get("max_results", default_limit))
+            except (TypeError, ValueError):
+                return {
+                    "error": "Invalid param: max_results must be an integer",
+                    "code": "invalid",
+                }
+            if requested < 1:
+                return {"error": "max_results must be >= 1", "code": "invalid"}
+            return min(requested, _LEGACY_BOUNDED_ACTION_HARD_CAP)
+
+        def stable_sort_text(value: Any) -> str:
+            if value is None:
+                return ""
+            return str(value)
+
+        def stable_node_order(node_ids: Iterable[Any]) -> list[Any]:
+            return sorted(node_ids, key=stable_sort_text)
+
+        def numeric_rank(value: Any, *, descending: bool) -> tuple[int, float]:
+            try:
+                numeric = float(value)
+            except (TypeError, ValueError):
+                return (1, 0.0)
+            return (0, -numeric if descending else numeric)
+
+        def item_label_id_sort_key(item: dict[str, Any]) -> tuple[str, str]:
+            return (
+                stable_sort_text(item.get("label")),
+                stable_sort_text(item.get("id")),
+            )
+
+        def insert_bounded_sorted_item(
+            selected: list[tuple[tuple[Any, ...], int, dict[str, Any]]],
+            *,
+            item: dict[str, Any],
+            sort_key: tuple[Any, ...],
+            sequence: int,
+            max_results: int,
+        ) -> None:
+            insort(selected, (sort_key, sequence, item))
+            if len(selected) > max_results:
+                selected.pop()
+
+        def finalize_bounded_list_data(
+            data: dict[str, Any],
+            *,
+            items_key: str,
+            items: list[dict[str, Any]],
+            total_found: int,
+            max_results: int,
+        ) -> dict[str, Any]:
+            truncated = total_found > len(items)
+            truncation_reason = None
+            if truncated:
+                truncation_reason = (
+                    f"Results truncated to {max_results} item(s) to stay bounded."
+                )
+            stable_data = dict(data)
+            stable_data[items_key] = items
+            stable_data["total_found"] = total_found
+            stable_data["returned_count"] = len(items)
+            stable_data["truncated"] = truncated
+            stable_data["truncation_reason"] = truncation_reason
+            if truncated:
+                warnings = list(stable_data.get("warnings") or [])
+                warnings.append(truncation_reason)
+                stable_data["warnings"] = warnings
+            return stable_data
+
+        def spatial_item_sort_key(item: dict[str, Any]) -> tuple[Any, ...]:
+            return (
+                numeric_rank(item.get("distance"), descending=False),
+                *item_label_id_sort_key(item),
+            )
+
+        def topology_item_sort_key(item: dict[str, Any]) -> tuple[Any, ...]:
+            relation = stable_sort_text(item.get("relation"))
+            if relation in {"above", "below"}:
+                metric_order = 0
+                metric_key = numeric_rank(item.get("vertical_gap"), descending=False)
+            elif item.get("intersection_volume") is not None:
+                metric_order = 1
+                metric_key = numeric_rank(
+                    item.get("intersection_volume"), descending=True
+                )
+            elif item.get("contact_area") is not None:
+                metric_order = 2
+                metric_key = numeric_rank(item.get("contact_area"), descending=True)
+            elif item.get("overlap_area_xy") is not None:
+                metric_order = 3
+                metric_key = numeric_rank(item.get("overlap_area_xy"), descending=True)
+            else:
+                metric_order = 4
+                metric_key = (1, 0.0)
+            return (metric_order, metric_key, *item_label_id_sort_key(item))
+
+        def aligned_item_sort_key(item: dict[str, Any]) -> tuple[Any, ...]:
+            same_storey = 0 if item.get("same_storey") else 1
+            return (
+                same_storey,
+                numeric_rank(item.get("angle_deg"), descending=False),
+                numeric_rank(item.get("lateral_offset_xy"), descending=False),
+                *item_label_id_sort_key(item),
+            )
+
+        def constrained_search_texts(node_data: dict[str, Any]) -> list[str]:
+            properties = node_data.get("properties") or {}
+            if not isinstance(properties, dict):
+                properties = {}
+
+            payload = node_data.get("payload") or {}
+            if not isinstance(payload, dict):
+                payload = {}
+
+            raw_values = [
+                node_data.get("label"),
+                properties.get("Name"),
+                properties.get("TypeName"),
+                properties.get("ObjectType"),
+                properties.get("Description"),
+                payload.get("Name"),
+                payload.get("TypeName"),
+                payload.get("ObjectType"),
+                payload.get("Description"),
+            ]
+
+            materials = properties.get("Materials") or payload.get("Materials") or []
+            if isinstance(materials, list):
+                raw_values.extend(materials)
+
+            values: list[str] = []
+            for raw_value in raw_values:
+                if raw_value in {None, "", "None"}:
+                    continue
+                values.append(str(raw_value))
+            return values
+
+        def resolve_element_set_candidate(
+            node_id: str,
+            node_data: dict[str, Any],
+            *,
+            query: str,
+            terms: tuple[str, ...],
+            class_filter: str | None,
+        ) -> dict[str, Any] | None:
+            if not str(node_id).startswith("Element::"):
+                return None
+            if class_filter is not None and (
+                str(node_data.get("class_", "")).lower() != class_filter.lower()
+            ):
+                return None
+
+            search_texts = constrained_search_texts(node_data)
+            if not search_texts:
+                return None
+
+            query_term_set = set(terms)
+            combined_terms = combined_text_match_terms(search_texts)
+            combined_term_set = set(combined_terms)
+            if not query_term_set.issubset(combined_term_set):
+                return None
+
+            normalized_query = normalize_text_match_text(query)
+            field_terms = [text_match_terms(text) for text in search_texts]
+            matched_field_count = sum(
+                1
+                for current_terms in field_terms
+                if query_term_set.intersection(current_terms)
+            )
+            exact_field_matches = sum(
+                normalize_text_match_text(" ".join(current_terms)) == normalized_query
+                for current_terms in field_terms
+                if current_terms
+            )
+            full_field_extra_terms = [
+                len(set(current_terms) - query_term_set)
+                for current_terms in field_terms
+                if query_term_set.issubset(current_terms)
+            ]
+            best_extra_terms = (
+                min(full_field_extra_terms)
+                if full_field_extra_terms
+                else len(combined_term_set - query_term_set)
+            )
+
+            return {
+                **build_node_payload(
+                    node_id, node_data, payload_mode=resolved_payload_mode
+                ),
+                "match_reason": f"all_terms={','.join(terms)}",
+                "matched_field_count": matched_field_count,
+                "exact_field_matches": exact_field_matches,
+                "best_extra_terms": best_extra_terms,
+            }
+
+        def resolve_element_set_sort_key(item: dict[str, Any]) -> tuple[Any, ...]:
+            return (
+                -int(item.get("exact_field_matches") or 0),
+                -int(item.get("matched_field_count") or 0),
+                int(item.get("best_extra_terms") or 0),
+                *item_label_id_sort_key(item),
+            )
+
+        def relation_result_sort_key(
+            relation_value: str,
+            item: dict[str, Any],
+        ) -> tuple[Any, ...]:
+            if relation_value in SPATIAL_RELATIONS:
+                return spatial_item_sort_key(item)
+            return topology_item_sort_key(item)
+
+        def merge_relation_set_item(
+            existing: dict[str, Any],
+            candidate: dict[str, Any],
+            *,
+            relation_value: str,
+            anchor_id: str,
+        ) -> dict[str, Any]:
+            merged = dict(existing)
+            matched_anchor_ids = list(merged.get("matched_anchor_ids") or [])
+            if anchor_id not in matched_anchor_ids:
+                matched_anchor_ids.append(anchor_id)
+                matched_anchor_ids.sort(key=stable_sort_text)
+            merged["matched_anchor_ids"] = matched_anchor_ids
+            merged["matched_anchor_count"] = len(matched_anchor_ids)
+
+            if relation_result_sort_key(
+                relation_value, candidate
+            ) < relation_result_sort_key(relation_value, merged):
+                for key in (
+                    "distance",
+                    "vertical_gap",
+                    "overlap_area_xy",
+                    "intersection_volume",
+                    "contact_area",
+                    "source",
+                ):
+                    if key in candidate:
+                        merged[key] = candidate.get(key)
+            return merged
+
+        def iter_relation_set_candidates(
+            anchor_id: str,
+            *,
+            relation_value: str,
+        ) -> Iterable[dict[str, Any]]:
+            if relation_value in SPATIAL_RELATIONS:
+                for nbr, edge in spatial_neighbors(anchor_id):
+                    current_relation = edge_relation(edge)
+                    if current_relation != relation_value:
+                        continue
+                    yield {
+                        "id": nbr,
+                        "global_id": node_global_id(nbr),
+                        "label": G.nodes[nbr].get("label"),
+                        "class_": G.nodes[nbr].get("class_"),
+                        "relation": current_relation,
+                        "distance": edge.get("distance"),
+                        "source": edge_source(edge, current_relation),
+                    }
+                return
+
+            allowed_relation = relation_value
+            output_relation = relation_value
+            if relation_value == "above":
+                allowed_relation = "below"
+            elif relation_value == "below":
+                allowed_relation = "above"
+
+            for nbr, edge in topology_neighbors(anchor_id, {allowed_relation}):
+                current_relation = edge_relation(edge)
+                yield {
+                    "id": nbr,
+                    "global_id": node_global_id(nbr),
+                    "label": G.nodes[nbr].get("label"),
+                    "class_": G.nodes[nbr].get("class_"),
+                    "relation": output_relation,
+                    "vertical_gap": edge.get("vertical_gap"),
+                    "overlap_area_xy": edge.get("overlap_area_xy"),
+                    "intersection_volume": edge.get("intersection_volume"),
+                    "contact_area": edge.get("contact_area"),
+                    "source": edge_source(edge, current_relation),
+                }
 
         def resolve_graph_node(
             node_ref: str,
@@ -1011,6 +1681,60 @@ class NetworkXGraphBackend:
                         "to": node_id,
                     }
 
+        def iter_traverse_neighbors(
+            node_id: str,
+            *,
+            allowed_relations: set[str] | None = None,
+        ) -> Iterable[tuple[str, dict[str, Any], str]]:
+            seen: set[tuple[str, str, str, str]] = set()
+
+            def dedupe_key(
+                nbr: str, edge: dict[str, Any], relation: str
+            ) -> tuple[str, str, str, str]:
+                return (
+                    nbr,
+                    relation,
+                    edge_source(edge, relation) or "",
+                    str(
+                        edge.get("distance")
+                        or edge.get("vertical_gap")
+                        or edge.get("intersection_volume")
+                        or ""
+                    ),
+                )
+
+            for nbr in G.successors(node_id):
+                for edge in iter_edge_dicts(node_id, nbr):
+                    relation = edge_relation(edge)
+                    if relation is None:
+                        continue
+                    if (
+                        allowed_relations is not None
+                        and relation not in allowed_relations
+                    ):
+                        continue
+                    key = dedupe_key(nbr, edge, relation)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    yield nbr, edge, relation
+
+            for nbr in G.predecessors(node_id):
+                for edge in iter_edge_dicts(nbr, node_id):
+                    relation = edge_relation(edge)
+                    if relation is None or not is_symmetric_relation(relation):
+                        continue
+                    if (
+                        allowed_relations is not None
+                        and relation not in allowed_relations
+                    ):
+                        continue
+                    key = dedupe_key(nbr, edge, relation)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    yield nbr, edge, relation
+
         def build_relation_graph(
             allowed_relations: set[str],
         ) -> nx.Graph:
@@ -1066,7 +1790,9 @@ class NetworkXGraphBackend:
                     {
                         "relation": relation,
                         "source": edge_source(edge, relation),
-                        "direction": "reverse",
+                        "direction": (
+                            "forward" if is_symmetric_relation(relation) else "reverse"
+                        ),
                     }
                 )
 
@@ -1186,6 +1912,13 @@ class NetworkXGraphBackend:
                 return _err("Missing param: storey", "missing_param")
             if not isinstance(storey, str):
                 return _err("Invalid param: storey must be a string", "invalid")
+            max_results_value = parse_legacy_max_results(action)
+            if isinstance(max_results_value, dict):
+                return _err(
+                    str(max_results_value["error"]),
+                    str(max_results_value["code"]),
+                )
+            max_results = max_results_value
             node, err = resolve_storey_node(storey)
             if err:
                 error_msg = err.get("error", "Unknown error")
@@ -1199,31 +1932,36 @@ class NetworkXGraphBackend:
             if node is None:
                 return _err(f"Storey not found: {storey}", "not_found")
 
-            container_classes = {
-                "IfcProject",
-                "IfcSite",
-                "IfcBuilding",
-                "IfcBuildingStorey",
-                "IfcSpace",
-                "IfcZone",
-                "IfcSpatialZone",
-                "IfcTypeObject",
-            }
-
-            elements = []
+            selected: list[tuple[tuple[Any, ...], int, dict[str, Any]]] = []
+            total_found = 0
             for e in storey_elements(node):
                 cls = G.nodes[e].get("class_")
-                if cls in container_classes:
+                if node_is_container(e):
                     continue
-                elements.append(
-                    {
-                        "id": e,
-                        "global_id": node_global_id(e),
-                        "label": G.nodes[e].get("label"),
-                        "class_": cls,
-                    }
+                item = {
+                    "id": e,
+                    "global_id": node_global_id(e),
+                    "label": G.nodes[e].get("label"),
+                    "class_": cls,
+                }
+                total_found += 1
+                insert_bounded_sorted_item(
+                    selected,
+                    item=item,
+                    sort_key=item_label_id_sort_key(item),
+                    sequence=total_found,
+                    max_results=max_results,
                 )
-            return _ok_action(action, {"storey": storey, "elements": elements})
+            return _ok_action(
+                action,
+                finalize_bounded_list_data(
+                    {"storey": storey, "elements": []},
+                    items_key="elements",
+                    items=[entry[2] for entry in selected],
+                    total_found=total_found,
+                    max_results=max_results,
+                ),
+            )
 
         if action == "find_elements_by_class":
             cls = params.get("class")
@@ -1231,15 +1969,454 @@ class NetworkXGraphBackend:
                 return _err("Missing param: class", "missing_param")
             if not isinstance(cls, str):
                 return _err("Invalid param: class must be a string", "invalid")
+            max_results_value = parse_legacy_max_results(action)
+            if isinstance(max_results_value, dict):
+                return _err(
+                    str(max_results_value["error"]),
+                    str(max_results_value["code"]),
+                )
+            max_results = max_results_value
             target = normalize_class(cls)
 
-            matches = []
+            selected: list[tuple[tuple[Any, ...], int, dict[str, Any]]] = []
+            total_found = 0
             for n, d in G.nodes(data=True):
                 if str(d.get("class_", "")).lower() == target.lower():
-                    matches.append(
-                        build_node_payload(n, d, payload_mode=resolved_payload_mode)
+                    item = build_node_payload(n, d, payload_mode=resolved_payload_mode)
+                    total_found += 1
+                    insert_bounded_sorted_item(
+                        selected,
+                        item=item,
+                        sort_key=item_label_id_sort_key(item),
+                        sequence=total_found,
+                        max_results=max_results,
                     )
-            return _ok_action(action, {"class": target, "elements": matches})
+            return _ok_action(
+                action,
+                finalize_bounded_list_data(
+                    {"class": target, "elements": []},
+                    items_key="elements",
+                    items=[entry[2] for entry in selected],
+                    total_found=total_found,
+                    max_results=max_results,
+                ),
+            )
+
+        if action == "find_elements_inside_footprint":
+            container = params.get("container")
+            cls = params.get("class")
+            if not container:
+                return _err("Missing param: container", "missing_param")
+            if not isinstance(container, str):
+                return _err("Invalid param: container must be a string", "invalid")
+            if cls is not None and not isinstance(cls, str):
+                return _err("Invalid param: class must be a string", "invalid")
+
+            max_results_value = parse_legacy_max_results(action)
+            if isinstance(max_results_value, dict):
+                return _err(
+                    str(max_results_value["error"]),
+                    str(max_results_value["code"]),
+                )
+            max_results = max_results_value
+            class_filter = normalize_class(cls) if cls else None
+
+            resolved_container, err = resolve_graph_or_storey_node(container)
+            if err:
+                error_msg = err.get("error", "Unknown error")
+                if "Ambiguous" in str(error_msg):
+                    return _err(
+                        str(error_msg),
+                        "ambiguous",
+                        {"candidates": err.get("candidates", [])},
+                    )
+                if "Invalid" in str(error_msg):
+                    return _err(str(error_msg), "invalid")
+                return _err(str(error_msg), "not_found")
+            if resolved_container is None:
+                return _err(f"Container not found: {container}", "not_found")
+
+            footprint_polygon, footprint_bbox_2d = node_footprint_geometry(
+                resolved_container
+            )
+            if footprint_polygon is None and footprint_bbox_2d is None:
+                return _err(
+                    (
+                        "Resolved container does not have footprint geometry. "
+                        "This helper requires a footprint polygon or 2D footprint bbox."
+                    ),
+                    "no_geometry",
+                )
+
+            candidate_ids = non_container_descendants(resolved_container)
+            if not candidate_ids:
+                candidate_ids = element_node_ids_for_dataset(
+                    node_dataset(resolved_container)
+                )
+
+            selected: list[tuple[tuple[Any, ...], int, dict[str, Any]]] = []
+            total_found = 0
+            for candidate_id in sorted(set(candidate_ids)):
+                if candidate_id == resolved_container:
+                    continue
+                if class_filter is not None:
+                    if str(G.nodes[candidate_id].get("class_", "")).lower() != (
+                        class_filter.lower()
+                    ):
+                        continue
+
+                point_xy, inside_method = node_plan_point(candidate_id)
+                if point_xy is None or inside_method is None:
+                    continue
+
+                is_inside = (
+                    point_in_polygon_xy(point_xy, footprint_polygon)
+                    if footprint_polygon is not None
+                    else point_in_bbox_2d(point_xy, footprint_bbox_2d)
+                )
+                if not is_inside:
+                    continue
+
+                storey_id, _storey_method = resolve_storey_for_node(candidate_id)
+                item = compact_node(candidate_id)
+                item.update(
+                    {
+                        "inside_method": inside_method,
+                        "storey_id": storey_id,
+                    }
+                )
+                total_found += 1
+                insert_bounded_sorted_item(
+                    selected,
+                    item=item,
+                    sort_key=item_label_id_sort_key(item),
+                    sequence=total_found,
+                    max_results=max_results,
+                )
+
+            return _ok_action(
+                action,
+                finalize_bounded_list_data(
+                    {
+                        "container": resolved_container,
+                        "class": class_filter,
+                        "elements": [],
+                    },
+                    items_key="elements",
+                    items=[entry[2] for entry in selected],
+                    total_found=total_found,
+                    max_results=max_results,
+                ),
+            )
+
+        if action == "resolve_element_set":
+            query = params.get("query")
+            cls = params.get("class")
+            match_mode = params.get("match_mode", "set")
+            if not isinstance(query, str) or not query.strip():
+                return _err("Missing param: query", "missing_param")
+            if cls is not None and not isinstance(cls, str):
+                return _err("Invalid param: class must be a string", "invalid")
+            if not isinstance(match_mode, str):
+                return _err("Invalid param: match_mode must be a string", "invalid")
+            match_mode_value = match_mode.strip().lower()
+            if match_mode_value not in {"set", "singular"}:
+                return _err(
+                    "Unsupported match_mode for resolve_element_set",
+                    "invalid",
+                    {"allowed_match_modes": ["set", "singular"]},
+                )
+            max_results_value = parse_legacy_max_results(action)
+            if isinstance(max_results_value, dict):
+                return _err(
+                    str(max_results_value["error"]),
+                    str(max_results_value["code"]),
+                )
+            max_results = max_results_value
+            class_filter = normalize_class(cls) if cls else None
+            match_terms = text_match_terms(query)
+            if not match_terms:
+                return _err(
+                    "Query must contain at least one alphanumeric search term.",
+                    "invalid",
+                )
+
+            matches: list[dict[str, Any]] = []
+            for node_id, node_data in G.nodes(data=True):
+                candidate = resolve_element_set_candidate(
+                    node_id,
+                    node_data,
+                    query=query,
+                    terms=match_terms,
+                    class_filter=class_filter,
+                )
+                if candidate is None:
+                    continue
+                matches.append(candidate)
+
+            matches.sort(key=resolve_element_set_sort_key)
+
+            if match_mode_value == "singular":
+                if len(matches) == 1:
+                    return _ok_action(
+                        action,
+                        finalize_bounded_list_data(
+                            {
+                                "query": query,
+                                "class_filter": class_filter,
+                                "match_mode": match_mode_value,
+                                "matches": [],
+                            },
+                            items_key="matches",
+                            items=matches,
+                            total_found=1,
+                            max_results=max_results,
+                        ),
+                    )
+                if not matches:
+                    return _err(
+                        f"No constrained element matches were found for '{query}'.",
+                        "not_found",
+                        {
+                            "query": query,
+                            "class_filter": class_filter,
+                            "match_terms": list(match_terms),
+                        },
+                    )
+                return _err(
+                    (
+                        "Ambiguous constrained element anchor: multiple occurrence "
+                        "matches satisfy this singular description."
+                    ),
+                    "ambiguous",
+                    {
+                        "query": query,
+                        "class_filter": class_filter,
+                        "match_terms": list(match_terms),
+                        "total_found": len(matches),
+                        "candidates": matches[: min(len(matches), max_results)],
+                    },
+                )
+
+            resolved_matches = matches[:max_results]
+            return _ok_action(
+                action,
+                finalize_bounded_list_data(
+                    {
+                        "query": query,
+                        "class_filter": class_filter,
+                        "match_mode": match_mode_value,
+                        "matches": [],
+                    },
+                    items_key="matches",
+                    items=resolved_matches,
+                    total_found=len(matches),
+                    max_results=max_results,
+                ),
+            )
+
+        if action == "find_same_storey_elements":
+            anchor = params.get("anchor")
+            cls = params.get("class")
+            if not anchor:
+                return _err("Missing param: anchor", "missing_param")
+            if not isinstance(anchor, str):
+                return _err("Invalid param: anchor must be a string", "invalid")
+            if cls is not None and not isinstance(cls, str):
+                return _err("Invalid param: class must be a string", "invalid")
+
+            max_results_value = parse_legacy_max_results(action)
+            if isinstance(max_results_value, dict):
+                return _err(
+                    str(max_results_value["error"]),
+                    str(max_results_value["code"]),
+                )
+            max_results = max_results_value
+            class_filter = normalize_class(cls) if cls else None
+
+            resolved_anchor, err = resolve_graph_or_storey_node(anchor)
+            if err:
+                error_msg = err.get("error", "Unknown error")
+                if "Ambiguous" in str(error_msg):
+                    return _err(
+                        str(error_msg),
+                        "ambiguous",
+                        {"candidates": err.get("candidates", [])},
+                    )
+                if "Invalid" in str(error_msg):
+                    return _err(str(error_msg), "invalid")
+                return _err(str(error_msg), "not_found")
+            if resolved_anchor is None:
+                return _err(f"Anchor not found: {anchor}", "not_found")
+
+            storey_id, storey_method = resolve_storey_for_node(resolved_anchor)
+            if storey_id is None:
+                return _err(
+                    (
+                        "Could not resolve a containing storey for the anchor. "
+                        "This helper uses containment first and exact Level-label "
+                        "fallback only."
+                    ),
+                    "not_found",
+                )
+
+            selected: list[tuple[tuple[Any, ...], int, dict[str, Any]]] = []
+            total_found = 0
+            for candidate_id in non_container_descendants(storey_id):
+                if candidate_id == resolved_anchor:
+                    continue
+                if class_filter is not None:
+                    if str(G.nodes[candidate_id].get("class_", "")).lower() != (
+                        class_filter.lower()
+                    ):
+                        continue
+                item = compact_node(candidate_id)
+                item.update(
+                    {
+                        "same_storey": True,
+                        "storey_id": storey_id,
+                    }
+                )
+                total_found += 1
+                insert_bounded_sorted_item(
+                    selected,
+                    item=item,
+                    sort_key=item_label_id_sort_key(item),
+                    sequence=total_found,
+                    max_results=max_results,
+                )
+
+            data = finalize_bounded_list_data(
+                {
+                    "anchor": resolved_anchor,
+                    "storey_id": storey_id,
+                    "class": class_filter,
+                    "elements": [],
+                },
+                items_key="elements",
+                items=[entry[2] for entry in selected],
+                total_found=total_found,
+                max_results=max_results,
+            )
+            data["storey_resolution"] = storey_method
+            return _ok_action(action, data)
+
+        if action == "relate_element_set":
+            relation = params.get("relation")
+            if not isinstance(relation, str) or not relation.strip():
+                return _err("Missing param: relation", "missing_param")
+
+            relation_value = normalize_relation_name(relation)
+            supported_relations = set(SPATIAL_RELATIONS) | set(TOPOLOGY_RELATIONS)
+            if relation_value not in supported_relations:
+                return _err(
+                    "Unsupported relation for relate_element_set",
+                    "invalid",
+                    {"allowed_relations": sorted(supported_relations)},
+                )
+            max_results_value = parse_legacy_max_results(action)
+            if isinstance(max_results_value, dict):
+                return _err(
+                    str(max_results_value["error"]),
+                    str(max_results_value["code"]),
+                )
+            max_results = max_results_value
+
+            element_refs, unresolved_ids, ref_err = resolve_requested_element_refs(
+                params.get("anchor_ids")
+            )
+            if ref_err is not None:
+                return _err(str(ref_err["error"]), str(ref_err["code"]))
+            if not element_refs:
+                return _err(
+                    "None of the provided anchor_ids could be resolved.",
+                    "not_found",
+                    {"unmatched_anchor_ids": unresolved_ids[:10]},
+                )
+
+            results_by_id: dict[str, dict[str, Any]] = {}
+            resolved_anchor_ids = [str(ref["node_id"]) for ref in element_refs]
+            anchors_with_matches: set[str] = set()
+            for ref in element_refs:
+                anchor_id = str(ref["node_id"])
+                anchor_had_match = False
+                for candidate in iter_relation_set_candidates(
+                    anchor_id,
+                    relation_value=relation_value,
+                ):
+                    anchor_had_match = True
+                    candidate["matched_anchor_ids"] = [anchor_id]
+                    candidate["matched_anchor_count"] = 1
+
+                    existing = results_by_id.get(str(candidate["id"]))
+                    if existing is None:
+                        results_by_id[str(candidate["id"])] = candidate
+                        continue
+                    results_by_id[str(candidate["id"])] = merge_relation_set_item(
+                        existing,
+                        candidate,
+                        relation_value=relation_value,
+                        anchor_id=anchor_id,
+                    )
+
+                if anchor_had_match:
+                    anchors_with_matches.add(anchor_id)
+
+            no_relation_match_anchor_ids = sorted(
+                set(resolved_anchor_ids) - anchors_with_matches,
+                key=stable_sort_text,
+            )
+            unresolved_anchor_ids = merge_requested_ids(unresolved_ids)
+            unmatched_anchor_ids = merge_requested_ids(
+                unresolved_anchor_ids,
+                no_relation_match_anchor_ids,
+            )
+
+            results = sorted(
+                results_by_id.values(),
+                key=lambda item: relation_result_sort_key(relation_value, item),
+            )
+            data = finalize_bounded_list_data(
+                {
+                    "anchor_ids": resolved_anchor_ids,
+                    "relation": relation_value,
+                    "anchor_count": len(resolved_anchor_ids)
+                    + len(unresolved_anchor_ids),
+                    "resolved_anchor_count": len(resolved_anchor_ids),
+                    "matched_anchor_count": len(anchors_with_matches),
+                    "unmatched_anchor_count": len(unmatched_anchor_ids),
+                    "unresolved_anchor_count": len(unresolved_anchor_ids),
+                    "no_relation_match_anchor_count": len(no_relation_match_anchor_ids),
+                    "results": [],
+                },
+                items_key="results",
+                items=results[:max_results],
+                total_found=len(results),
+                max_results=max_results,
+            )
+            if unmatched_anchor_ids:
+                data["unmatched_anchor_ids"] = unmatched_anchor_ids[:10]
+            if unresolved_anchor_ids:
+                data["unresolved_anchor_ids"] = unresolved_anchor_ids[:10]
+                warnings = list(data.get("warnings") or [])
+                warnings.append(
+                    (
+                        f"{len(unresolved_anchor_ids)} requested anchor ID(s) were not "
+                        "matched in the graph."
+                    )
+                )
+                data["warnings"] = warnings
+            if no_relation_match_anchor_ids:
+                warnings = list(data.get("warnings") or [])
+                warnings.append(
+                    (
+                        f"{len(no_relation_match_anchor_ids)} resolved anchor(s) "
+                        f"produced no '{relation_value}' relation matches."
+                    )
+                )
+                data["warnings"] = warnings
+                data["no_relation_match_anchor_ids"] = no_relation_match_anchor_ids[:10]
+            return _ok_action(action, data)
 
         if action == "get_adjacent_elements":
             element_id = params.get("element_id")
@@ -1247,6 +2424,13 @@ class NetworkXGraphBackend:
                 return _err("Missing param: element_id", "missing_param")
             if not isinstance(element_id, str):
                 return _err("Invalid param: element_id must be a string", "invalid")
+            max_results_value = parse_legacy_max_results(action)
+            if isinstance(max_results_value, dict):
+                return _err(
+                    str(max_results_value["error"]),
+                    str(max_results_value["code"]),
+                )
+            max_results = max_results_value
             resolved, err = resolve_element_id(element_id)
             if err:
                 error_msg = err.get("error", "Unknown error")
@@ -1262,21 +2446,37 @@ class NetworkXGraphBackend:
             if resolved is None:
                 return _err(f"Element not found: {element_id}", "not_found")
 
-            neighbors = []
+            selected: list[tuple[tuple[Any, ...], int, dict[str, Any]]] = []
+            total_found = 0
             for nbr, edge in spatial_neighbors(resolved):
                 current_relation = edge_relation(edge)
-                neighbors.append(
-                    {
-                        "id": nbr,
-                        "global_id": node_global_id(nbr),
-                        "label": G.nodes[nbr].get("label"),
-                        "class_": G.nodes[nbr].get("class_"),
-                        "relation": current_relation,
-                        "distance": edge.get("distance"),
-                        "source": edge_source(edge, current_relation),
-                    }
+                item = {
+                    "id": nbr,
+                    "global_id": node_global_id(nbr),
+                    "label": G.nodes[nbr].get("label"),
+                    "class_": G.nodes[nbr].get("class_"),
+                    "relation": current_relation,
+                    "distance": edge.get("distance"),
+                    "source": edge_source(edge, current_relation),
+                }
+                total_found += 1
+                insert_bounded_sorted_item(
+                    selected,
+                    item=item,
+                    sort_key=spatial_item_sort_key(item),
+                    sequence=total_found,
+                    max_results=max_results,
                 )
-            return _ok_action(action, {"element_id": resolved, "adjacent": neighbors})
+            return _ok_action(
+                action,
+                finalize_bounded_list_data(
+                    {"element_id": resolved, "adjacent": []},
+                    items_key="adjacent",
+                    items=[entry[2] for entry in selected],
+                    total_found=total_found,
+                    max_results=max_results,
+                ),
+            )
 
         if action == "get_topology_neighbors":
             element_id = params.get("element_id")
@@ -1289,6 +2489,13 @@ class NetworkXGraphBackend:
                 return _err("Missing param: relation", "missing_param")
             if not isinstance(relation, str):
                 return _err("Invalid param: relation must be a string", "invalid")
+            max_results_value = parse_legacy_max_results(action)
+            if isinstance(max_results_value, dict):
+                return _err(
+                    str(max_results_value["error"]),
+                    str(max_results_value["code"]),
+                )
+            max_results = max_results_value
 
             relation_value = normalize_relation_name(relation)
             allowed = set(TOPOLOGY_RELATIONS)
@@ -1314,11 +2521,26 @@ class NetworkXGraphBackend:
             if resolved is None:
                 return _err(f"Element not found: {element_id}", "not_found")
 
-            neighbors = []
-            for nbr, edge in topology_neighbors(resolved, {relation_value}):
-                current_relation = edge_relation(edge)
-                neighbors.append(
-                    {
+            selected: list[tuple[tuple[Any, ...], int, dict[str, Any]]] = []
+            total_found = 0
+            warnings: list[str] = []
+            if relation_value == "aligned_with":
+                aligned_items, alignment_warning = aligned_neighbors(resolved)
+                if alignment_warning:
+                    warnings.append(alignment_warning)
+                for item in aligned_items:
+                    total_found += 1
+                    insert_bounded_sorted_item(
+                        selected,
+                        item=item,
+                        sort_key=aligned_item_sort_key(item),
+                        sequence=total_found,
+                        max_results=max_results,
+                    )
+            else:
+                for nbr, edge in topology_neighbors(resolved, {relation_value}):
+                    current_relation = edge_relation(edge)
+                    item = {
                         "id": nbr,
                         "global_id": node_global_id(nbr),
                         "label": G.nodes[nbr].get("label"),
@@ -1328,18 +2550,34 @@ class NetworkXGraphBackend:
                         "overlap_area_xy": edge.get("overlap_area_xy"),
                         "intersection_volume": edge.get("intersection_volume"),
                         "contact_area": edge.get("contact_area"),
+                        "shared_boundary_elements": edge.get(
+                            "shared_boundary_elements"
+                        ),
                         "source": edge_source(edge, current_relation),
                     }
-                )
+                    total_found += 1
+                    insert_bounded_sorted_item(
+                        selected,
+                        item=item,
+                        sort_key=topology_item_sort_key(item),
+                        sequence=total_found,
+                        max_results=max_results,
+                    )
 
-            return _ok_action(
-                action,
+            data = finalize_bounded_list_data(
                 {
                     "element_id": resolved,
                     "relation": relation_value,
-                    "neighbors": neighbors,
+                    "neighbors": [],
                 },
+                items_key="neighbors",
+                items=[entry[2] for entry in selected],
+                total_found=total_found,
+                max_results=max_results,
             )
+            if warnings:
+                data["warnings"] = warnings
+            return _ok_action(action, data)
 
         if action == "get_intersections_3d":
             element_id = params.get("element_id")
@@ -1347,6 +2585,13 @@ class NetworkXGraphBackend:
                 return _err("Missing param: element_id", "missing_param")
             if not isinstance(element_id, str):
                 return _err("Invalid param: element_id must be a string", "invalid")
+            max_results_value = parse_legacy_max_results(action)
+            if isinstance(max_results_value, dict):
+                return _err(
+                    str(max_results_value["error"]),
+                    str(max_results_value["code"]),
+                )
+            max_results = max_results_value
 
             resolved, err = resolve_element_id(element_id)
             if err:
@@ -1363,29 +2608,50 @@ class NetworkXGraphBackend:
             if resolved is None:
                 return _err(f"Element not found: {element_id}", "not_found")
 
-            neighbors = []
+            selected: list[tuple[tuple[Any, ...], int, dict[str, Any]]] = []
+            total_found = 0
             for nbr, edge in topology_neighbors(resolved, {"intersects_3d"}):
                 current_relation = edge_relation(edge)
-                neighbors.append(
-                    {
-                        "id": nbr,
-                        "global_id": node_global_id(nbr),
-                        "label": G.nodes[nbr].get("label"),
-                        "class_": G.nodes[nbr].get("class_"),
-                        "relation": current_relation,
-                        "intersection_volume": edge.get("intersection_volume"),
-                        "contact_area": edge.get("contact_area"),
-                        "source": edge_source(edge, current_relation),
-                    }
+                item = {
+                    "id": nbr,
+                    "global_id": node_global_id(nbr),
+                    "label": G.nodes[nbr].get("label"),
+                    "class_": G.nodes[nbr].get("class_"),
+                    "relation": current_relation,
+                    "intersection_volume": edge.get("intersection_volume"),
+                    "contact_area": edge.get("contact_area"),
+                    "source": edge_source(edge, current_relation),
+                }
+                total_found += 1
+                insert_bounded_sorted_item(
+                    selected,
+                    item=item,
+                    sort_key=topology_item_sort_key(item),
+                    sequence=total_found,
+                    max_results=max_results,
                 )
             return _ok_action(
-                action, {"element_id": resolved, "intersections_3d": neighbors}
+                action,
+                finalize_bounded_list_data(
+                    {"element_id": resolved, "intersections_3d": []},
+                    items_key="intersections_3d",
+                    items=[entry[2] for entry in selected],
+                    total_found=total_found,
+                    max_results=max_results,
+                ),
             )
 
         if action == "find_nodes":
             cls = params.get("class")
             if cls is not None and not isinstance(cls, str):
                 return _err("Invalid param: class must be a string", "invalid")
+            max_results_value = parse_legacy_max_results(action)
+            if isinstance(max_results_value, dict):
+                return _err(
+                    str(max_results_value["error"]),
+                    str(max_results_value["code"]),
+                )
+            max_results = max_results_value
             class_filter = normalize_class(cls) if cls else None
             property_filters = params.get("property_filters", {})
             if property_filters and not isinstance(property_filters, dict):
@@ -1402,7 +2668,8 @@ class NetworkXGraphBackend:
                 db_lookup_conn = open_lookup_connection(runtime.context_db_path)
                 runtime.caches["db_lookup_conn"] = db_lookup_conn
 
-            matches = []
+            selected: list[tuple[tuple[Any, ...], int, dict[str, Any]]] = []
+            total_found = 0
             try:
                 for n, d in G.nodes(data=True):
                     if class_filter is not None:
@@ -1414,15 +2681,30 @@ class NetworkXGraphBackend:
                         db_conn=db_lookup_conn,
                     ):
                         continue
-                    matches.append(
-                        build_node_payload(n, d, payload_mode=resolved_payload_mode)
+                    item = build_node_payload(n, d, payload_mode=resolved_payload_mode)
+                    total_found += 1
+                    insert_bounded_sorted_item(
+                        selected,
+                        item=item,
+                        sort_key=item_label_id_sort_key(item),
+                        sequence=total_found,
+                        max_results=max_results,
                     )
             finally:
                 if db_lookup_conn is not None:
                     db_lookup_conn.close()
                     if runtime.caches.get("db_lookup_conn") is db_lookup_conn:
                         runtime.caches.pop("db_lookup_conn", None)
-            return _ok_action(action, {"class": class_filter, "elements": matches})
+            return _ok_action(
+                action,
+                finalize_bounded_list_data(
+                    {"class": class_filter, "elements": []},
+                    items_key="elements",
+                    items=[entry[2] for entry in selected],
+                    total_found=total_found,
+                    max_results=max_results,
+                ),
+            )
 
         if action == "traverse":
             start = params.get("start")
@@ -1437,14 +2719,22 @@ class NetworkXGraphBackend:
                 depth = int(params.get("depth", 1))
             except (TypeError, ValueError):
                 return _err("Invalid param: depth must be an integer", "invalid")
+            max_results_value = parse_legacy_max_results(action)
+            if isinstance(max_results_value, dict):
+                return _err(
+                    str(max_results_value["error"]),
+                    str(max_results_value["code"]),
+                )
+            max_results = max_results_value
             if start not in G:
                 return _err(f"Start node not found: {start}", "not_found")
             if depth < 1:
                 return _err("Depth must be >= 1", "invalid")
 
             visited = {start}
-            frontier = {start}
-            results = []
+            frontier = [start]
+            results: list[dict[str, Any]] = []
+            total_found = 0
             relation_filter: set[str] | None = None
             relation_value: str | None = None
             if relation_param is not None:
@@ -1460,27 +2750,28 @@ class NetworkXGraphBackend:
                 relation_filter = {relation_value}
 
             for _ in range(depth):
-                next_frontier = set()
-                for node in frontier:
-                    for nbr in G.successors(node):
-                        matched_edges = []
-                        for edge in iter_edge_dicts(node, nbr):
-                            current_relation = edge_relation(edge)
-                            if current_relation is None:
-                                continue
-                            if (
-                                relation_filter
-                                and current_relation not in relation_filter
-                            ):
-                                continue
-                            matched_edges.append((edge, current_relation))
-                        if not matched_edges:
-                            continue
+                next_frontier: list[str] = []
+                for node in stable_node_order(frontier):
+                    matched_by_neighbor: dict[
+                        str, list[tuple[dict[str, Any], str]]
+                    ] = {}
+                    for nbr, edge, current_relation in iter_traverse_neighbors(
+                        node,
+                        allowed_relations=relation_filter,
+                    ):
+                        matched_by_neighbor.setdefault(nbr, []).append(
+                            (edge, current_relation)
+                        )
+                    for nbr in stable_node_order(matched_by_neighbor):
+                        matched_edges = matched_by_neighbor[nbr]
                         if nbr in visited:
                             continue
                         visited.add(nbr)
-                        next_frontier.add(nbr)
+                        next_frontier.append(nbr)
                         for edge, current_relation in matched_edges:
+                            total_found += 1
+                            if len(results) >= max_results:
+                                continue
                             results.append(
                                 {
                                     "from": node,
@@ -1498,18 +2789,31 @@ class NetworkXGraphBackend:
 
             return _ok_action(
                 action,
-                {
-                    "start": start,
-                    "relation": relation_value,
-                    "depth": depth,
-                    "results": results,
-                },
+                finalize_bounded_list_data(
+                    {
+                        "start": start,
+                        "relation": relation_value,
+                        "depth": depth,
+                        "results": [],
+                    },
+                    items_key="results",
+                    items=results,
+                    total_found=total_found,
+                    max_results=max_results,
+                ),
             )
 
         if action == "spatial_query":
             cls = params.get("class")
             if cls is not None and not isinstance(cls, str):
                 return _err("Invalid param: class must be a string", "invalid")
+            max_results_value = parse_legacy_max_results(action)
+            if isinstance(max_results_value, dict):
+                return _err(
+                    str(max_results_value["error"]),
+                    str(max_results_value["code"]),
+                )
+            max_results = max_results_value
             class_filter = normalize_class(cls) if cls else None
             near = params.get("near")
             max_distance = params.get("max_distance")
@@ -1538,7 +2842,8 @@ class NetworkXGraphBackend:
             except (TypeError, ValueError):
                 return _err("Invalid param: max_distance must be a number", "invalid")
 
-            results = []
+            selected: list[tuple[tuple[Any, ...], int, dict[str, Any]]] = []
+            total_found = 0
             for nbr, edge in spatial_neighbors(resolved):
                 dist = edge.get("distance")
                 if dist is None or float(dist) > max_distance_value:
@@ -1550,24 +2855,36 @@ class NetworkXGraphBackend:
                     ):
                         continue
                 current_relation = edge_relation(edge)
-                results.append(
-                    {
-                        "id": nbr,
-                        "global_id": node_global_id(nbr),
-                        "label": G.nodes[nbr].get("label"),
-                        "class_": G.nodes[nbr].get("class_"),
-                        "relation": current_relation,
-                        "distance": dist,
-                        "source": edge_source(edge, current_relation),
-                    }
+                item = {
+                    "id": nbr,
+                    "global_id": node_global_id(nbr),
+                    "label": G.nodes[nbr].get("label"),
+                    "class_": G.nodes[nbr].get("class_"),
+                    "relation": current_relation,
+                    "distance": dist,
+                    "source": edge_source(edge, current_relation),
+                }
+                total_found += 1
+                insert_bounded_sorted_item(
+                    selected,
+                    item=item,
+                    sort_key=spatial_item_sort_key(item),
+                    sequence=total_found,
+                    max_results=max_results,
                 )
             return _ok_action(
                 action,
-                {
-                    "near": resolved,
-                    "max_distance": max_distance_value,
-                    "results": results,
-                },
+                finalize_bounded_list_data(
+                    {
+                        "near": resolved,
+                        "max_distance": max_distance_value,
+                        "results": [],
+                    },
+                    items_key="results",
+                    items=[entry[2] for entry in selected],
+                    total_found=total_found,
+                    max_results=max_results,
+                ),
             )
 
         if action == "find_elements_above":
@@ -1583,6 +2900,13 @@ class NetworkXGraphBackend:
                     max_gap_value = float(max_gap)
                 except (TypeError, ValueError):
                     return _err("Invalid param: max_gap must be a number", "invalid")
+            max_results_value = parse_legacy_max_results(action)
+            if isinstance(max_results_value, dict):
+                return _err(
+                    str(max_results_value["error"]),
+                    str(max_results_value["code"]),
+                )
+            max_results = max_results_value
 
             resolved, err = resolve_element_id(element_id)
             if err:
@@ -1599,7 +2923,8 @@ class NetworkXGraphBackend:
             if resolved is None:
                 return _err(f"Element not found: {element_id}", "not_found")
 
-            results = []
+            selected: list[tuple[tuple[Any, ...], int, dict[str, Any]]] = []
+            total_found = 0
             for nbr, edge in topology_neighbors(resolved, {"below"}):
                 gap = edge.get("vertical_gap")
                 if (
@@ -1609,24 +2934,36 @@ class NetworkXGraphBackend:
                 ):
                     continue
                 current_relation = edge_relation(edge)
-                results.append(
-                    {
-                        "id": nbr,
-                        "global_id": node_global_id(nbr),
-                        "label": G.nodes[nbr].get("label"),
-                        "class_": G.nodes[nbr].get("class_"),
-                        "relation": "above",
-                        "vertical_gap": gap,
-                        "source": edge_source(edge, current_relation),
-                    }
+                item = {
+                    "id": nbr,
+                    "global_id": node_global_id(nbr),
+                    "label": G.nodes[nbr].get("label"),
+                    "class_": G.nodes[nbr].get("class_"),
+                    "relation": "above",
+                    "vertical_gap": gap,
+                    "source": edge_source(edge, current_relation),
+                }
+                total_found += 1
+                insert_bounded_sorted_item(
+                    selected,
+                    item=item,
+                    sort_key=topology_item_sort_key(item),
+                    sequence=total_found,
+                    max_results=max_results,
                 )
             return _ok_action(
                 action,
-                {
-                    "element_id": resolved,
-                    "max_gap": max_gap_value,
-                    "results": results,
-                },
+                finalize_bounded_list_data(
+                    {
+                        "element_id": resolved,
+                        "max_gap": max_gap_value,
+                        "results": [],
+                    },
+                    items_key="results",
+                    items=[entry[2] for entry in selected],
+                    total_found=total_found,
+                    max_results=max_results,
+                ),
             )
 
         if action == "find_elements_below":
@@ -1642,6 +2979,13 @@ class NetworkXGraphBackend:
                     max_gap_value = float(max_gap)
                 except (TypeError, ValueError):
                     return _err("Invalid param: max_gap must be a number", "invalid")
+            max_results_value = parse_legacy_max_results(action)
+            if isinstance(max_results_value, dict):
+                return _err(
+                    str(max_results_value["error"]),
+                    str(max_results_value["code"]),
+                )
+            max_results = max_results_value
 
             resolved, err = resolve_element_id(element_id)
             if err:
@@ -1658,7 +3002,8 @@ class NetworkXGraphBackend:
             if resolved is None:
                 return _err(f"Element not found: {element_id}", "not_found")
 
-            results = []
+            selected: list[tuple[tuple[Any, ...], int, dict[str, Any]]] = []
+            total_found = 0
             for nbr, edge in topology_neighbors(resolved, {"above"}):
                 gap = edge.get("vertical_gap")
                 if (
@@ -1668,24 +3013,36 @@ class NetworkXGraphBackend:
                 ):
                     continue
                 current_relation = edge_relation(edge)
-                results.append(
-                    {
-                        "id": nbr,
-                        "global_id": node_global_id(nbr),
-                        "label": G.nodes[nbr].get("label"),
-                        "class_": G.nodes[nbr].get("class_"),
-                        "relation": "below",
-                        "vertical_gap": gap,
-                        "source": edge_source(edge, current_relation),
-                    }
+                item = {
+                    "id": nbr,
+                    "global_id": node_global_id(nbr),
+                    "label": G.nodes[nbr].get("label"),
+                    "class_": G.nodes[nbr].get("class_"),
+                    "relation": "below",
+                    "vertical_gap": gap,
+                    "source": edge_source(edge, current_relation),
+                }
+                total_found += 1
+                insert_bounded_sorted_item(
+                    selected,
+                    item=item,
+                    sort_key=topology_item_sort_key(item),
+                    sequence=total_found,
+                    max_results=max_results,
                 )
             return _ok_action(
                 action,
-                {
-                    "element_id": resolved,
-                    "max_gap": max_gap_value,
-                    "results": results,
-                },
+                finalize_bounded_list_data(
+                    {
+                        "element_id": resolved,
+                        "max_gap": max_gap_value,
+                        "results": [],
+                    },
+                    items_key="results",
+                    items=[entry[2] for entry in selected],
+                    total_found=total_found,
+                    max_results=max_results,
+                ),
             )
 
         if action == "list_property_keys":
@@ -2243,12 +3600,6 @@ class NetworkXGraphBackend:
                 ),
             )
 
-            warnings: list[str] = []
-            if len(ordered_paths) > max_results:
-                warnings.append(
-                    f"Trace truncated to {max_results} result(s) to stay bounded."
-                )
-
             results: list[dict[str, Any]] = []
             for path in ordered_paths[:max_results]:
                 grounded_path, steps = build_grounded_path(
@@ -2290,15 +3641,21 @@ class NetworkXGraphBackend:
                 "start": resolved_start,
                 "relation": single_relation,
                 "max_depth": max_depth,
-                "results": results,
                 "visited_count": max(len(paths) - 1, 0),
                 "evidence": evidence,
             }
             if len(ordered_relations) > 1:
                 data["relations"] = ordered_relations
-            if warnings:
-                data["warnings"] = warnings
-            return _ok_action(action, data)
+            return _ok_action(
+                action,
+                finalize_bounded_list_data(
+                    data,
+                    items_key="results",
+                    items=results,
+                    total_found=len(ordered_paths),
+                    max_results=max_results,
+                ),
+            )
 
         if action == "find_shortest_path":
             start = params.get("start")
@@ -2516,12 +3873,6 @@ class NetworkXGraphBackend:
                 ),
             )
 
-            warnings: list[str] = []
-            if len(ordered_elements) > max_results:
-                warnings.append(
-                    f"Classification results truncated to {max_results} element(s)."
-                )
-
             selected_elements = ordered_elements[:max_results]
             classification_evidence: list[dict[str, Any]] = []
             for item in matched_classifications[:2]:
@@ -2548,14 +3899,20 @@ class NetworkXGraphBackend:
 
             data = {
                 "classification": classification,
-                "elements": selected_elements,
                 "matched_classifications": matched_classifications,
                 "total": len(ordered_elements),
                 "evidence": evidence,
             }
-            if warnings:
-                data["warnings"] = warnings
-            return _ok_action(action, data)
+            return _ok_action(
+                action,
+                finalize_bounded_list_data(
+                    data,
+                    items_key="elements",
+                    items=selected_elements,
+                    total_found=len(ordered_elements),
+                    max_results=max_results,
+                ),
+            )
 
         if action == "find_equipment_serving_space":
             space = params.get("space")
@@ -2807,12 +4164,6 @@ class NetworkXGraphBackend:
                     "No upstream equipment was found; returning terminal-level "
                     "serving candidates instead."
                 )
-            if len(ordered_candidates) > max_results:
-                warnings.append(
-                    "Serving-equipment results truncated to "
-                    f"{max_results} candidate(s)."
-                )
-
             equipment = []
             for item in ordered_candidates[:max_results]:
                 candidate = dict(item)
@@ -2847,13 +4198,21 @@ class NetworkXGraphBackend:
 
             data = {
                 "space": resolved_space,
-                "equipment": equipment,
                 "seed_count": len(seed_map),
                 "evidence": evidence,
             }
             if warnings:
                 data["warnings"] = warnings
-            return _ok_action(action, data)
+            return _ok_action(
+                action,
+                finalize_bounded_list_data(
+                    data,
+                    items_key="equipment",
+                    items=equipment,
+                    total_found=len(ordered_candidates),
+                    max_results=max_results,
+                ),
+            )
 
         if action in ROADMAP_ACTION_SET:
             return _err(
