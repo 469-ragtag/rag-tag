@@ -22,222 +22,222 @@
 # --tui, --db, --graph-dataset, --trace
 
 defaults:
-  # defaults: baseline selections used when no runtime override is provided.
-  router_profile: router-gemini-flash
-  agent_profile: dbx-claude-sonnet-4-6
-  # router_mode common values:
-  # - llm (or gemini): use LLM routing
-  # - rule (or rules / heuristic): use rule-based routing
-  # Empty/unset lets rag-tag auto-select based on available router config.
-  router_mode: llm
-  # graph_orchestrator allowed values: pydanticai, langgraph
-  # Controls graph-route orchestration runtime only (not profile/provider selection).
-  graph_orchestrator: pydanticai
-  # Graph step budget for graph-agent execution (>=1).
-  graph_max_steps: 20
-  # Retries for schema-constrained graph outputs (>=0).
-  graph_output_retries: 5
-
-graph_orchestration:
-  # graph_orchestration: advanced tunables for orchestrator behavior.
-  # Defaults shown here are current built-in defaults.
-  enabled_subquestion_decomposition: true
-  max_subquestions: 3
-  reserved_orchestration_steps: 3
-  specialist_step_cap: null
-  fallback_to_graph_agent: true
-
-graph_build:
-  # graph_build: parser-time graph construction controls.
-  derived_edge_pruning:
-    # When enabled, skip selected classes during derived spatial/topology
-    # edge generation only. Nodes and explicit/hierarchy/type edges remain.
-    enabled: true
-    exclude_classes:
-      - IfcMember
-      - IfcPlate
-  overlap_xy:
-    # Controls whether raw overlaps_xy edges are emitted after overlap is
-    # computed internally for vertical topology.
-    # Default is none so dense models do not materialize raw overlap edges
-    # unless explicitly requested.
-    # Modes:
-    # - full: emit every positive overlap pair
-    # - threshold: emit only pairs whose overlap ratio >= min_ratio
-    # - top_k: emit each node's strongest K overlap pairs (symmetric union)
-    # - none: do not emit overlaps_xy edges at all
-    mode: none
-    # Used only in threshold mode. Ratio = overlap_area / min(footprint areas).
-    min_ratio: 0.20
-    # Used only in top_k mode.
-    top_k: 5
-
-providers:
-  # providers: named provider connection presets reused by profiles.
-  databricks:
-    type: databricks
-    # Keep actual host/token values in .env and reference them here by env key.
-    # Use either host_env (workspace host) OR base_url_env (full OpenAI-compatible base URL).
-    host_env: DATABRICKS_HOST
-    token_env: DATABRICKS_TOKEN
-
-profiles:
-  # profiles: reusable model presets selected by defaults.* or CLI/env overrides.
-  # - model is provider-specific (for Databricks this is usually endpoint/model name).
-  # - provider is optional for direct providers (google-gla/cohere) and required
-  #   when referencing a named provider block above.
-  # - settings are passed to the model SDK/provider integration.
-  router-gemini-flash:
-    model: google-gla:gemini-2.5-flash
-    settings:
-      temperature: 0.0
-
-  # Current non-Databricks graph-agent baseline.
-  cohere-command-a:
-    model: cohere:command-a-03-2025
-    settings:
-      temperature: 0.1
-      max_tokens: 1024
-
-  dbx-claude-sonnet-4-6:
-    provider: databricks
-    # For Databricks-backed profiles, model is typically a serving endpoint name.
-    # For Foundation Model API usage this may be a Databricks model identifier.
-    model: databricks-claude-sonnet-4-6
-    settings:
-      temperature: 0.1
-      max_tokens: 1024
-
-  dbx-gpt-oss-20b:
-    provider: databricks
-    model: databricks-gpt-oss-20b
-    settings:
-      temperature: 0.1
-      max_tokens: 1024
-
-  dbx-llama-4-maverick:
-    provider: databricks
-    model: databricks-llama-4-maverick
-    settings:
-      temperature: 0.1
-      max_tokens: 1024
-
-  dbx-gemma-3-12b:
-    provider: databricks
-    model: databricks-gemma-3-12b
-    settings:
-      temperature: 0.1
-      max_tokens: 1024
-
-benchmark_targets:
-  # benchmark_targets: reusable dataset/db/graph bundles for end-to-end benchmark runs.
-  # Preferred with scripts/eval_benchmarks.py --preset <name> [--target <name>].
-  building-architecture:
-    description: Building-Architecture benchmark dataset and runtime artifacts.
-    questions_file: evals/benchmark_cases_v1.yaml
-    db_paths:
-      - output/Building-Architecture.db
-    graph_dataset: Building-Architecture
-
-benchmark_presets:
-  # benchmark_presets: recommended short benchmark recipes layered on a target.
-  smoke:
-    description: Fast sanity-check benchmark run on one router/agent baseline.
-    target: building-architecture
-    router_profiles:
-      - router-gemini-flash
-    agent_profiles:
-      - cohere-command-a
-    prompt_strategies:
-      - baseline
-    graph_orchestrators:
-      - pydanticai
-    answer_judge_model: google-gla:gemini-2.5-flash
-    repeat: 1
-    max_concurrency: 1
-
-  full:
-    description: Full end-to-end benchmark matrix used for shared team comparisons.
-    target: building-architecture
-    router_profiles:
-      - router-gemini-flash
-      - dbx-gpt-oss-20b
-      - dbx-gemma-3-12b
-    agent_profiles:
-      - cohere-command-a
-      - dbx-claude-sonnet-4-6
-      - dbx-gpt-oss-20b
-      - dbx-llama-4-maverick
-      - dbx-gemma-3-12b
-    prompt_strategies:
-      - baseline
-      - strict-grounded
-    graph_orchestrators:
-      - pydanticai
-      - langgraph
-    answer_judge_model: google-gla:gemini-2.5-flash
-    repeat: 1
-    max_concurrency: 1
-    tags:
-      - sql
-      - graph
-
-experiments:
-  # experiments: named profile sets for repeatable comparisons
-  # (for example scripts/eval_graph_models.py --experiment <name>).
-  # router_profile / agent_profile set defaults for that experiment run.
-  # profiles lists the candidate profiles to evaluate.
-  graph-dbx-smoke:
-    description: Compare Databricks graph-agent profiles on the same questions.
+    # defaults: baseline selections used when no runtime override is provided.
     router_profile: router-gemini-flash
     agent_profile: dbx-claude-sonnet-4-6
-    profiles:
-      - dbx-claude-sonnet-4-6
-      - dbx-gpt-oss-20b
-      - dbx-llama-4-maverick
-      - dbx-gemma-3-12b
+    # router_mode common values:
+    # - llm (or gemini): use LLM routing
+    # - rule (or rules / heuristic): use rule-based routing
+    # Empty/unset lets rag-tag auto-select based on available router config.
+    router_mode: llm
+    # graph_orchestrator allowed values: pydanticai, langgraph
+    # Controls graph-route orchestration runtime only (not profile/provider selection).
+    graph_orchestrator: pydanticai
+    # Graph step budget for graph-agent execution (>=1).
+    graph_max_steps: 20
+    # Retries for schema-constrained graph outputs (>=0).
+    graph_output_retries: 5
 
-  graph-agent-compare:
-    description: Compare the current Cohere graph agent against Databricks options.
-    router_profile: router-gemini-flash
-    agent_profile: cohere-command-a
-    profiles:
-      - cohere-command-a
-      - dbx-claude-sonnet-4-6
-      - dbx-gpt-oss-20b
-      - dbx-llama-4-maverick
-      - dbx-gemma-3-12b
+graph_orchestration:
+    # graph_orchestration: advanced tunables for orchestrator behavior.
+    # Defaults shown here are current built-in defaults.
+    enabled_subquestion_decomposition: true
+    max_subquestions: 3
+    reserved_orchestration_steps: 3
+    specialist_step_cap: null
+    fallback_to_graph_agent: true
 
-  benchmark-e2e-v1:
-    description: Compatibility benchmark experiment mirroring the full preset.
-    # Compatibility path for older commands:
-    #   uv run python scripts/eval_benchmarks.py --experiment benchmark-e2e-v1
-    # Preferred path now uses benchmark_targets + benchmark_presets above.
-    router_profile: router-gemini-flash
-    agent_profile: cohere-command-a
-    questions_file: evals/benchmark_cases_v1.yaml
-    router_profiles:
-      - router-gemini-flash
-      - dbx-gpt-oss-20b
-      - dbx-gemma-3-12b
-    agent_profiles:
-      - cohere-command-a
-      - dbx-claude-sonnet-4-6
-      - dbx-gpt-oss-20b
-      - dbx-llama-4-maverick
-      - dbx-gemma-3-12b
-    prompt_strategies:
-      - baseline
-      - strict-grounded
-    graph_orchestrators:
-      - pydanticai
-      - langgraph
-    # Keep the answer judge explicit so benchmark runs do not depend on
-    # Pydantic Evals' hidden default judge model.
-    answer_judge_model: google-gla:gemini-2.5-flash
-    repeat: 1
-    max_concurrency: 1
-    # Optional case filtering: keep only YAML cases whose tags intersect this list.
-    tags:
-      - sql
-      - graph
+graph_build:
+    # graph_build: parser-time graph construction controls.
+    derived_edge_pruning:
+        # When enabled, skip selected classes during derived spatial/topology
+        # edge generation only. Nodes and explicit/hierarchy/type edges remain.
+        enabled: true
+        exclude_classes:
+            - IfcMember
+            - IfcPlate
+    overlap_xy:
+        # Controls whether raw overlaps_xy edges are emitted after overlap is
+        # computed internally for vertical topology.
+        # Default is none so dense models do not materialize raw overlap edges
+        # unless explicitly requested.
+        # Modes:
+        # - full: emit every positive overlap pair
+        # - threshold: emit only pairs whose overlap ratio >= min_ratio
+        # - top_k: emit each node's strongest K overlap pairs (symmetric union)
+        # - none: do not emit overlaps_xy edges at all
+        mode: none
+        # Used only in threshold mode. Ratio = overlap_area / min(footprint areas).
+        min_ratio: 0.20
+        # Used only in top_k mode.
+        top_k: 5
+
+providers:
+    # providers: named provider connection presets reused by profiles.
+    databricks:
+        type: databricks
+        # Keep actual host/token values in .env and reference them here by env key.
+        # Use either host_env (workspace host) OR base_url_env (full OpenAI-compatible base URL).
+        host_env: DATABRICKS_HOST
+        token_env: DATABRICKS_TOKEN
+
+profiles:
+    # profiles: reusable model presets selected by defaults.* or CLI/env overrides.
+    # - model is provider-specific (for Databricks this is usually endpoint/model name).
+    # - provider is optional for direct providers (google-gla/cohere) and required
+    #   when referencing a named provider block above.
+    # - settings are passed to the model SDK/provider integration.
+    router-gemini-flash:
+        model: google-gla:gemini-2.5-flash
+        settings:
+            temperature: 0.0
+
+    # Current non-Databricks graph-agent baseline.
+    cohere-command-a:
+        model: cohere:command-a-03-2025
+        settings:
+            temperature: 0.1
+            max_tokens: 1024
+
+    dbx-claude-sonnet-4-6:
+        provider: databricks
+        # For Databricks-backed profiles, model is typically a serving endpoint name.
+        # For Foundation Model API usage this may be a Databricks model identifier.
+        model: databricks-claude-sonnet-4-6
+        settings:
+            temperature: 0.1
+            max_tokens: 1024
+
+    dbx-gpt-oss-20b:
+        provider: databricks
+        model: databricks-gpt-oss-20b
+        settings:
+            temperature: 0.1
+            max_tokens: 1024
+
+    dbx-llama-4-maverick:
+        provider: databricks
+        model: databricks-llama-4-maverick
+        settings:
+            temperature: 0.1
+            max_tokens: 1024
+
+    dbx-gemma-3-12b:
+        provider: databricks
+        model: databricks-gemma-3-12b
+        settings:
+            temperature: 0.1
+            max_tokens: 1024
+
+benchmark_targets:
+    # benchmark_targets: reusable dataset/db/graph bundles for end-to-end benchmark runs.
+    # Preferred with scripts/eval_benchmarks.py --preset <name> [--target <name>].
+    building-architecture:
+        description: Building-Architecture benchmark dataset and runtime artifacts.
+        questions_file: evals/benchmark_cases_v1.yaml
+        db_paths:
+            - output/Building-Architecture.db
+        graph_dataset: Building-Architecture
+
+benchmark_presets:
+    # benchmark_presets: recommended short benchmark recipes layered on a target.
+    smoke:
+        description: Fast sanity-check benchmark run on one router/agent baseline.
+        target: building-architecture
+        router_profiles:
+            - router-gemini-flash
+        agent_profiles:
+            - cohere-command-a
+        prompt_strategies:
+            - baseline
+        graph_orchestrators:
+            - pydanticai
+        answer_judge_model: google-gla:gemini-2.5-flash
+        repeat: 1
+        max_concurrency: 1
+
+    full:
+        description: Full end-to-end benchmark matrix used for shared team comparisons.
+        target: building-architecture
+        router_profiles:
+            - router-gemini-flash
+            - dbx-gpt-oss-20b
+            - dbx-gemma-3-12b
+        agent_profiles:
+            - cohere-command-a
+            - dbx-claude-sonnet-4-6
+            - dbx-gpt-oss-20b
+            - dbx-llama-4-maverick
+            - dbx-gemma-3-12b
+        prompt_strategies:
+            - baseline
+            - strict-grounded
+        graph_orchestrators:
+            - pydanticai
+            - langgraph
+        answer_judge_model: google-gla:gemini-2.5-flash
+        repeat: 1
+        max_concurrency: 1
+        tags:
+            - sql
+            - graph
+
+experiments:
+    # experiments: named profile sets for repeatable comparisons
+    # (for example scripts/eval_graph_models.py --experiment <name>).
+    # router_profile / agent_profile set defaults for that experiment run.
+    # profiles lists the candidate profiles to evaluate.
+    graph-dbx-smoke:
+        description: Compare Databricks graph-agent profiles on the same questions.
+        router_profile: router-gemini-flash
+        agent_profile: dbx-claude-sonnet-4-6
+        profiles:
+            - dbx-claude-sonnet-4-6
+            - dbx-gpt-oss-20b
+            - dbx-llama-4-maverick
+            - dbx-gemma-3-12b
+
+    graph-agent-compare:
+        description: Compare the current Cohere graph agent against Databricks options.
+        router_profile: router-gemini-flash
+        agent_profile: cohere-command-a
+        profiles:
+            - cohere-command-a
+            - dbx-claude-sonnet-4-6
+            - dbx-gpt-oss-20b
+            - dbx-llama-4-maverick
+            - dbx-gemma-3-12b
+
+    benchmark-e2e-v1:
+        description: Compatibility benchmark experiment mirroring the full preset.
+        # Compatibility path for older commands:
+        #   uv run python scripts/eval_benchmarks.py --experiment benchmark-e2e-v1
+        # Preferred path now uses benchmark_targets + benchmark_presets above.
+        router_profile: router-gemini-flash
+        agent_profile: cohere-command-a
+        questions_file: evals/benchmark_cases_v1.yaml
+        router_profiles:
+            - router-gemini-flash
+            - dbx-gpt-oss-20b
+            - dbx-gemma-3-12b
+        agent_profiles:
+            - cohere-command-a
+            - dbx-claude-sonnet-4-6
+            - dbx-gpt-oss-20b
+            - dbx-llama-4-maverick
+            - dbx-gemma-3-12b
+        prompt_strategies:
+            - baseline
+            - strict-grounded
+        graph_orchestrators:
+            - pydanticai
+            - langgraph
+        # Keep the answer judge explicit so benchmark runs do not depend on
+        # Pydantic Evals' hidden default judge model.
+        answer_judge_model: google-gla:gemini-2.5-flash
+        repeat: 1
+        max_concurrency: 1
+        # Optional case filtering: keep only YAML cases whose tags intersect this list.
+        tags:
+            - sql
+            - graph

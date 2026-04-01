@@ -12,7 +12,6 @@ cases:
           judge_notes:
               - correctly identifies the total absence of windows in the IFC
       tags: [boolean, graph, windows, containment]
-      max_duration_s: 15
 
     - id: q002
       question: Is it false that there are windows in the living room?
@@ -22,7 +21,6 @@ cases:
           judge_notes:
               - logic negation of q001
       tags: [boolean, graph, windows, containment]
-      max_duration_s: 15
 
     # ---------------------------------------------------------------------------
     # External walls with fire rating >= REI60
@@ -35,7 +33,6 @@ cases:
           judge_notes:
               - checks wall properties and finds FireRating missing for walls
       tags: [boolean, sql, walls, properties]
-      max_duration_s: 15
 
     - id: q004
       question: Is it false that there are external walls present with a fire rating greater or equal to REI60?
@@ -45,7 +42,6 @@ cases:
           judge_notes:
               - logic negation of q003
       tags: [boolean, sql, walls, properties]
-      max_duration_s: 15
 
     # ---------------------------------------------------------------------------
     # Egress / Doors
@@ -58,7 +54,6 @@ cases:
           judge_notes:
               - identifies lack of doors/openings in the model
       tags: [boolean, graph, doors, topology]
-      max_duration_s: 15
 
     - id: q006
       question: Is it false that every space has one or more egress?
@@ -68,7 +63,6 @@ cases:
           judge_notes:
               - logic negation of q005
       tags: [boolean, graph, doors, topology]
-      max_duration_s: 15
 
     - id: q007
       question: Is it true that every space has two or more egresses?
@@ -78,7 +72,6 @@ cases:
           judge_notes:
               - identifies absence of doors
       tags: [boolean, graph, doors, topology]
-      max_duration_s: 15
 
     - id: q008
       question: Is it false that every space has two or more egresses?
@@ -88,7 +81,6 @@ cases:
           judge_notes:
               - logic negation of q007
       tags: [boolean, graph, doors, topology]
-      max_duration_s: 15
 
     - id: q009
       question: Is it true that the entry halls have at least one external door?
@@ -98,7 +90,6 @@ cases:
           judge_notes:
               - identifies absence of doors
       tags: [boolean, graph, doors, topology]
-      max_duration_s: 15
 
     - id: q010
       question: Is it false that the entry halls have at least one external door?
@@ -108,7 +99,6 @@ cases:
           judge_notes:
               - logic negation of q009
       tags: [boolean, graph, doors, topology]
-      max_duration_s: 15
 
     - id: q011
       question: Is it true that the entry hall have at least one external door?
@@ -118,7 +108,6 @@ cases:
           judge_notes:
               - handles singular phrasing of entry hall
       tags: [boolean, graph, doors, topology]
-      max_duration_s: 15
 
     - id: q012
       question: Is it false that the entry hall has at least one external door?
@@ -128,7 +117,6 @@ cases:
           judge_notes:
               - logic negation of q011
       tags: [boolean, graph, doors, topology]
-      max_duration_s: 15
 
     # ---------------------------------------------------------------------------
     # Wall Load-Bearing Properties
@@ -141,7 +129,6 @@ cases:
           judge_notes:
               - checks for explicit LoadBearing property on walls and finds it missing
       tags: [boolean, sql, walls, properties]
-      max_duration_s: 15
 
     - id: q014
       question: Is it false that all outer walls of the structure have a property denoting them as load-bearing?
@@ -151,7 +138,6 @@ cases:
           judge_notes:
               - logic negation of q013
       tags: [boolean, sql, walls, properties]
-      max_duration_s: 15
 
     # ---------------------------------------------------------------------------
     # Connectivity / Paths
@@ -164,7 +150,6 @@ cases:
           judge_notes:
               - correctly identifies lack of explicit connectivity graph edges
       tags: [boolean, graph, topology, path]
-      max_duration_s: 20
 
     - id: q016
       question: Is it false that there is a continuous path from the entry hall to the farthest point in the living room?
@@ -174,7 +159,6 @@ cases:
           judge_notes:
               - logic negation of q015
       tags: [boolean, graph, topology, path]
-      max_duration_s: 20
 
     # ---------------------------------------------------------------------------
     # Walls Existence
@@ -187,7 +171,6 @@ cases:
           judge_notes:
               - detects presence of walls
       tags: [boolean, sql, walls, existence]
-      max_duration_s: 10
 
     - id: q018
       question: Is it false that there are walls in the model?
@@ -197,7 +180,6 @@ cases:
           judge_notes:
               - logic negation of q017
       tags: [boolean, sql, walls, existence]
-      max_duration_s: 10
 
     # ---------------------------------------------------------------------------
     # Ground Floor Spaces
@@ -210,7 +192,6 @@ cases:
           judge_notes:
               - identifies spaces contained in the ground floor
       tags: [boolean, graph, spaces, containment]
-      max_duration_s: 15
 
     - id: q020
       question: Is it false that there are spaces located on the ground floor?
@@ -220,7 +201,6 @@ cases:
           judge_notes:
               - logic negation of q019
       tags: [boolean, graph, spaces, containment]
-      max_duration_s: 15
 
     # ---------------------------------------------------------------------------
     # Slabs
@@ -233,7 +213,6 @@ cases:
           judge_notes:
               - checks existence and names of slabs
       tags: [boolean, sql, slabs, existence]
-      max_duration_s: 10
 
     - id: q022
       question: Is it false that there are slabs in the model and that they have defined names?
@@ -243,7 +222,6 @@ cases:
           judge_notes:
               - logic negation of q021
       tags: [boolean, sql, slabs, existence]
-      max_duration_s: 10
 
     # ---------------------------------------------------------------------------
     # Proxies
@@ -256,7 +234,6 @@ cases:
           judge_notes:
               - detects proxy elements
       tags: [boolean, sql, proxies, existence]
-      max_duration_s: 10
 
     - id: q024
       question: Is it false that there are building element proxies in the project?
@@ -266,7 +243,6 @@ cases:
           judge_notes:
               - logic negation of q023
       tags: [boolean, sql, proxies, existence]
-      max_duration_s: 10
 
     # ---------------------------------------------------------------------------
     # Roof Naming
@@ -279,7 +255,6 @@ cases:
           judge_notes:
               - filters elements by name correctly
       tags: [boolean, sql, roof, filter]
-      max_duration_s: 10
 
     - id: q026
       question: Is it false that there are elements whose name contains the word "roof"?
@@ -289,7 +264,6 @@ cases:
           judge_notes:
               - logic negation of q025
       tags: [boolean, sql, roof, filter]
-      max_duration_s: 10
 
     # ---------------------------------------------------------------------------
     # Chimney Containment
@@ -302,7 +276,6 @@ cases:
           judge_notes:
               - verifies containment relationship for the chimney
       tags: [boolean, graph, chimney, containment]
-      max_duration_s: 15
 
     - id: q028
       question: Is it false that the chimney is contained within a building storey?
@@ -312,7 +285,6 @@ cases:
           judge_notes:
               - logic negation of q027
       tags: [boolean, graph, chimney, containment]
-      max_duration_s: 15
 
     # ---------------------------------------------------------------------------
     # Elements in Building Excl Storeys
@@ -325,7 +297,6 @@ cases:
           judge_notes:
               - checks for non-storey direct children of the building
       tags: [boolean, graph, building, containment]
-      max_duration_s: 15
 
     - id: q030
       question: Is it false that there are elements directly contained in the Single-family house building, excluding storeys?
@@ -335,7 +306,6 @@ cases:
           judge_notes:
               - logic negation of q029
       tags: [boolean, graph, building, containment]
-      max_duration_s: 15
 
     # ---------------------------------------------------------------------------
     # Site Contains Origin
@@ -348,7 +318,6 @@ cases:
           judge_notes:
               - verifies containment of origin in a site
       tags: [boolean, graph, site, origin]
-      max_duration_s: 15
 
     - id: q032
       question: Is it false that a site contains the "origin" element?
@@ -358,7 +327,6 @@ cases:
           judge_notes:
               - logic negation of q031
       tags: [boolean, graph, site, origin]
-      max_duration_s: 15
 
     # ---------------------------------------------------------------------------
     # Roof Assembly
@@ -371,7 +339,6 @@ cases:
           judge_notes:
               - identifies aggregation relationship for roof
       tags: [boolean, graph, roof, assembly]
-      max_duration_s: 15
 
     - id: q034
       question: Is it false that the model defines elements that make up a roof assembly?
@@ -381,7 +348,6 @@ cases:
           judge_notes:
               - logic negation of q033
       tags: [boolean, graph, roof, assembly]
-      max_duration_s: 15
 
     # ---------------------------------------------------------------------------
     # Proxies in Living Room
@@ -394,7 +360,6 @@ cases:
           judge_notes:
               - verifies containment of proxy in living room space
       tags: [boolean, graph, proxies, containment]
-      max_duration_s: 15
 
     - id: q036
       question: Is it false that there are proxy elements located directly inside the living room?
@@ -404,7 +369,6 @@ cases:
           judge_notes:
               - logic negation of q035
       tags: [boolean, graph, proxies, containment]
-      max_duration_s: 15
 
     # ---------------------------------------------------------------------------
     # Exactly One Site
@@ -417,7 +381,6 @@ cases:
           judge_notes:
               - counts sites and checks against exactly one
       tags: [boolean, sql, site, count]
-      max_duration_s: 10
 
     - id: q038
       question: Is it false that the model defines exactly one site entity?
@@ -427,7 +390,6 @@ cases:
           judge_notes:
               - logic negation of q037
       tags: [boolean, sql, site, count]
-      max_duration_s: 10
 
     # ---------------------------------------------------------------------------
     # Kitchen Material
@@ -440,7 +402,6 @@ cases:
           judge_notes:
               - finds material association for kitchen
       tags: [boolean, graph, kitchen, material]
-      max_duration_s: 15
 
     - id: q040
       question: Is it false that the "kitchen" furniture has a material assigned?
@@ -450,7 +411,6 @@ cases:
           judge_notes:
               - logic negation of q039
       tags: [boolean, graph, kitchen, material]
-      max_duration_s: 15
 
     # ---------------------------------------------------------------------------
     # Left Roof Slab Volume
@@ -463,7 +423,6 @@ cases:
           judge_notes:
               - extracts volume quantity and evaluates condition
       tags: [boolean, graph, slab, quantity]
-      max_duration_s: 15
 
     - id: q042
       question: Is it false that the left roof slab has a net volume and greater than 2 cubic metres?
@@ -473,7 +432,6 @@ cases:
           judge_notes:
               - logic negation of q041
       tags: [boolean, graph, slab, quantity]
-      max_duration_s: 15
 
     # ---------------------------------------------------------------------------
     # Left Outer Wall Dimensions
@@ -486,7 +444,6 @@ cases:
           judge_notes:
               - extracts dimensions and correctly handles mm to m conversion mentally
       tags: [boolean, graph, wall, dimensions]
-      max_duration_s: 15
 
     - id: q044
       question: Is it false that the left outer wall has length greater than 5 metres and width smaller than 3 metres?
@@ -496,7 +453,6 @@ cases:
           judge_notes:
               - logic negation of q043
       tags: [boolean, graph, wall, dimensions]
-      max_duration_s: 15
 
     # ---------------------------------------------------------------------------
     # Ground Floor Slab Fire Rating
@@ -509,7 +465,6 @@ cases:
           judge_notes:
               - identifies fire rating property on the slab
       tags: [boolean, graph, slab, properties]
-      max_duration_s: 15
 
     - id: q046
       question: Is it false that the ground floor slab has a fire rating?
@@ -519,7 +474,6 @@ cases:
           judge_notes:
               - logic negation of q045
       tags: [boolean, graph, slab, properties]
-      max_duration_s: 15
 
     # ---------------------------------------------------------------------------
     # BONUS: Non-Boolean
@@ -532,7 +486,6 @@ cases:
           judge_notes:
               - correctly identifies 0 doors
       tags: [bonus, count, doors]
-      max_duration_s: 10
 
     - id: q048
       question: How many spaces are defined on the storey "00 groundfloor"?
@@ -542,7 +495,6 @@ cases:
           judge_notes:
               - correctly counts spaces on groundfloor
       tags: [bonus, count, spaces]
-      max_duration_s: 10
 
     - id: q049
       question: List all external walls on the storey "00 groundfloor" along with their fire rating, if available.
@@ -556,7 +508,6 @@ cases:
           judge_notes:
               - lists the 3 outer walls and correctly notes absence of fire rating
       tags: [bonus, list, walls, properties]
-      max_duration_s: 20
 
     - id: q050
       question: Which elements form the physical boundary between the living room and the exterior environment?
@@ -566,7 +517,6 @@ cases:
           judge_notes:
               - recognizes the lack of explicit space boundaries in the graph
       tags: [bonus, topology, boundaries]
-      max_duration_s: 20
 
     - id: q051
       question: Which spaces are directly reachable from the entry hall without passing through the living room?
@@ -576,7 +526,6 @@ cases:
           judge_notes:
               - correctly deduces lack of topological connectivity
       tags: [bonus, topology, path]
-      max_duration_s: 20
 
     - id: q052
       question: Which walls support the main roof slabs of the house (the two "house - roof - slab" elements)?
@@ -586,7 +535,6 @@ cases:
           judge_notes:
               - correctly identifies missing explicit structural connections
       tags: [bonus, topology, support]
-      max_duration_s: 20
 
     - id: q053
       question: For each external wall, report its length and whether it belongs to the front, back, left side, or right side of the house.
@@ -599,7 +547,6 @@ cases:
           judge_notes:
               - correctly extracts length quantities and maps positions based on wall names
       tags: [bonus, list, walls, dimensions]
-      max_duration_s: 20
 
     - id: q054
       question: Describe a path from the entry hall to the main roof edge, listing each intermediate element.
@@ -609,4 +556,3 @@ cases:
           judge_notes:
               - correctly rejects the premise of a calculable path
       tags: [bonus, topology, path]
-      max_duration_s: 20

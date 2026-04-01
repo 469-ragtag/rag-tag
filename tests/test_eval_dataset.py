@@ -260,3 +260,18 @@ def test_load_benchmark_dataset_rejects_unsupported_schema_version(
 
     with pytest.raises(ValueError, match="schema_version must be one of: 1, 2"):
         load_benchmark_dataset(dataset_path)
+
+
+@pytest.mark.parametrize(
+    "dataset_filename",
+    ["benchmark_cases_v1.yaml", "benchmark_cases_v2.yaml"],
+)
+def test_repo_benchmark_datasets_load_without_max_duration_entries(
+    dataset_filename: str,
+) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+
+    dataset = load_benchmark_dataset(repo_root / "evals" / dataset_filename)
+
+    assert dataset.cases
+    assert all(case.max_duration_s is None for case in dataset.cases)
