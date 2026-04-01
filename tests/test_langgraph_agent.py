@@ -6,6 +6,7 @@ import pytest
 from rag_tag.agent import langgraph_agent as langgraph_agent_module
 from rag_tag.agent.langgraph_agent import LangGraphAgent
 from rag_tag.config import GraphOrchestrationConfig
+from rag_tag.evals.runtime import BENCHMARK_GRAPH_PROMPT_APPEND_ENV_VAR
 from rag_tag.graph import wrap_networkx_graph
 
 
@@ -228,6 +229,40 @@ def test_langgraph_agent_uses_model_backed_hooks_in_production_path() -> None:
 
     assert specialist.calls == [("first", 2), ("second", 2)]
     assert result["answer"] == "answer:first answer:second"
+
+
+def test_langgraph_agent_applies_benchmark_prompt_append_to_model_prompts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_prompts: list[str] = []
+
+    class FakePydanticAgent:
+        def __init__(self, model: object, **kwargs: object) -> None:
+            del model
+            system_prompt = kwargs.get("system_prompt")
+            assert isinstance(system_prompt, str)
+            captured_prompts.append(system_prompt)
+
+    monkeypatch.setenv(BENCHMARK_GRAPH_PROMPT_APPEND_ENV_VAR, "benchmark appendix")
+    monkeypatch.setattr(langgraph_agent_module, "Agent", FakePydanticAgent)
+    monkeypatch.setattr(
+        langgraph_agent_module,
+        "_resolve_langgraph_model",
+        lambda: (object(), None),
+    )
+
+    agent = LangGraphAgent(
+        specialist=FakeSpecialist(),
+        orchestration_config=GraphOrchestrationConfig(),
+    )
+
+    agent._get_decomposition_agent()
+    agent._get_synthesis_agent()
+
+    assert len(captured_prompts) == 2
+    assert all("benchmark appendix" in prompt for prompt in captured_prompts)
+    assert "focused subquestions" in captured_prompts[0]
+    assert "grounded specialist results" in captured_prompts[1]
 
 
 def test_langgraph_agent_init_requires_langgraph_dependency(

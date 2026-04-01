@@ -21,6 +21,7 @@ output/ifc_graph.html
 output/*.jsonl
 output/*.db
 output/*.log
+output/benchmarks/
 output/*_graph_viewer/
 output/_viewer_artifacts/
 output/_viewer_uploads/

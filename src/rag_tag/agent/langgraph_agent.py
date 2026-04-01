@@ -14,11 +14,14 @@ from pydantic_ai import Agent
 from rag_tag.config import GraphOrchestrationConfig, load_project_config
 from rag_tag.graph import GraphRuntime
 from rag_tag.llm.pydantic_ai import get_agent_model, get_agent_model_settings
+from rag_tag.usage import UsageMetrics, normalize_usage_metrics, sum_usage_metrics
 
 from .graph_agent import (
     GraphAgent,
     _graph_answer_to_response,
     _is_pydantic_test_model,
+    append_benchmark_prompt,
+    get_benchmark_graph_prompt_append,
 )
 from .langgraph_nodes import (
     decompose_question,
@@ -86,6 +89,7 @@ class LangGraphAgent:
         orchestration_config: GraphOrchestrationConfig | None = None,
         decompose: Decomposer | None = None,
         synthesize: Synthesizer | None = None,
+        prompt_append: str | None = None,
     ) -> None:
         _ensure_langgraph_dependency()
         self._debug_llm_io = debug_llm_io
@@ -93,9 +97,11 @@ class LangGraphAgent:
         self._config = orchestration_config or _load_orchestration_config()
         self._decompose = decompose
         self._synthesize = synthesize
+        self._prompt_append = prompt_append or get_benchmark_graph_prompt_append()
         self._decomposition_agent: Agent[None, _DecompositionOutput] | None = None
         self._synthesis_agent: Agent[None, GraphAnswer] | None = None
         self._active_runtime: GraphRuntime | None = None
+        self._active_usage_records: list[UsageMetrics] = []
         self._workflow = self._build_workflow()
 
     def run(
@@ -113,15 +119,18 @@ class LangGraphAgent:
             max_steps=max_steps,
             config=self._config,
         )
+        final_state = state
+        self._active_usage_records = []
 
         try:
             self._active_runtime = runtime
             final_state = self._workflow.invoke(state)
-            return self._response_from_state(final_state)
+            response = self._response_from_state(final_state)
         except Exception as exc:
-            return self._outer_failure_response(state, runtime, exc)
+            response = self._outer_failure_response(state, runtime, exc)
         finally:
             self._active_runtime = None
+        return self._attach_usage(response, final_state)
 
     def _build_workflow(self):
         builder = StateGraph(LangGraphState)
@@ -225,6 +234,7 @@ class LangGraphAgent:
             f"Return at most {self._config.max_subquestions} focused subquestions."
         )
         result = agent.run_sync(prompt)
+        self._record_usage(result)
         subquestions = [
             item.strip() for item in result.output.subquestions if item.strip()
         ]
@@ -246,6 +256,7 @@ class LangGraphAgent:
             f"{json.dumps(state['warnings'], indent=2, ensure_ascii=True)}"
         )
         result = agent.run_sync(prompt)
+        self._record_usage(result)
         return result.output.model_dump(exclude_none=True)
 
     def _get_decomposition_agent(self) -> Agent[None, _DecompositionOutput]:
@@ -254,7 +265,10 @@ class LangGraphAgent:
             self._decomposition_agent = Agent(
                 model,
                 output_type=_DecompositionOutput,
-                system_prompt=_DECOMPOSITION_SYSTEM_PROMPT,
+                system_prompt=append_benchmark_prompt(
+                    _DECOMPOSITION_SYSTEM_PROMPT,
+                    prompt_append=self._prompt_append,
+                ),
                 model_settings=model_settings,
                 retries=1,
                 output_retries=1,
@@ -267,7 +281,10 @@ class LangGraphAgent:
             self._synthesis_agent = Agent(
                 model,
                 output_type=GraphAnswer,
-                system_prompt=_SYNTHESIS_SYSTEM_PROMPT,
+                system_prompt=append_benchmark_prompt(
+                    _SYNTHESIS_SYSTEM_PROMPT,
+                    prompt_append=self._prompt_append,
+                ),
                 model_settings=model_settings,
                 retries=1,
                 output_retries=1,
@@ -398,6 +415,33 @@ class LangGraphAgent:
                 warning=_merge_warning_text(state["warnings"]),
             )
         )
+
+    def _record_usage(self, payload: object) -> None:
+        normalized = normalize_usage_metrics(payload)
+        if normalized.usage_available:
+            self._active_usage_records.append(normalized)
+
+    def _attach_usage(
+        self,
+        response: dict[str, object],
+        state: LangGraphState,
+    ) -> dict[str, object]:
+        aggregate = sum_usage_metrics(
+            *self._active_usage_records,
+            *(
+                item.get("result", {}).get("usage")
+                for item in state["specialist_results"]
+                if isinstance(item.get("result"), dict)
+            ),
+            state["fallback_result"].get("usage")
+            if isinstance(state["fallback_result"], dict)
+            else None,
+        )
+        if not aggregate.usage_available:
+            return response
+        enriched = dict(response)
+        enriched["usage"] = aggregate.as_dict()
+        return enriched
 
 
 def _load_orchestration_config() -> GraphOrchestrationConfig:

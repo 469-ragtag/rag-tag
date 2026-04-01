@@ -4,6 +4,8 @@ import re
 from dataclasses import dataclass
 from typing import Literal
 
+from rag_tag.usage import UsageMetrics
+
 SqlRoute = Literal["sql", "graph"]
 SqlIntent = Literal["count", "list", "aggregate", "group"]
 SqlAggregateOp = Literal["count", "sum", "avg", "min", "max"]
@@ -131,3 +133,4 @@ class RouteDecision:
     route: SqlRoute
     reason: str
     sql_request: SqlRequest | None
+    usage: UsageMetrics | None = None

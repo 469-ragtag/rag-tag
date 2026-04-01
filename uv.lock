@@ -1195,6 +1195,23 @@ wheels = [
 ]
 
 [[package]]
+name = "pydantic-evals"
+version = "1.59.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "anyio" },
+    { name = "logfire-api" },
+    { name = "pydantic" },
+    { name = "pydantic-ai-slim" },
+    { name = "pyyaml" },
+    { name = "rich" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/e2/93/5838b4a12d54363ee4a86aab4c3843d81c04d7538ead04fa110aa98752ce/pydantic_evals-1.59.0.tar.gz", hash = "sha256:74dff2548a578d1c3af780b5d1306171afa80b372cb05760fe5918b9b14df712", size = 54208, upload-time = "2026-02-14T00:27:17.92Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/af/81/a405684522cbe37b239acdae3f2346894584dd015e2572936e659755eaf8/pydantic_evals-1.59.0-py3-none-any.whl", hash = "sha256:5c471fafd6c082667369d0929d7eae771975184b2445cee9e533ec36b8976de9", size = 65280, upload-time = "2026-02-14T00:27:09.7Z" },
+]
+
+[[package]]
 name = "pydantic-graph"
 version = "1.59.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1315,6 +1332,7 @@ dependencies = [
     { name = "plotly" },
     { name = "pydantic" },
     { name = "pydantic-ai-slim", extra = ["cohere", "google", "openai"] },
+    { name = "pydantic-evals" },
     { name = "python-dotenv" },
     { name = "python-multipart" },
     { name = "pyyaml" },
@@ -1344,6 +1362,7 @@ requires-dist = [
     { name = "plotly", specifier = ">=6.5.2" },
     { name = "pydantic", specifier = ">=2.7.0" },
     { name = "pydantic-ai-slim", extras = ["google", "cohere", "openai"], specifier = ">=0.0.1" },
+    { name = "pydantic-evals", specifier = ">=1.59.0" },
     { name = "python-dotenv", specifier = ">=1.2.1" },
     { name = "python-multipart", specifier = ">=0.0.20" },
     { name = "pyyaml", specifier = ">=6.0.2" },

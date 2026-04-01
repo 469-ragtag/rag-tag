@@ -1,0 +1,269 @@
+"""Pydantic Evals dataset and experiment runner for rag-tag benchmarks."""
+
+from __future__ import annotations
+
+import asyncio
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from pydantic_evals import Case, Dataset
+from pydantic_evals.evaluators import Evaluator, IsInstance, MaxDuration
+from pydantic_evals.reporting import EvaluationReport
+
+from rag_tag.graph import close_runtime
+
+from .dataset import BenchmarkCase, BenchmarkDataset
+from .evaluators import (
+    BenchmarkCaseMetadata,
+    NoExecutionError,
+    RouteMatchesExpected,
+    build_default_answer_judge,
+)
+from .task_runner import BenchmarkTaskResult, run_benchmark_case
+
+BENCHMARK_INTER_CASE_DELAY_SECONDS = 20.0
+
+
+@dataclass(frozen=True)
+class BenchmarkExperimentConfig:
+    """Execution settings for a benchmark evaluation run."""
+
+    db_paths: list[Path]
+    config_path: str | None = None
+    router_profile: str | None = None
+    agent_profile: str | None = None
+    prompt_strategy: str = "baseline"
+    graph_orchestrator: str | None = None
+    graph_dataset: str | None = None
+    context_db: Path | None = None
+    payload_mode: str | None = None
+    strict_sql: bool = False
+    graph_max_steps: int | None = None
+    max_concurrency: int | None = None
+    progress: bool = True
+    repeat: int = 1
+    answer_judge_model: str | None = None
+    include_answer_judge: bool = True
+    debug_llm_io: bool = False
+    report_metadata: dict[str, Any] | None = None
+
+
+def _supports_state_reuse(experiment: BenchmarkExperimentConfig) -> bool:
+    max_concurrency = _effective_max_concurrency(experiment.max_concurrency)
+    return max_concurrency in (None, 1)
+
+
+def _effective_max_concurrency(requested_max_concurrency: int | None) -> int | None:
+    """Return the safe benchmark concurrency under env-based runtime overrides.
+
+    Benchmark profile/strategy overrides currently flow through process-global
+    environment variables, so execution must remain serialized until that
+    override path is refactored away from shared mutable process state.
+    """
+
+    if requested_max_concurrency is None:
+        return 1
+    return min(requested_max_concurrency, 1)
+
+
+def build_eval_dataset(
+    benchmark_dataset: BenchmarkDataset,
+    *,
+    answer_judge_model: str | None = None,
+    config_path: str | None = None,
+    include_answer_judge: bool = True,
+) -> Dataset[BenchmarkCase, BenchmarkTaskResult, BenchmarkCaseMetadata]:
+    """Convert the checked-in benchmark dataset into a Pydantic Evals dataset."""
+
+    dataset_evaluators: list[
+        Evaluator[BenchmarkCase, BenchmarkTaskResult, BenchmarkCaseMetadata]
+    ] = [
+        IsInstance(type_name="BenchmarkTaskResult"),
+        RouteMatchesExpected(),
+        NoExecutionError(),
+    ]
+    if include_answer_judge:
+        dataset_evaluators.append(
+            build_default_answer_judge(
+                answer_judge_model,
+                config_path=config_path,
+            )
+        )
+
+    cases = [_build_eval_case(case) for case in benchmark_dataset.cases]
+    return Dataset(
+        name=benchmark_dataset.dataset_name,
+        cases=cases,
+        evaluators=dataset_evaluators,
+    )
+
+
+def evaluate_benchmark_dataset(
+    benchmark_dataset: BenchmarkDataset,
+    *,
+    experiment: BenchmarkExperimentConfig,
+    experiment_name: str | None = None,
+) -> EvaluationReport[BenchmarkCase, BenchmarkTaskResult, BenchmarkCaseMetadata]:
+    """Run a benchmark experiment against the shared query pipeline."""
+
+    return asyncio.run(
+        evaluate_benchmark_dataset_async(
+            benchmark_dataset,
+            experiment=experiment,
+            experiment_name=experiment_name,
+        )
+    )
+
+
+async def evaluate_benchmark_dataset_async(
+    benchmark_dataset: BenchmarkDataset,
+    *,
+    experiment: BenchmarkExperimentConfig,
+    experiment_name: str | None = None,
+) -> EvaluationReport[BenchmarkCase, BenchmarkTaskResult, BenchmarkCaseMetadata]:
+    """Run a benchmark experiment against the shared query pipeline."""
+
+    dataset = build_eval_dataset(
+        benchmark_dataset,
+        answer_judge_model=experiment.answer_judge_model,
+        config_path=experiment.config_path,
+        include_answer_judge=experiment.include_answer_judge,
+    )
+
+    state: dict[str, object | None] | None
+    if _supports_state_reuse(experiment):
+        state = {"runtime": None, "agent": None}
+    else:
+        state = None
+    try:
+        effective_max_concurrency = _effective_max_concurrency(
+            experiment.max_concurrency
+        )
+
+        async def run_case(case: BenchmarkCase) -> BenchmarkTaskResult:
+            return await _run_case_with_state(
+                case,
+                experiment=experiment,
+                state=state,
+            )
+
+        report = await dataset.evaluate(
+            run_case,
+            name=experiment_name or benchmark_dataset.dataset_name,
+            task_name=experiment_name or benchmark_dataset.dataset_name,
+            max_concurrency=effective_max_concurrency,
+            progress=experiment.progress,
+            metadata=_build_experiment_metadata(experiment),
+            repeat=experiment.repeat,
+        )
+    finally:
+        if state is not None:
+            close_runtime(state["runtime"])
+
+    return report
+
+
+async def _run_case_with_state(
+    case: BenchmarkCase,
+    *,
+    experiment: BenchmarkExperimentConfig,
+    state: dict[str, object | None] | None,
+) -> BenchmarkTaskResult:
+    bundle = await asyncio.to_thread(
+        run_benchmark_case,
+        case,
+        db_paths=experiment.db_paths,
+        runtime=state["runtime"] if state is not None else None,
+        agent=state["agent"] if state is not None else None,
+        config_path=experiment.config_path,
+        router_profile=experiment.router_profile,
+        agent_profile=experiment.agent_profile,
+        prompt_strategy=experiment.prompt_strategy,
+        graph_orchestrator=experiment.graph_orchestrator,
+        graph_dataset=experiment.graph_dataset,
+        context_db=experiment.context_db,
+        payload_mode=experiment.payload_mode,
+        strict_sql=experiment.strict_sql,
+        graph_max_steps=experiment.graph_max_steps,
+        debug_llm_io=experiment.debug_llm_io,
+    )
+    if state is not None:
+        state["runtime"] = bundle.runtime
+        state["agent"] = bundle.agent
+    else:
+        close_runtime(bundle.runtime)
+    await _sleep_between_benchmark_cases()
+    return bundle.result
+
+
+async def _sleep_between_benchmark_cases() -> None:
+    await asyncio.sleep(BENCHMARK_INTER_CASE_DELAY_SECONDS)
+
+
+def _build_eval_case(
+    case: BenchmarkCase,
+) -> Case[BenchmarkCase, BenchmarkTaskResult, BenchmarkCaseMetadata]:
+    evaluators: list[
+        Evaluator[BenchmarkCase, BenchmarkTaskResult, BenchmarkCaseMetadata]
+    ] = []
+    if case.max_duration_s is not None:
+        evaluators.append(MaxDuration(seconds=case.max_duration_s))
+
+    return Case(
+        name=case.id,
+        inputs=case,
+        expected_output=_build_answer_judge_target(case),
+        metadata=_build_case_metadata(case),
+        evaluators=tuple(evaluators),
+    )
+
+
+def _build_answer_judge_target(case: BenchmarkCase) -> dict[str, Any]:
+    return {
+        "case_id": case.id,
+        "question": case.question,
+        "expected_route": case.expected_route,
+        "answer": case.answer.model_dump(mode="python") if case.answer else None,
+    }
+
+
+def _build_case_metadata(case: BenchmarkCase) -> BenchmarkCaseMetadata:
+    answer_judge_target = _build_answer_judge_target(case)
+    return {
+        "case_id": case.id,
+        "expected_route": case.expected_route,
+        "answer_judge_target": answer_judge_target,
+        "answer": case.answer.model_dump(mode="python")
+        if case.answer is not None
+        else None,
+        "expected_answer": case.expected_answer,
+        "reference_points": list(case.reference_points),
+        "tags": list(case.tags),
+        "max_duration_s": case.max_duration_s,
+    }
+
+
+def _build_experiment_metadata(
+    experiment: BenchmarkExperimentConfig,
+) -> dict[str, Any]:
+    effective_max_concurrency = _effective_max_concurrency(experiment.max_concurrency)
+    metadata = {
+        "router_profile": experiment.router_profile,
+        "agent_profile": experiment.agent_profile,
+        "prompt_strategy": experiment.prompt_strategy,
+        "graph_orchestrator": experiment.graph_orchestrator,
+        "graph_dataset": experiment.graph_dataset,
+        "context_db": str(experiment.context_db)
+        if experiment.context_db is not None
+        else None,
+        "db_paths": [str(path) for path in experiment.db_paths],
+        "repeat": experiment.repeat,
+        "max_concurrency": effective_max_concurrency,
+        "requested_max_concurrency": experiment.max_concurrency,
+        "effective_max_concurrency": effective_max_concurrency,
+        "state_reuse_enabled": _supports_state_reuse(experiment),
+    }
+    if experiment.report_metadata:
+        metadata.update(experiment.report_metadata)
+    return metadata

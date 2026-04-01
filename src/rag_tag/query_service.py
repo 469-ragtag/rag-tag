@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import inspect
+import os
 from pathlib import Path
 from typing import Any
 
 import networkx as nx
 
 from rag_tag.agent import GraphAgent, LangGraphAgent
+from rag_tag.agent.graph_agent import get_benchmark_graph_prompt_append
 from rag_tag.config import (
     GraphOrchestrationConfig,
     get_default_graph_max_steps,
@@ -18,10 +21,12 @@ from rag_tag.graph_contract import merge_evidence_items
 from rag_tag.ifc_sql_tool import SqlQueryError, query_ifc_sql
 from rag_tag.paths import find_project_root
 from rag_tag.router import RouteDecision, SqlRequest, route_question
+from rag_tag.usage import sum_usage_metrics
 
 _MODULE_DIR = Path(__file__).resolve().parent
 
 _VALID_GRAPH_ORCHESTRATORS = frozenset({"pydanticai", "langgraph"})
+_BENCHMARK_GRAPH_ORCHESTRATOR_ENV_VAR = "RAG_TAG_BENCHMARK_GRAPH_ORCHESTRATOR"
 GraphExecutor = GraphAgent | LangGraphAgent
 
 
@@ -73,6 +78,17 @@ def resolve_graph_orchestrator() -> str:
     Defaults to ``"pydanticai"`` when the config key is absent or blank.
     Raises ``ValueError`` for unrecognized configured values.
     """
+    env_override = os.getenv(_BENCHMARK_GRAPH_ORCHESTRATOR_ENV_VAR)
+    if env_override is not None and env_override.strip():
+        orchestrator = env_override.strip().lower()
+        if orchestrator not in _VALID_GRAPH_ORCHESTRATORS:
+            allowed = ", ".join(sorted(_VALID_GRAPH_ORCHESTRATORS))
+            raise ValueError(
+                "Unsupported benchmark graph orchestrator override="
+                f"{env_override!r}. Allowed values: {allowed}."
+            )
+        return orchestrator
+
     loaded = load_project_config(Path(__file__).resolve().parent)
     configured = loaded.config.defaults.graph_orchestrator
     if configured is None or not configured.strip():
@@ -575,11 +591,15 @@ def execute_query(
 
         if decision.route == "sql":
             result = execute_sql_query(decision, db_paths, strict_sql=strict_sql)
+            bundle_usage = _usage_payload(decision.usage)
+            if bundle_usage is not None:
+                result["usage"] = bundle_usage
             return {
                 "result": result,
                 "runtime": runtime,
                 "graph": runtime,
                 "agent": agent,
+                "usage": bundle_usage,
             }
 
         _require_explicit_graph_dataset(runtime, graph_dataset)
@@ -604,11 +624,16 @@ def execute_query(
             decision,
             max_steps=graph_max_steps,
         )
+        combined_usage = sum_usage_metrics(decision.usage, result.get("usage"))
+        bundle_usage = _usage_payload(combined_usage)
+        if bundle_usage is not None:
+            result["usage"] = bundle_usage
         return {
             "result": result,
             "runtime": runtime,
             "graph": runtime,
             "agent": agent,
+            "usage": bundle_usage,
         }
 
     except Exception as exc:
@@ -619,6 +644,13 @@ def execute_query(
             "graph": runtime,
             "agent": agent,
         }
+
+
+def _usage_payload(usage: object) -> dict[str, int | bool | None] | None:
+    normalized = sum_usage_metrics(usage)
+    if not normalized.usage_available:
+        return None
+    return normalized.as_dict()
 
 
 def _ensure_graph_context(
@@ -648,10 +680,14 @@ def _ensure_graph_context(
     if agent is None:
         orchestrator = resolve_graph_orchestrator()
         if orchestrator == "langgraph":
-            agent = LangGraphAgent(
-                debug_llm_io=debug_llm_io,
-                orchestration_config=get_graph_orchestration_config(),
-            )
+            langgraph_kwargs: dict[str, Any] = {
+                "debug_llm_io": debug_llm_io,
+                "orchestration_config": get_graph_orchestration_config(),
+            }
+            init_parameters = inspect.signature(LangGraphAgent.__init__).parameters
+            if "prompt_append" in init_parameters:
+                langgraph_kwargs["prompt_append"] = get_benchmark_graph_prompt_append()
+            agent = LangGraphAgent(**langgraph_kwargs)
         else:
             agent = GraphAgent(debug_llm_io=debug_llm_io)
     return runtime, agent

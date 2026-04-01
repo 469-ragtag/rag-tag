@@ -20,8 +20,57 @@ It turns IFC models into queryable runtime artifacts, routes each question to th
 IFC -> JSONL -> SQLite + NetworkX -> Router -> SQL path or Graph agent
 ```
 
+- SQL path: deterministic counts/lists/aggregations
+- Graph path: spatial and topology reasoning over element relationships
 - `SQL path` handles deterministic count/list/group/aggregate queries
 - `Graph path` handles spatial and topological reasoning over IFC hierarchy and derived graph relationships
+
+## Active pipeline commands
+
+```bash
+uv run rag-tag-ifc-to-jsonl
+uv run rag-tag-jsonl-to-sql
+uv run rag-tag-jsonl-to-graph
+```
+
+Ontology support commands:
+
+```bash
+uv run rag-tag-refresh-ifc43-rdf
+uv run rag-tag-generate-ontology-map
+```
+
+## Make shortcuts
+
+Use the checked-in `Makefile` when you want short, shared commands for common
+workflows:
+
+```bash
+make build
+make tui-trace
+make bench TARGET=building-architecture PRESET=smoke
+make bench-trace TARGET=building-architecture PRESET=full
+make graph-agent-compare
+make lint
+make test
+```
+
+Useful overrides:
+
+```bash
+make tui DATASET=Building-Architecture
+make tui-trace DATASET=BigBuildingBIMModel
+make bench TARGET=building-architecture PRESET=smoke CONFIG=config.yaml
+make bench TARGET=building-architecture PRESET=full CONFIG=config.yaml BENCH_CASE_ID=q020
+make bench-trace TARGET=building-architecture PRESET=full CONFIG=config.yaml BENCH_ARGS="--orchestrators pydanticai --router-profiles dbx-gpt-oss-20b --prompt-strategies baseline"
+make benchmark BENCH_EXPERIMENT=benchmark-e2e-v1
+```
+
+List all available targets with:
+
+```bash
+make help
+```
 
 ## Quick start
 
@@ -71,6 +120,187 @@ Useful variants:
 
 ```bash
 uv run rag-tag
+uv run rag-tag --tui
+uv run rag-tag --input
+uv run rag-tag --verbose
+uv run rag-tag --trace
+```
+
+Use `config.example.yaml` as the starting point for Databricks-backed profile
+workflows, benchmark presets, and graph-model comparison runs.
+
+If you already run the app like this:
+
+```bash
+uv run rag-tag --tui --db output/Building-Architecture.db --graph-dataset Building-Architecture --trace
+```
+
+that same command still works. The config flow changes model/provider/profile
+selection, not your normal CLI entrypoint. Keep using CLI flags for runtime session
+options such as `--tui`, `--db`, `--graph-dataset`, and `--trace`.
+
+## Configuration
+
+Use `config.example.yaml` as the canonical checked-in reference, then copy it to
+a local `config.yaml` for non-secret runtime defaults:
+
+- `defaults` for shared router/agent profile selection, `router_mode`, and graph runtime defaults
+- `graph_orchestration` and `graph_build` for orchestration and graph-construction tuning
+- `providers` for named provider configuration such as Databricks hosts
+- `profiles` for reusable router and graph-agent model selections
+- `experiments` for repeatable graph comparison groups
+- `benchmark_targets` for reusable benchmark dataset/db/graph bundles
+- `benchmark_presets` for recommended shared benchmark recipes
+
+Use `.env` or shell environment variables for secrets and one-off overrides:
+
+- API keys and tokens such as `DATABRICKS_TOKEN`, `GEMINI_API_KEY`, and `COHERE_API_KEY`
+- provider host/base URL values referenced by env-backed config
+- machine-local overrides such as `RAG_TAG_CONFIG`
+- temporary runtime model/profile overrides such as `ROUTER_MODEL`, `AGENT_MODEL`, `ROUTER_PROFILE`, and `AGENT_PROFILE`
+
+Config discovery order:
+
+- repo-root `config.yaml`
+- repo-root `config.yml`
+- repo-root `config.json`
+
+Override the discovered config file with either:
+
+- `uv run rag-tag --config ./path/to/config.yaml`
+- `RAG_TAG_CONFIG=./path/to/config.yaml uv run rag-tag`
+
+The full checked-in template lives in `config.example.yaml`.
+
+Practical split:
+
+- local `config.yaml`: shared defaults you want to edit for your environment
+- `.env`: secrets and machine-local overrides
+- CLI flags: per-run session options such as TUI mode, selected DB, dataset, and tracing
+
+`config.yaml` is intentionally gitignored so you can keep machine-local runtime
+defaults without committing them.
+
+Minimal local `config.yaml` setup for the same TUI command you use today:
+
+`config.yaml`
+
+```yaml
+defaults:
+  router_profile: router-gemini-flash
+  agent_profile: dbx-claude-sonnet-4-6
+  router_mode: llm
+
+providers:
+  databricks:
+    type: databricks
+    host_env: DATABRICKS_HOST
+    token_env: DATABRICKS_TOKEN
+
+profiles:
+  router-gemini-flash:
+    model: google-gla:gemini-2.5-flash
+    settings:
+      temperature: 0.0
+
+  cohere-command-a:
+    model: cohere:command-a-03-2025
+    settings:
+      temperature: 0.1
+      max_tokens: 1024
+
+  dbx-claude-sonnet-4-6:
+    provider: databricks
+    model: databricks-claude-sonnet-4-6
+    settings:
+      temperature: 0.1
+      max_tokens: 1024
+```
+
+`.env`
+
+```bash
+DATABRICKS_HOST=your-workspace-host.databricks.com
+DATABRICKS_TOKEN=your_databricks_token
+GEMINI_API_KEY=your_gemini_api_key
+COHERE_API_KEY=your_cohere_api_key
+LOGFIRE_TOKEN=your_write_logfire_token
+```
+
+Then run the app exactly as before:
+
+```bash
+uv run rag-tag --tui --db output/Building-Architecture.db --graph-dataset Building-Architecture --trace
+```
+
+To switch models, either edit `defaults.agent_profile` in `config.yaml` or use a
+one-off override like:
+
+```bash
+uv run rag-tag --tui --db output/Building-Architecture.db --graph-dataset Building-Architecture --trace --agent-profile dbx-gpt-oss-20b
+```
+
+To switch back to the current Cohere graph agent through config, set:
+
+```yaml
+defaults:
+  agent_profile: cohere-command-a
+```
+
+or do it for one run only:
+
+```bash
+uv run rag-tag --tui --db output/Building-Architecture.db --graph-dataset Building-Architecture --trace --agent-profile cohere-command-a
+```
+
+## Databricks setup
+
+Common Databricks environment variables:
+
+```bash
+DATABRICKS_HOST=dbc-00000000-0000.cloud.databricks.com
+DATABRICKS_TOKEN=your_databricks_token
+```
+
+`DATABRICKS_TOKEN` is required for Databricks-backed profiles. `DATABRICKS_HOST`
+should now live in `.env` or your shell environment, while `config.yaml`
+references it via `host_env: DATABRICKS_HOST`.
+
+If you prefer to store the full OpenAI-compatible serving URL instead of the host,
+use `base_url_env` in config and define `DATABRICKS_BASE_URL` in `.env`.
+
+For Databricks profiles, the `model` value is the serving endpoint name that is
+resolved against the workspace's OpenAI-compatible `/serving-endpoints` base
+URL. `config.example.yaml` includes example profiles for:
+
+- Cohere Command A (current baseline)
+- Claude Sonnet 4.6
+- GPT OSS 20B
+- Llama 4 Maverick
+- Gemma 3 12B
+
+These are example endpoint names only; update them to match your own Databricks
+serving endpoints before use.
+
+Databricks compatibility note:
+
+- Databricks rejects the OpenAI-style `parallel_tool_calls` request field.
+- Do not add `parallel_tool_calls` to Databricks profile settings in local config files.
+- `rag-tag` strips that field automatically for Databricks-backed profiles.
+
+## Query modes
+
+- Default CLI: `uv run rag-tag`
+- Textual TUI: `uv run rag-tag --tui`
+
+Useful options:
+
+```bash
+uv run rag-tag --config ./config.yaml
+uv run rag-tag --db ./output/Building-Architecture.db
+uv run rag-tag --graph-dataset Building-Architecture
+uv run rag-tag --router-profile router-gemini-flash
+uv run rag-tag --agent-profile dbx-gpt-oss-20b
 uv run rag-tag --tui
 uv run rag-tag --input
 uv run rag-tag --verbose
@@ -327,6 +557,190 @@ uv run python scripts/eval_overlap_modes.py \
   --graph-dataset BigBuildingBIMModel \
   --output output/eval_overlap_modes.json
 ```
+
+## Benchmarking
+
+Use `scripts/eval_benchmarks.py` to run end-to-end benchmarks over a checked-in
+or local YAML case set. The benchmark runner:
+
+- loads only the YAML cases you author
+- expands the router x agent x prompt-strategy x graph-orchestrator matrix
+- runs the full routed query flow end to end
+- writes Excel-friendly CSV artifacts plus a full JSON report
+- uses an explicit answer judge model instead of Pydantic Evals' hidden default
+- optionally enables Logfire tracing with `--trace`
+
+### YAML case format
+
+Put benchmark questions in a YAML file such as `evals/benchmark_cases_v1.yaml`.
+Current required fields are:
+
+- `schema_version`
+- `id`
+- `question`
+- `expected_route`
+- `answer.canonical`
+
+Recommended fields are:
+
+- `answer.acceptable`
+- `answer.judge_notes`
+- `tags`
+- `max_duration_s`
+
+Example:
+
+```yaml
+schema_version: 2
+dataset_name: benchmark_cases_v1
+cases:
+  - id: q001
+    question: Which rooms are adjacent to the kitchen?
+    expected_route: graph
+    answer:
+      canonical: The kitchen is adjacent to the dining room.
+      acceptable:
+        - Dining room.
+      judge_notes:
+        - identifies the kitchen correctly
+        - avoids fabricated room names
+    tags: [graph, spatial, adjacency]
+    max_duration_s: 20
+
+  - id: q002
+    question: How many doors are on Level 2?
+    expected_route: sql
+    answer:
+      canonical: There are 3 doors on Level 2.
+      judge_notes:
+        - chooses sql routing
+        - gives a deterministic count
+    tags: [sql, count, level]
+    max_duration_s: 10
+```
+
+### Preferred shared commands
+
+Define checked-in benchmark targets/presets in `config.example.yaml`, then run:
+
+```bash
+make bench TARGET=building-architecture PRESET=smoke
+make bench-trace TARGET=building-architecture PRESET=full
+```
+
+Equivalent direct CLI form:
+
+```bash
+uv run python scripts/eval_benchmarks.py \
+  --config ./config.yaml \
+  --preset smoke \
+  --target building-architecture
+```
+
+Use CLI overrides when you want to keep the preset but change one dimension:
+
+```bash
+uv run python scripts/eval_benchmarks.py \
+  --config ./config.yaml \
+  --preset full \
+  --target building-architecture \
+  --agent-profiles cohere-command-a dbx-claude-sonnet-4-6 \
+  --orchestrators pydanticai \
+  --tags graph
+```
+
+### Compatibility experiment path
+
+The older `--experiment` flow still works:
+
+```bash
+uv run python scripts/eval_benchmarks.py \
+  --config ./config.yaml \
+  --experiment benchmark-e2e-v1 \
+  --trace
+```
+
+### Run with direct overrides
+
+Use direct CLI overrides when you want to bypass experiment defaults:
+
+```bash
+uv run python scripts/eval_benchmarks.py \
+  --questions-file ./evals/benchmark_cases_v1.yaml \
+  --router-profiles router-gemini-flash dbx-gpt-oss-20b dbx-gemma-3-12b \
+  --agent-profiles cohere-command-a dbx-claude-sonnet-4-6 dbx-gpt-oss-20b dbx-llama-4-maverick dbx-gemma-3-12b \
+  --prompt-strategies baseline strict-grounded \
+  --answer-judge-model google-gla:gemini-2.5-flash \
+  --repeat 1 \
+  --max-concurrency 1 \
+  --db ./output/Building-Architecture.db \
+  --graph-dataset Building-Architecture
+```
+
+### Run a subset by tags
+
+Use `--tags` to keep only YAML cases whose tag list intersects the requested
+tags:
+
+```bash
+uv run python scripts/eval_benchmarks.py \
+  --questions-file ./evals/benchmark_cases_v1.yaml \
+  --tags sql graph \
+  --db ./output/Building-Architecture.db
+```
+
+### Run from the start through a case id
+
+Use `--case-id` to keep cases from the start of the YAML file through the named
+case id, inclusive. This follows file order, so `--case-id q020` means "run the
+cases up to and including `q020` as they appear in the dataset file".
+
+```bash
+uv run python scripts/eval_benchmarks.py \
+  --config ./config.yaml \
+  --questions-file ./evals/benchmark_cases_v1.yaml \
+  --case-id q020 \
+  --db ./output/Building-Architecture.db \
+  --graph-dataset Building-Architecture
+```
+
+You can combine the cutoff with tags. The cutoff is applied first, then tags are
+matched within that truncated case set.
+
+```bash
+make bench \
+  TARGET=building-architecture \
+  PRESET=full \
+  CONFIG=config.yaml \
+  BENCH_CASE_ID=q020 \
+  BENCH_TAGS="graph"
+```
+
+### Benchmark artifacts
+
+Each benchmark run writes artifacts under `output/benchmarks/<run-id>/` unless
+you override the output directory:
+
+- `leaderboard.csv`
+- `case_groups.csv`
+- `runs.csv`
+- `report.json`
+- `run_manifest.json`
+
+`leaderboard.csv` contains one row per router x agent x prompt-strategy x
+graph-orchestrator combination. `case_groups.csv` groups repeated runs by
+original case. `runs.csv` contains one row per actual execution.
+
+### Tracing and token fields
+
+Use `--trace` to initialize Logfire for the benchmark run. If Logfire is
+unavailable or `LOGFIRE_TOKEN` is missing, the benchmark still succeeds and
+writes local artifacts.
+
+Token usage fields are included when the provider returns usage metadata. When a
+provider does not expose token counts, benchmark outputs leave those fields
+blank rather than fabricating zeros. Use `token_coverage_rate` in the grouped
+and leaderboard outputs to see how much of a run returned token data.
 
 ## Repository layout
 

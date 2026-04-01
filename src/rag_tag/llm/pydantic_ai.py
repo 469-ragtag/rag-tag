@@ -152,6 +152,49 @@ def resolve_model_from_provider(
     return _resolve_role_model(_normalize_role(role)).model
 
 
+def resolve_evaluator_model(
+    model_name: str | None,
+    *,
+    config_path: str | Path | None = None,
+) -> ResolvedRoleModel:
+    """Resolve a benchmark/evaluator model via config profiles when possible.
+
+    The evaluator path accepts raw PydanticAI model identifiers, but benchmark
+    config often uses repo-local profile names or provider-native model names.
+    When the supplied value matches a configured profile name, or exactly
+    matches a configured profile's underlying model, resolve it through the
+    shared profile/provider machinery so Databricks credentials and settings
+    are applied consistently.
+    """
+
+    if model_name is None:
+        return ResolvedRoleModel(model=DEFAULT_ROUTER_MODEL)
+
+    cleaned = model_name.strip()
+    if not cleaned:
+        return ResolvedRoleModel(model=DEFAULT_ROUTER_MODEL)
+
+    loaded = load_project_config(_MODULE_DIR, config_path=config_path)
+    profile = loaded.config.profiles.get(cleaned)
+    if profile is not None:
+        return _resolve_profile(
+            profile_name=cleaned,
+            profile=profile,
+            providers=loaded.config.providers,
+        )
+
+    for profile_name, profile in loaded.config.profiles.items():
+        if profile.model.strip() != cleaned:
+            continue
+        return _resolve_profile(
+            profile_name=profile_name,
+            profile=profile,
+            providers=loaded.config.providers,
+        )
+
+    return ResolvedRoleModel(model=cleaned)
+
+
 def _resolve_role_model(role: RoleName) -> ResolvedRoleModel:
     loaded = load_project_config(_MODULE_DIR)
 

@@ -1,0 +1,558 @@
+schema_version: 2
+dataset_name: benchmark_cases_v1_boolean_and_bonus
+cases:
+    # ---------------------------------------------------------------------------
+    # Windows in living room
+    # ---------------------------------------------------------------------------
+    - id: q001
+      question: Is it true that there are windows in the living room?
+      expected_route: graph
+      answer:
+          canonical: "False.\tThere are no IfcWindow elements defined anywhere in this model, so none can exist in the living room."
+          judge_notes:
+              - correctly identifies the total absence of windows in the IFC
+      tags: [boolean, graph, windows, containment]
+
+    - id: q002
+      question: Is it false that there are windows in the living room?
+      expected_route: graph
+      answer:
+          canonical: "True.\tThere are no IfcWindow elements defined in the model."
+          judge_notes:
+              - logic negation of q001
+      tags: [boolean, graph, windows, containment]
+
+    # ---------------------------------------------------------------------------
+    # External walls with fire rating >= REI60
+    # ---------------------------------------------------------------------------
+    - id: q003
+      question: Is it true that there are external walls present with a fire rating greater or equal to REI60?
+      expected_route: sql
+      answer:
+          canonical: "False.\tThe external walls in the model do not have a FireRating property defined in Pset_WallCommon."
+          judge_notes:
+              - checks wall properties and finds FireRating missing for walls
+      tags: [boolean, sql, walls, properties]
+
+    - id: q004
+      question: Is it false that there are external walls present with a fire rating greater or equal to REI60?
+      expected_route: sql
+      answer:
+          canonical: "True.\tNo external walls possess a FireRating property."
+          judge_notes:
+              - logic negation of q003
+      tags: [boolean, sql, walls, properties]
+
+    # ---------------------------------------------------------------------------
+    # Egress / Doors
+    # ---------------------------------------------------------------------------
+    - id: q005
+      question: An egress is a usable exit route for human occupants. Is it true that every space has one or more egress?
+      expected_route: graph
+      answer:
+          canonical: "False.\tThere are no IfcDoor or egress elements defined in the model, so spaces have no explicit egress."
+          judge_notes:
+              - identifies lack of doors/openings in the model
+      tags: [boolean, graph, doors, topology]
+
+    - id: q006
+      question: Is it false that every space has one or more egress?
+      expected_route: graph
+      answer:
+          canonical: "True.\tSpaces lack explicit egress as there are no doors in the model."
+          judge_notes:
+              - logic negation of q005
+      tags: [boolean, graph, doors, topology]
+
+    - id: q007
+      question: Is it true that every space has two or more egresses?
+      expected_route: graph
+      answer:
+          canonical: "False.\tThere are no egresses (doors) defined in the model."
+          judge_notes:
+              - identifies absence of doors
+      tags: [boolean, graph, doors, topology]
+
+    - id: q008
+      question: Is it false that every space has two or more egresses?
+      expected_route: graph
+      answer:
+          canonical: "True.\tNo spaces have egresses because there are no doors."
+          judge_notes:
+              - logic negation of q007
+      tags: [boolean, graph, doors, topology]
+
+    - id: q009
+      question: Is it true that the entry halls have at least one external door?
+      expected_route: graph
+      answer:
+          canonical: "False.\tThere are no doors defined in the model."
+          judge_notes:
+              - identifies absence of doors
+      tags: [boolean, graph, doors, topology]
+
+    - id: q010
+      question: Is it false that the entry halls have at least one external door?
+      expected_route: graph
+      answer:
+          canonical: "True.\tThere are no doors in the model."
+          judge_notes:
+              - logic negation of q009
+      tags: [boolean, graph, doors, topology]
+
+    - id: q011
+      question: Is it true that the entry hall have at least one external door?
+      expected_route: graph
+      answer:
+          canonical: "False.\tThere are no doors in the model to serve as an external door."
+          judge_notes:
+              - handles singular phrasing of entry hall
+      tags: [boolean, graph, doors, topology]
+
+    - id: q012
+      question: Is it false that the entry hall has at least one external door?
+      expected_route: graph
+      answer:
+          canonical: "True.\tThere are no doors in the model."
+          judge_notes:
+              - logic negation of q011
+      tags: [boolean, graph, doors, topology]
+
+    # ---------------------------------------------------------------------------
+    # Wall Load-Bearing Properties
+    # ---------------------------------------------------------------------------
+    - id: q013
+      question: Is it true that all outer walls of the structure have a property denoting them as load-bearing?
+      expected_route: sql
+      answer:
+          canonical: "False.\tThe outer walls do not have a LoadBearing property defined (no Pset_WallCommon)."
+          judge_notes:
+              - checks for explicit LoadBearing property on walls and finds it missing
+      tags: [boolean, sql, walls, properties]
+
+    - id: q014
+      question: Is it false that all outer walls of the structure have a property denoting them as load-bearing?
+      expected_route: sql
+      answer:
+          canonical: "True.\tThe outer walls lack the LoadBearing property."
+          judge_notes:
+              - logic negation of q013
+      tags: [boolean, sql, walls, properties]
+
+    # ---------------------------------------------------------------------------
+    # Connectivity / Paths
+    # ---------------------------------------------------------------------------
+    - id: q015
+      question: Is it true that there is a continuous path from the entry hall to the farthest point in the living room?
+      expected_route: graph
+      answer:
+          canonical: "False.\tThere are no topological path connections (e.g., doors or space boundaries) defined between the spaces."
+          judge_notes:
+              - correctly identifies lack of explicit connectivity graph edges
+      tags: [boolean, graph, topology, path]
+
+    - id: q016
+      question: Is it false that there is a continuous path from the entry hall to the farthest point in the living room?
+      expected_route: graph
+      answer:
+          canonical: "True.\tNo explicit path or connectivity exists between the spaces in this file."
+          judge_notes:
+              - logic negation of q015
+      tags: [boolean, graph, topology, path]
+
+    # ---------------------------------------------------------------------------
+    # Walls Existence
+    # ---------------------------------------------------------------------------
+    - id: q017
+      question: Is it true that there are walls in the model?
+      expected_route: sql
+      answer:
+          canonical: "True.\tThere are 4 IfcWall elements in the model."
+          judge_notes:
+              - detects presence of walls
+      tags: [boolean, sql, walls, existence]
+
+    - id: q018
+      question: Is it false that there are walls in the model?
+      expected_route: sql
+      answer:
+          canonical: "False.\tThe model contains 4 walls."
+          judge_notes:
+              - logic negation of q017
+      tags: [boolean, sql, walls, existence]
+
+    # ---------------------------------------------------------------------------
+    # Ground Floor Spaces
+    # ---------------------------------------------------------------------------
+    - id: q019
+      question: Is it true that there are spaces located on the ground floor?
+      expected_route: graph
+      answer:
+          canonical: "True.\tThere are 2 spaces (living room, entry hall) contained in the 00 groundfloor."
+          judge_notes:
+              - identifies spaces contained in the ground floor
+      tags: [boolean, graph, spaces, containment]
+
+    - id: q020
+      question: Is it false that there are spaces located on the ground floor?
+      expected_route: graph
+      answer:
+          canonical: "False.\tThe ground floor contains the living room and entry hall spaces."
+          judge_notes:
+              - logic negation of q019
+      tags: [boolean, graph, spaces, containment]
+
+    # ---------------------------------------------------------------------------
+    # Slabs
+    # ---------------------------------------------------------------------------
+    - id: q021
+      question: Is it true that there are slabs in the model and that they have defined names?
+      expected_route: sql
+      answer:
+          canonical: "True.\tThere are 3 slabs in the model and they all have names (floor, house - roof - slab left, house - roof - slab right)."
+          judge_notes:
+              - checks existence and names of slabs
+      tags: [boolean, sql, slabs, existence]
+
+    - id: q022
+      question: Is it false that there are slabs in the model and that they have defined names?
+      expected_route: sql
+      answer:
+          canonical: "False.\tThere are 3 named slabs present."
+          judge_notes:
+              - logic negation of q021
+      tags: [boolean, sql, slabs, existence]
+
+    # ---------------------------------------------------------------------------
+    # Proxies
+    # ---------------------------------------------------------------------------
+    - id: q023
+      question: Is it true that there are building element proxies in the project?
+      expected_route: sql
+      answer:
+          canonical: "True.\tThere are 4 IfcBuildingElementProxy entities in the project."
+          judge_notes:
+              - detects proxy elements
+      tags: [boolean, sql, proxies, existence]
+
+    - id: q024
+      question: Is it false that there are building element proxies in the project?
+      expected_route: sql
+      answer:
+          canonical: "False.\tThere are 4 proxies present."
+          judge_notes:
+              - logic negation of q023
+      tags: [boolean, sql, proxies, existence]
+
+    # ---------------------------------------------------------------------------
+    # Roof Naming
+    # ---------------------------------------------------------------------------
+    - id: q025
+      question: Is it true that there are elements whose name contains the word "roof"?
+      expected_route: sql
+      answer:
+          canonical: "True.\tThere are 3 elements with 'roof' in their name (the roof and two roof slabs)."
+          judge_notes:
+              - filters elements by name correctly
+      tags: [boolean, sql, roof, filter]
+
+    - id: q026
+      question: Is it false that there are elements whose name contains the word "roof"?
+      expected_route: sql
+      answer:
+          canonical: "False.\tElements with 'roof' in their name do exist."
+          judge_notes:
+              - logic negation of q025
+      tags: [boolean, sql, roof, filter]
+
+    # ---------------------------------------------------------------------------
+    # Chimney Containment
+    # ---------------------------------------------------------------------------
+    - id: q027
+      question: Is it true that the chimney is contained within a building storey?
+      expected_route: graph
+      answer:
+          canonical: "True.\tThe chimney (#296) is contained in the '00 groundfloor' (#40)."
+          judge_notes:
+              - verifies containment relationship for the chimney
+      tags: [boolean, graph, chimney, containment]
+
+    - id: q028
+      question: Is it false that the chimney is contained within a building storey?
+      expected_route: graph
+      answer:
+          canonical: "False.\tThe chimney is contained in the groundfloor."
+          judge_notes:
+              - logic negation of q027
+      tags: [boolean, graph, chimney, containment]
+
+    # ---------------------------------------------------------------------------
+    # Elements in Building Excl Storeys
+    # ---------------------------------------------------------------------------
+    - id: q029
+      question: Is it true that there are elements directly contained in the Single-family house building, excluding storeys?
+      expected_route: graph
+      answer:
+          canonical: "True.\tThe building directly contains the roof, gross volume, and sand bedding."
+          judge_notes:
+              - checks for non-storey direct children of the building
+      tags: [boolean, graph, building, containment]
+
+    - id: q030
+      question: Is it false that there are elements directly contained in the Single-family house building, excluding storeys?
+      expected_route: graph
+      answer:
+          canonical: "False.\tThere are non-storey elements directly in the building."
+          judge_notes:
+              - logic negation of q029
+      tags: [boolean, graph, building, containment]
+
+    # ---------------------------------------------------------------------------
+    # Site Contains Origin
+    # ---------------------------------------------------------------------------
+    - id: q031
+      question: Is it true that a site contains the "origin" element?
+      expected_route: graph
+      answer:
+          canonical: "True.\tThe 'origin' proxy (#417) is contained in the 'house - site' (#23)."
+          judge_notes:
+              - verifies containment of origin in a site
+      tags: [boolean, graph, site, origin]
+
+    - id: q032
+      question: Is it false that a site contains the "origin" element?
+      expected_route: graph
+      answer:
+          canonical: "False.\tThe origin is contained in the house site."
+          judge_notes:
+              - logic negation of q031
+      tags: [boolean, graph, site, origin]
+
+    # ---------------------------------------------------------------------------
+    # Roof Assembly
+    # ---------------------------------------------------------------------------
+    - id: q033
+      question: Is it true that the model defines elements that make up a roof assembly?
+      expected_route: graph
+      answer:
+          canonical: "True.\tThe 'house - roof' (#334) aggregates two roof slab elements."
+          judge_notes:
+              - identifies aggregation relationship for roof
+      tags: [boolean, graph, roof, assembly]
+
+    - id: q034
+      question: Is it false that the model defines elements that make up a roof assembly?
+      expected_route: graph
+      answer:
+          canonical: "False.\tThe roof assembly aggregates two slabs."
+          judge_notes:
+              - logic negation of q033
+      tags: [boolean, graph, roof, assembly]
+
+    # ---------------------------------------------------------------------------
+    # Proxies in Living Room
+    # ---------------------------------------------------------------------------
+    - id: q035
+      question: Is it true that there are proxy elements located directly inside the living room?
+      expected_route: graph
+      answer:
+          canonical: "True.\tThe proxy element 'Group#18' (#172) is directly contained in the living room."
+          judge_notes:
+              - verifies containment of proxy in living room space
+      tags: [boolean, graph, proxies, containment]
+
+    - id: q036
+      question: Is it false that there are proxy elements located directly inside the living room?
+      expected_route: graph
+      answer:
+          canonical: "False.\tThere is a proxy (Group#18) in the living room."
+          judge_notes:
+              - logic negation of q035
+      tags: [boolean, graph, proxies, containment]
+
+    # ---------------------------------------------------------------------------
+    # Exactly One Site
+    # ---------------------------------------------------------------------------
+    - id: q037
+      question: Is it true that the model defines exactly one site entity?
+      expected_route: sql
+      answer:
+          canonical: "False.\tThe model defines 2 site entities ('environment - site' and 'house - site')."
+          judge_notes:
+              - counts sites and checks against exactly one
+      tags: [boolean, sql, site, count]
+
+    - id: q038
+      question: Is it false that the model defines exactly one site entity?
+      expected_route: sql
+      answer:
+          canonical: "True.\tThere are 2 sites, not exactly one."
+          judge_notes:
+              - logic negation of q037
+      tags: [boolean, sql, site, count]
+
+    # ---------------------------------------------------------------------------
+    # Kitchen Material
+    # ---------------------------------------------------------------------------
+    - id: q039
+      question: Is it true that the "kitchen" furniture has a material assigned?
+      expected_route: graph
+      answer:
+          canonical: "True.\tThe kitchen furniture is assigned the material 'wood_mdf_plate'."
+          judge_notes:
+              - finds material association for kitchen
+      tags: [boolean, graph, kitchen, material]
+
+    - id: q040
+      question: Is it false that the "kitchen" furniture has a material assigned?
+      expected_route: graph
+      answer:
+          canonical: "False.\tThe kitchen has a material assigned."
+          judge_notes:
+              - logic negation of q039
+      tags: [boolean, graph, kitchen, material]
+
+    # ---------------------------------------------------------------------------
+    # Left Roof Slab Volume
+    # ---------------------------------------------------------------------------
+    - id: q041
+      question: Is it true that the left roof slab has a net volume and greater than 2 cubic metres?
+      expected_route: graph
+      answer:
+          canonical: "True.\tThe left roof slab has a NetVolume of 6.72 m3, which is greater than 2."
+          judge_notes:
+              - extracts volume quantity and evaluates condition
+      tags: [boolean, graph, slab, quantity]
+
+    - id: q042
+      question: Is it false that the left roof slab has a net volume and greater than 2 cubic metres?
+      expected_route: graph
+      answer:
+          canonical: "False.\tThe volume is 6.72 m3, so it is greater than 2."
+          judge_notes:
+              - logic negation of q041
+      tags: [boolean, graph, slab, quantity]
+
+    # ---------------------------------------------------------------------------
+    # Left Outer Wall Dimensions
+    # ---------------------------------------------------------------------------
+    - id: q043
+      question: Is it true that the left outer wall has length greater than 5 metres and width smaller than 3 metres?
+      expected_route: graph
+      answer:
+          canonical: "True.\tThe left outer wall (#277) has a length of 6000 mm (6 m) and a width of 200 mm (0.2 m)."
+          judge_notes:
+              - extracts dimensions and correctly handles mm to m conversion mentally
+      tags: [boolean, graph, wall, dimensions]
+
+    - id: q044
+      question: Is it false that the left outer wall has length greater than 5 metres and width smaller than 3 metres?
+      expected_route: graph
+      answer:
+          canonical: "False.\tThe dimensions are length=6m and width=0.2m, which satisfy the condition."
+          judge_notes:
+              - logic negation of q043
+      tags: [boolean, graph, wall, dimensions]
+
+    # ---------------------------------------------------------------------------
+    # Ground Floor Slab Fire Rating
+    # ---------------------------------------------------------------------------
+    - id: q045
+      question: Is it true that the ground floor slab has a fire rating?
+      expected_route: graph
+      answer:
+          canonical: "True.\tThe 'floor' slab (#49) has a FireRating property (REI30)."
+          judge_notes:
+              - identifies fire rating property on the slab
+      tags: [boolean, graph, slab, properties]
+
+    - id: q046
+      question: Is it false that the ground floor slab has a fire rating?
+      expected_route: graph
+      answer:
+          canonical: "False.\tThe ground floor slab has a FireRating property."
+          judge_notes:
+              - logic negation of q045
+      tags: [boolean, graph, slab, properties]
+
+    # ---------------------------------------------------------------------------
+    # BONUS: Non-Boolean
+    # ---------------------------------------------------------------------------
+    - id: q047
+      question: How many doors lead into the living room?
+      expected_route: graph
+      answer:
+          canonical: "0 doors lead into the living room (there are no doors in the model)."
+          judge_notes:
+              - correctly identifies 0 doors
+      tags: [bonus, graph, count, doors]
+
+    - id: q048
+      question: How many spaces are defined on the storey "00 groundfloor"?
+      expected_route: graph
+      answer:
+          canonical: "There are 2 spaces defined on '00 groundfloor': 'living room' (#75) and 'entry hall' (#182)."
+          judge_notes:
+              - correctly counts spaces on groundfloor
+      tags: [bonus, graph, count, spaces]
+
+    - id: q049
+      question: List all external walls on the storey "00 groundfloor" along with their fire rating, if available.
+      expected_route: graph
+      answer:
+          canonical: |
+              There are 3 external walls on the groundfloor:
+              - #234 "house - outer wall - house right front" (No fire rating)
+              - #258 "house - outer wall - house right back" (No fire rating)
+              - #277 "house - outer wall - house left" (No fire rating)
+          judge_notes:
+              - lists the 3 outer walls and correctly notes absence of fire rating
+      tags: [bonus, graph, list, walls, properties]
+
+    - id: q050
+      question: Which elements form the physical boundary between the living room and the exterior environment?
+      expected_route: graph
+      answer:
+          canonical: "There are no explicit IfcRelSpaceBoundary entities defined in this model to formally link the space to boundaries. Geometrically, the outer walls (#234, #258, #277) enclose the structure."
+          judge_notes:
+              - recognizes the lack of explicit space boundaries in the graph
+      tags: [bonus, graph, topology, boundaries]
+
+    - id: q051
+      question: Which spaces are directly reachable from the entry hall without passing through the living room?
+      expected_route: graph
+      answer:
+          canonical: "None. There are no doors or topological path connections defined between spaces in this model."
+          judge_notes:
+              - correctly deduces lack of topological connectivity
+      tags: [bonus, graph, topology, path]
+
+    - id: q052
+      question: Which walls support the main roof slabs of the house (the two "house - roof - slab" elements)?
+      expected_route: graph
+      answer:
+          canonical: "There are no explicit structural support relationships (e.g., IfcRelConnectsElements) defined between the walls and the roof slabs in this model."
+          judge_notes:
+              - correctly identifies missing explicit structural connections
+      tags: [bonus, graph, topology, support]
+
+    - id: q053
+      question: For each external wall, report its length and whether it belongs to the front, back, left side, or right side of the house.
+      expected_route: graph
+      answer:
+          canonical: |
+              - "house - outer wall - house right front" (#234): Length 1800 mm
+              - "house - outer wall - house right back" (#258): Length 4200 mm
+              - "house - outer wall - house left" (#277): Length 6000 mm
+          judge_notes:
+              - correctly extracts length quantities and maps positions based on wall names
+      tags: [bonus, graph, list, walls, dimensions]
+
+    - id: q054
+      question: Describe a path from the entry hall to the main roof edge, listing each intermediate element.
+      expected_route: graph
+      answer:
+          canonical: "No topological path exists. The model lacks explicit spatial connectivity (doors, stairs, space boundaries) to trace a path from the entry hall to the roof."
+          judge_notes:
+              - correctly rejects the premise of a calculable path
+      tags: [bonus, graph, topology, path]

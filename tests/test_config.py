@@ -129,7 +129,23 @@ def test_load_project_config_parses_yaml_structure(tmp_path: Path) -> None:
         "experiments:\n"
         "  graph-compare:\n"
         "    router_profile: router-default\n"
-        "    agent_profile: dbx-agent\n",
+        "    agent_profile: dbx-agent\n"
+        "    questions_file: evals/benchmark_cases_v1.yaml\n"
+        "benchmark_targets:\n"
+        "  building-architecture:\n"
+        "    questions_file: evals/benchmark_cases_v1.yaml\n"
+        "    db_paths:\n"
+        "      - output/Building-Architecture.db\n"
+        "    graph_dataset: Building-Architecture\n"
+        "benchmark_presets:\n"
+        "  smoke:\n"
+        "    target: building-architecture\n"
+        "    router_profiles:\n"
+        "      - router-default\n"
+        "    agent_profiles:\n"
+        "      - dbx-agent\n"
+        "    prompt_strategies:\n"
+        "      - baseline\n",
         encoding="utf-8",
     )
 
@@ -162,6 +178,13 @@ def test_load_project_config_parses_yaml_structure(tmp_path: Path) -> None:
     assert loaded.config.profiles["dbx-agent"].provider == "databricks"
     assert loaded.config.profiles["dbx-agent"].settings == {"temperature": 0.1}
     assert loaded.config.experiments["graph-compare"].agent_profile == "dbx-agent"
+    assert loaded.config.experiments["graph-compare"].questions_file == (
+        "evals/benchmark_cases_v1.yaml"
+    )
+    assert loaded.config.benchmark_targets["building-architecture"].db_paths == [
+        "output/Building-Architecture.db"
+    ]
+    assert loaded.config.benchmark_presets["smoke"].target == "building-architecture"
 
 
 def test_load_project_config_uses_explicit_relative_json_path(tmp_path: Path) -> None:
@@ -359,6 +382,22 @@ def test_checked_in_config_example_matches_app_config_schema() -> None:
     assert config.defaults.graph_output_retries == 5
     assert config.defaults.graph_max_steps == 20
     assert config.defaults.graph_output_retries == 5
+    benchmark_target = config.benchmark_targets["building-architecture"]
+    assert benchmark_target.questions_file == "evals/benchmark_cases_v1.yaml"
+    assert benchmark_target.db_paths == ["output/Building-Architecture.db"]
+    assert benchmark_target.graph_dataset == "Building-Architecture"
+    smoke_preset = config.benchmark_presets["smoke"]
+    assert smoke_preset.target == "building-architecture"
+    assert smoke_preset.router_profiles == ["router-gemini-flash"]
+    assert smoke_preset.agent_profiles == ["cohere-command-a"]
+    assert smoke_preset.prompt_strategies == ["baseline"]
+    assert smoke_preset.graph_orchestrators == ["pydanticai"]
+    full_preset = config.benchmark_presets["full"]
+    assert full_preset.target == "building-architecture"
+    assert full_preset.prompt_strategies == ["baseline", "strict-grounded"]
+    assert full_preset.graph_orchestrators == ["pydanticai", "langgraph"]
+    assert full_preset.answer_judge_model == "google-gla:gemini-2.5-flash"
+    assert full_preset.tags == ["sql", "graph"]
     for experiment_name in ("graph-dbx-smoke", "graph-agent-compare"):
         experiment = config.experiments[experiment_name]
         assert experiment.router_profile in config.profiles
@@ -367,9 +406,37 @@ def test_checked_in_config_example_matches_app_config_schema() -> None:
             profile_name in config.profiles for profile_name in experiment.profiles
         )
 
+    benchmark_experiment = config.experiments["benchmark-e2e-v1"]
+    assert benchmark_experiment.questions_file == "evals/benchmark_cases_v1.yaml"
+    assert benchmark_experiment.router_profiles == [
+        "router-gemini-flash",
+        "dbx-gpt-oss-20b",
+        "dbx-gemma-3-12b",
+    ]
+    assert benchmark_experiment.agent_profiles == [
+        "cohere-command-a",
+        "dbx-claude-sonnet-4-6",
+        "dbx-gpt-oss-20b",
+        "dbx-llama-4-maverick",
+        "dbx-gemma-3-12b",
+    ]
+    assert benchmark_experiment.prompt_strategies == [
+        "baseline",
+        "strict-grounded",
+    ]
+    assert benchmark_experiment.graph_orchestrators == ["pydanticai", "langgraph"]
+    assert benchmark_experiment.repeat == 1
+    assert benchmark_experiment.max_concurrency == 1
+    assert benchmark_experiment.answer_judge_model == "google-gla:gemini-2.5-flash"
+    assert benchmark_experiment.tags == ["sql", "graph"]
+
 
 def test_repo_keeps_runtime_config_yaml_untracked() -> None:
     repo_root = Path(__file__).resolve().parents[1]
+    config_path = repo_root / "config.yaml"
+
+    if config_path.exists():
+        pytest.skip("local runtime config.yaml is present in this workspace")
 
     tracked_example = subprocess.run(
         ["git", "ls-files", "--error-unmatch", "config.example.yaml"],
@@ -388,6 +455,7 @@ def test_repo_keeps_runtime_config_yaml_untracked() -> None:
 
     assert tracked_example.returncode == 0
     assert tracked_runtime.returncode != 0
+    assert not config_path.exists()
 
 
 def test_resolve_graph_orchestrator_defaults_to_pydanticai_without_config(

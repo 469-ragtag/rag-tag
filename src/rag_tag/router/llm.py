@@ -3,6 +3,7 @@ from __future__ import annotations
 from pydantic_ai import Agent
 
 from rag_tag.llm.pydantic_ai import get_router_model, get_router_model_settings
+from rag_tag.usage import normalize_usage_metrics
 
 from .capabilities import (
     IFC_SPACE_LEVEL_GRAPH_REASON,
@@ -68,6 +69,7 @@ def route_with_llm(question: str, *, debug_llm_io: bool = False) -> RouteDecisio
     try:
         result = agent.run_sync(question)
         response = result.output
+        usage = normalize_usage_metrics(result)
     except Exception as exc:
         raise LlmRouterError(f"LLM request failed: {exc}") from exc
 
@@ -79,7 +81,7 @@ def route_with_llm(question: str, *, debug_llm_io: bool = False) -> RouteDecisio
 
     # Build route decision based on LLM response
     if response.route == "graph":
-        return RouteDecision("graph", response.reason, None)
+        return RouteDecision("graph", response.reason, None, usage)
 
     if response.intent == "none":
         raise LlmRouterError("LLM returned sql route with intent 'none'")
@@ -90,6 +92,7 @@ def route_with_llm(question: str, *, debug_llm_io: bool = False) -> RouteDecisio
             "graph",
             f"LLM SQL route downgraded to graph: {semantic_violation}",
             None,
+            usage,
         )
 
     limit = 50 if response.intent == "list" else 0
@@ -147,8 +150,9 @@ def route_with_llm(question: str, *, debug_llm_io: bool = False) -> RouteDecisio
             "graph",
             f"LLM SQL route downgraded to graph: unsupported SQL request shape ({exc})",
             None,
+            usage,
         )
-    return RouteDecision("sql", response.reason, request)
+    return RouteDecision("sql", response.reason, request, usage)
 
 
 def _build_system_prompt() -> str:
