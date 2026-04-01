@@ -480,21 +480,21 @@ cases:
     # ---------------------------------------------------------------------------
     - id: q047
       question: How many doors lead into the living room?
-      expected_route: sql
+      expected_route: graph
       answer:
           canonical: "0 doors lead into the living room (there are no doors in the model)."
           judge_notes:
               - correctly identifies 0 doors
-      tags: [bonus, count, doors]
+      tags: [bonus, graph, count, doors]
 
     - id: q048
       question: How many spaces are defined on the storey "00 groundfloor"?
-      expected_route: sql
+      expected_route: graph
       answer:
           canonical: "There are 2 spaces defined on '00 groundfloor': 'living room' (#75) and 'entry hall' (#182)."
           judge_notes:
               - correctly counts spaces on groundfloor
-      tags: [bonus, count, spaces]
+      tags: [bonus, graph, count, spaces]
 
     - id: q049
       question: List all external walls on the storey "00 groundfloor" along with their fire rating, if available.
@@ -507,7 +507,7 @@ cases:
               - #277 "house - outer wall - house left" (No fire rating)
           judge_notes:
               - lists the 3 outer walls and correctly notes absence of fire rating
-      tags: [bonus, list, walls, properties]
+      tags: [bonus, graph, list, walls, properties]
 
     - id: q050
       question: Which elements form the physical boundary between the living room and the exterior environment?
@@ -516,7 +516,7 @@ cases:
           canonical: "There are no explicit IfcRelSpaceBoundary entities defined in this model to formally link the space to boundaries. Geometrically, the outer walls (#234, #258, #277) enclose the structure."
           judge_notes:
               - recognizes the lack of explicit space boundaries in the graph
-      tags: [bonus, topology, boundaries]
+      tags: [bonus, graph, topology, boundaries]
 
     - id: q051
       question: Which spaces are directly reachable from the entry hall without passing through the living room?
@@ -525,7 +525,7 @@ cases:
           canonical: "None. There are no doors or topological path connections defined between spaces in this model."
           judge_notes:
               - correctly deduces lack of topological connectivity
-      tags: [bonus, topology, path]
+      tags: [bonus, graph, topology, path]
 
     - id: q052
       question: Which walls support the main roof slabs of the house (the two "house - roof - slab" elements)?
@@ -534,7 +534,7 @@ cases:
           canonical: "There are no explicit structural support relationships (e.g., IfcRelConnectsElements) defined between the walls and the roof slabs in this model."
           judge_notes:
               - correctly identifies missing explicit structural connections
-      tags: [bonus, topology, support]
+      tags: [bonus, graph, topology, support]
 
     - id: q053
       question: For each external wall, report its length and whether it belongs to the front, back, left side, or right side of the house.
@@ -546,7 +546,7 @@ cases:
               - "house - outer wall - house left" (#277): Length 6000 mm
           judge_notes:
               - correctly extracts length quantities and maps positions based on wall names
-      tags: [bonus, list, walls, dimensions]
+      tags: [bonus, graph, list, walls, dimensions]
 
     - id: q054
       question: Describe a path from the entry hall to the main roof edge, listing each intermediate element.
@@ -555,4 +555,4 @@ cases:
           canonical: "No topological path exists. The model lacks explicit spatial connectivity (doors, stairs, space boundaries) to trace a path from the entry hall to the roof."
           judge_notes:
               - correctly rejects the premise of a calculable path
-      tags: [bonus, topology, path]
+      tags: [bonus, graph, topology, path]
